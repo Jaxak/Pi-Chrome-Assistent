@@ -30,3 +30,6 @@ The repository is currently empty. No source files, configuration, or documentat
 ## NOTES
 *   This workspace was initialized but is empty. No git repository has been created yet.
 *   Once code is added, run `/init` again to populate this file with accurate project details.
+
+## RULES
+*   **При любой разработке всегда сверяйтесь с документацией Pi** — перед реализацией功能的, интеграцией API, или принятием архитектурных решений читайте документацию Pi (основная документация и примеры из SDK/расширений), чтобы соответствовать актуальным контрактам и рекомендациям фреймворка.

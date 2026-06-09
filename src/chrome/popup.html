@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Подключение Pi к браузеру</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup__header">
+        <h1>Подключение Pi к браузеру</h1>
+      </header>
+
+      <section class="panel" aria-labelledby="status-heading">
+        <div class="status-row">
+          <span id="status-heading" class="panel__label">Статус</span>
+          <span id="status-text" class="status-pill">Ожидание</span>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="target-heading">
+        <div class="panel__label" id="target-heading">Цель Pi</div>
+        <div id="target-container" class="target-container" role="listbox" aria-label="Цели Pi">
+          <div class="target-placeholder">Цели появятся здесь.</div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button id="send-button" type="button" disabled aria-disabled="true">Отправить в Pi</button>
+        <button id="diagnostics-button" type="button" class="button-secondary">Диагностика</button>
+      </div>
+
+      <section class="panel" aria-labelledby="diagnostics-heading">
+        <div class="panel__label" id="diagnostics-heading">Диагностика</div>
+        <pre id="diagnostics-output" class="diagnostics-output">Диагностика ещё не запускалась.</pre>
+      </section>
+    </main>
+
+    <script src="./popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,664 @@
+import { createServer } from "node:http";
+
+import WebSocket, { WebSocketServer } from "ws";
+
+import { PROTOCOL_VERSION, TARGET_STALE_AFTER_MS } from "../shared/constants";
+import {
+  createRequestId,
+  parseProtocolEnvelope,
+  validateSelectionPayload,
+  type DeliveryResult,
+  type SelectionPayload,
+  type TargetMetadata,
+} from "../shared/protocol";
+import type { BrowserConnectLogger } from "./logging";
+
+export type TargetConnection = (
+  payload: SelectionPayload,
+  clientSocket?: WebSocket,
+) => DeliveryResult | Promise<DeliveryResult>;
+
+type RegisteredTarget = {
+  metadata: TargetMetadata;
+  connection: TargetConnection;
+};
+
+function cloneTargetMetadata(metadata: TargetMetadata): TargetMetadata {
+  return { ...metadata };
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : "Target delivery failed";
+}
+
+export class BrowserConnectBrokerState {
+  private readonly targets = new Map<string, RegisteredTarget>();
+
+  registerTarget(metadata: TargetMetadata, connection: TargetConnection): void {
+    this.targets.set(metadata.targetId, {
+      metadata: cloneTargetMetadata(metadata),
+      connection,
+    });
+  }
+
+  listTargets(): TargetMetadata[] {
+    return Array.from(this.targets.values(), ({ metadata }) => cloneTargetMetadata(metadata));
+  }
+
+  heartbeat(targetId: string, lastSeenAt: number): boolean {
+    const target = this.targets.get(targetId);
+
+    if (!target) {
+      return false;
+    }
+
+    target.metadata.lastSeenAt = lastSeenAt;
+    return true;
+  }
+
+  unregisterTarget(targetId: string): boolean {
+    return this.targets.delete(targetId);
+  }
+
+  removeStaleTargets(now: number, staleAfterMs: number): void {
+    for (const [targetId, target] of this.targets.entries()) {
+      if (now - target.metadata.lastSeenAt >= staleAfterMs) {
+        this.targets.delete(targetId);
+      }
+    }
+  }
+
+  async deliverSelection(
+    targetId: string,
+    payload: SelectionPayload,
+    clientSocket?: WebSocket,
+  ): Promise<DeliveryResult> {
+    const target = this.targets.get(targetId);
+
+    if (!target) {
+      return {
+        ok: false,
+        error: "Target is not available",
+      };
+    }
+
+    try {
+      return await (clientSocket === undefined
+        ? target.connection(payload)
+        : target.connection(payload, clientSocket));
+    } catch (error) {
+      return {
+        ok: false,
+        error: toErrorMessage(error),
+      };
+    }
+  }
+}
+
+export type StartBrokerServerOptions = {
+  host: string;
+  port: number;
+  token: string;
+  logger: BrowserConnectLogger;
+  staleAfterMs?: number;
+  deliveryTimeoutMs?: number;
+};
+
+export type BrowserConnectBrokerServer = {
+  port: number;
+  close(): Promise<void>;
+};
+
+type BrokerMessagePayload = Record<string, unknown> | undefined;
+
+type PendingDelivery = {
+  clientSocket: WebSocket;
+  targetSocket: WebSocket;
+  timeoutId: ReturnType<typeof setTimeout>;
+  resolve(result: DeliveryResult): void;
+};
+
+type SettledDeliveryTombstone = {
+  targetSocket: WebSocket;
+  settledAt: number;
+  reason: string;
+};
+
+const SETTLED_DELIVERY_TOMBSTONE_TTL_MS = 60_000;
+const MAX_SETTLED_DELIVERY_TOMBSTONES = 1_000;
+
+function sendEnvelope(socket: WebSocket, envelope: {
+  type: string;
+  requestId?: string;
+  payload?: unknown;
+}): void {
+  if (socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  socket.send(
+    JSON.stringify({
+      version: PROTOCOL_VERSION,
+      type: envelope.type,
+      requestId: envelope.requestId,
+      payload: envelope.payload,
+    }),
+  );
+}
+
+function sendClientError(socket: WebSocket, requestId: string | undefined, error: string): void {
+  sendEnvelope(socket, {
+    type: "client.error",
+    requestId,
+    payload: { error },
+  });
+}
+
+function isValidToken(value: unknown, token: string): boolean {
+  return typeof value === "string" && value === token;
+}
+
+function isTargetMetadata(value: unknown): value is TargetMetadata {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const target = value as Partial<TargetMetadata>;
+
+  return (
+    typeof target.targetId === "string" &&
+    target.targetId.length > 0 &&
+    (target.alias === undefined || typeof target.alias === "string") &&
+    typeof target.cwd === "string" &&
+    target.cwd.length > 0 &&
+    (target.gitBranch === undefined || typeof target.gitBranch === "string") &&
+    typeof target.pid === "number" &&
+    Number.isFinite(target.pid) &&
+    (target.sessionName === undefined || typeof target.sessionName === "string") &&
+    typeof target.connectedAt === "number" &&
+    Number.isFinite(target.connectedAt) &&
+    typeof target.lastSeenAt === "number" &&
+    Number.isFinite(target.lastSeenAt)
+  );
+}
+
+function parseClientSendSelectionPayload(
+  payload: BrokerMessagePayload,
+):
+  | { ok: true; token: string; targetId: string; selection: SelectionPayload }
+  | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, error: "Payload must be an object" };
+  }
+
+  const candidate = payload as {
+    token?: unknown;
+    targetId?: unknown;
+    selection?: unknown;
+  };
+
+  if (typeof candidate.token !== "string") {
+    return { ok: false, error: "Missing token" };
+  }
+
+  if (typeof candidate.targetId !== "string" || candidate.targetId.length === 0) {
+    return { ok: false, error: "Missing targetId" };
+  }
+
+  const selectionValidation = validateSelectionPayload(candidate.selection);
+
+  if (!selectionValidation.ok) {
+    return selectionValidation;
+  }
+
+  return {
+    ok: true,
+    token: candidate.token,
+    targetId: candidate.targetId,
+    selection: candidate.selection as SelectionPayload,
+  };
+}
+
+export async function startBrokerServer(
+  options: StartBrokerServerOptions,
+): Promise<BrowserConnectBrokerServer> {
+  const staleAfterMs = options.staleAfterMs ?? TARGET_STALE_AFTER_MS;
+  const deliveryTimeoutMs = options.deliveryTimeoutMs ?? 30_000;
+  const state = new BrowserConnectBrokerState();
+  const server = createServer();
+  const webSocketServer = new WebSocketServer({ server });
+  const sockets = new Set<WebSocket>();
+  const authenticatedClientSockets = new Set<WebSocket>();
+  const socketToTargetId = new Map<WebSocket, string>();
+  const targetIdToSocket = new Map<string, WebSocket>();
+  const pendingDeliveries = new Map<string, PendingDelivery>();
+  const settledDeliveryTombstones = new Map<string, SettledDeliveryTombstone>();
+  let staleCleanupTimer: ReturnType<typeof setInterval> | undefined;
+  let isClosing = false;
+
+  const pruneSettledDeliveryTombstones = (now = Date.now()) => {
+    for (const [requestId, tombstone] of settledDeliveryTombstones.entries()) {
+      if (now - tombstone.settledAt < SETTLED_DELIVERY_TOMBSTONE_TTL_MS) {
+        continue;
+      }
+
+      settledDeliveryTombstones.delete(requestId);
+    }
+
+    while (settledDeliveryTombstones.size > MAX_SETTLED_DELIVERY_TOMBSTONES) {
+      const oldestRequestId = settledDeliveryTombstones.keys().next().value;
+
+      if (typeof oldestRequestId !== "string") {
+        break;
+      }
+
+      settledDeliveryTombstones.delete(oldestRequestId);
+    }
+  };
+
+  const rememberSettledDelivery = (requestId: string, targetSocket: WebSocket, reason: string) => {
+    settledDeliveryTombstones.set(requestId, {
+      targetSocket,
+      settledAt: Date.now(),
+      reason,
+    });
+    pruneSettledDeliveryTombstones();
+  };
+
+  const settlePendingDelivery = (requestId: string, result: DeliveryResult, reason: string): boolean => {
+    const pending = pendingDeliveries.get(requestId);
+
+    if (!pending) {
+      return false;
+    }
+
+    pendingDeliveries.delete(requestId);
+    clearTimeout(pending.timeoutId);
+    rememberSettledDelivery(requestId, pending.targetSocket, reason);
+    pending.resolve(result);
+    return true;
+  };
+
+  const resolvePendingDeliveriesForSocket = (socket: WebSocket, error: string) => {
+    for (const [requestId, pending] of pendingDeliveries.entries()) {
+      if (pending.targetSocket === socket || pending.clientSocket === socket) {
+        settlePendingDelivery(requestId, { ok: false, error }, error);
+      }
+    }
+  };
+
+  const unregisterSocketTarget = (socket: WebSocket) => {
+    const targetId = socketToTargetId.get(socket);
+
+    if (!targetId) {
+      return;
+    }
+
+    socketToTargetId.delete(socket);
+    resolvePendingDeliveriesForSocket(socket, "Target disconnected");
+
+    const registeredSocket = targetIdToSocket.get(targetId);
+
+    if (registeredSocket === socket) {
+      targetIdToSocket.delete(targetId);
+      state.unregisterTarget(targetId);
+      options.logger.info("broker.target.unregistered", { targetId });
+    }
+  };
+
+  const clearStaleCleanupTimer = () => {
+    if (!staleCleanupTimer) {
+      return;
+    }
+
+    clearInterval(staleCleanupTimer);
+    staleCleanupTimer = undefined;
+  };
+
+  const startStaleCleanupTimer = () => {
+    staleCleanupTimer = setInterval(() => {
+      const now = Date.now();
+
+      for (const targetMetadata of state.listTargets()) {
+        if (now - targetMetadata.lastSeenAt < staleAfterMs) {
+          continue;
+        }
+
+        state.unregisterTarget(targetMetadata.targetId);
+
+        const targetSocket = targetIdToSocket.get(targetMetadata.targetId);
+        targetIdToSocket.delete(targetMetadata.targetId);
+
+        if (targetSocket) {
+          socketToTargetId.delete(targetSocket);
+          resolvePendingDeliveriesForSocket(targetSocket, "Target is stale");
+          targetSocket.close();
+        }
+
+        options.logger.warn("broker.target.stale", {
+          targetId: targetMetadata.targetId,
+          lastSeenAt: targetMetadata.lastSeenAt,
+        });
+      }
+    }, Math.max(1_000, Math.min(staleAfterMs, 5_000)));
+  };
+
+  const closeWebSocketServer = () => new Promise<void>((resolve, reject) => {
+    webSocketServer.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  const closeHttpServer = () => new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  const cleanupStartupFailure = async () => {
+    clearStaleCleanupTimer();
+    await Promise.allSettled([
+      closeWebSocketServer().catch(() => undefined),
+      closeHttpServer().catch(() => undefined),
+    ]);
+  };
+
+  webSocketServer.on("error", (error) => {
+    options.logger.warn("broker.websocket_server.error", { error: toErrorMessage(error) });
+  });
+
+  webSocketServer.on("connection", (socket) => {
+    sockets.add(socket);
+
+    socket.on("message", async (rawMessage) => {
+      const envelope = parseProtocolEnvelope(rawMessage.toString());
+
+      if (!envelope) {
+        sendClientError(socket, undefined, "Invalid protocol message");
+        socket.close();
+        return;
+      }
+
+      const payload = envelope.payload as BrokerMessagePayload;
+
+      switch (envelope.type) {
+        case "client.hello": {
+          const token = payload?.token;
+
+          if (!isValidToken(token, options.token)) {
+            sendClientError(socket, envelope.requestId, "Invalid token");
+            socket.close();
+            return;
+          }
+
+          authenticatedClientSockets.add(socket);
+          options.logger.info("broker.client.authenticated");
+          return;
+        }
+
+        case "client.listTargets": {
+          if (!authenticatedClientSockets.has(socket)) {
+            sendClientError(socket, envelope.requestId, "Client is not authenticated");
+            socket.close();
+            return;
+          }
+
+          sendEnvelope(socket, {
+            type: "client.targets",
+            requestId: envelope.requestId,
+            payload: {
+              targets: state.listTargets(),
+            },
+          });
+          return;
+        }
+
+        case "client.sendSelection": {
+          const parsedPayload = parseClientSendSelectionPayload(payload);
+
+          if (!parsedPayload.ok) {
+            sendClientError(socket, envelope.requestId, parsedPayload.error);
+            return;
+          }
+
+          if (!isValidToken(parsedPayload.token, options.token)) {
+            sendClientError(socket, envelope.requestId, "Invalid token");
+            socket.close();
+            return;
+          }
+
+          const result = await state.deliverSelection(parsedPayload.targetId, parsedPayload.selection, socket);
+
+          sendEnvelope(socket, {
+            type: "client.sendResult",
+            requestId: envelope.requestId,
+            payload: result,
+          });
+          return;
+        }
+
+        case "target.register": {
+          const token = payload?.token;
+          const target = payload?.target;
+
+          if (!isValidToken(token, options.token) || !isTargetMetadata(target)) {
+            socket.close();
+            return;
+          }
+
+          const previousTargetId = socketToTargetId.get(socket);
+
+          if (previousTargetId && previousTargetId !== target.targetId) {
+            unregisterSocketTarget(socket);
+          }
+
+          const existingSocket = targetIdToSocket.get(target.targetId);
+          if (existingSocket && existingSocket !== socket) {
+            socketToTargetId.delete(existingSocket);
+            resolvePendingDeliveriesForSocket(existingSocket, "Target disconnected");
+            existingSocket.close();
+          }
+
+          const registeredTarget: TargetMetadata = {
+            ...target,
+            lastSeenAt: Date.now(),
+          };
+
+          socketToTargetId.set(socket, target.targetId);
+          targetIdToSocket.set(target.targetId, socket);
+          state.registerTarget(registeredTarget, (selection, clientSocket) => {
+            const deliveryRequestId = createRequestId();
+
+            return new Promise<DeliveryResult>((resolve) => {
+              const timeoutId = setTimeout(() => {
+                settlePendingDelivery(
+                  deliveryRequestId,
+                  {
+                    ok: false,
+                    error: "Delivery timed out",
+                  },
+                  "Delivery timed out",
+                );
+              }, deliveryTimeoutMs);
+
+              pendingDeliveries.set(deliveryRequestId, {
+                clientSocket: clientSocket ?? socket,
+                targetSocket: socket,
+                timeoutId,
+                resolve,
+              });
+
+              sendEnvelope(socket, {
+                type: "target.deliverSelection",
+                requestId: deliveryRequestId,
+                payload: {
+                  selection,
+                },
+              });
+            });
+          });
+
+          sendEnvelope(socket, {
+            type: "target.registered",
+            requestId: envelope.requestId,
+          });
+          options.logger.info("broker.target.registered", { targetId: target.targetId });
+          return;
+        }
+
+        case "target.heartbeat": {
+          const targetId = socketToTargetId.get(socket);
+
+          if (!targetId) {
+            socket.close();
+            return;
+          }
+
+          state.heartbeat(targetId, Date.now());
+          return;
+        }
+
+        case "target.unregister": {
+          unregisterSocketTarget(socket);
+          socket.close();
+          return;
+        }
+
+        case "target.sendSelectionResult": {
+          if (typeof envelope.requestId !== "string") {
+            socket.close();
+            return;
+          }
+
+          const pendingDelivery = pendingDeliveries.get(envelope.requestId);
+
+          if (!pendingDelivery) {
+            pruneSettledDeliveryTombstones();
+            const tombstone = settledDeliveryTombstones.get(envelope.requestId);
+
+            if (tombstone?.targetSocket === socket) {
+              options.logger.info("broker.target.late_selection_result_ignored", {
+                requestId: envelope.requestId,
+                reason: tombstone.reason,
+                targetId: socketToTargetId.get(socket),
+              });
+              return;
+            }
+
+            socket.close();
+            return;
+          }
+
+          if (pendingDelivery.targetSocket !== socket) {
+            socket.close();
+            return;
+          }
+
+          const resultPayload = payload ?? {};
+          const result: DeliveryResult = {
+            ok: resultPayload.ok === true,
+            ...(typeof resultPayload.error === "string" ? { error: resultPayload.error } : {}),
+          };
+          settlePendingDelivery(envelope.requestId, result, result.ok ? "Target responded" : (result.error ?? "Target responded with failure"));
+          return;
+        }
+
+        default:
+          sendClientError(socket, envelope.requestId, `Unsupported message type: ${envelope.type}`);
+      }
+    });
+
+    socket.on("close", () => {
+      sockets.delete(socket);
+      authenticatedClientSockets.delete(socket);
+
+      if (socketToTargetId.has(socket)) {
+        unregisterSocketTarget(socket);
+        return;
+      }
+
+      resolvePendingDeliveriesForSocket(socket, "Client disconnected");
+    });
+
+    socket.on("error", (error) => {
+      options.logger.warn("broker.socket.error", { error: toErrorMessage(error) });
+    });
+  });
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+
+      const onListening = () => {
+        cleanup();
+        resolve();
+      };
+
+      const cleanup = () => {
+        server.off("error", onError);
+        webSocketServer.off("error", onError);
+        server.off("listening", onListening);
+      };
+
+      server.once("error", onError);
+      webSocketServer.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(options.port, options.host);
+    });
+
+    const address = server.address();
+
+    if (!address || typeof address === "string") {
+      throw new Error("Broker server did not bind to a TCP port");
+    }
+
+    startStaleCleanupTimer();
+
+    options.logger.info("broker.server.started", {
+      host: options.host,
+      port: address.port,
+    });
+
+    return {
+      port: address.port,
+      async close() {
+        if (isClosing) {
+          return;
+        }
+
+        isClosing = true;
+        clearStaleCleanupTimer();
+
+        for (const requestId of pendingDeliveries.keys()) {
+          settlePendingDelivery(requestId, { ok: false, error: "Broker server is closing" }, "Broker server is closing");
+        }
+
+        for (const socket of sockets) {
+          if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) {
+            socket.close();
+          }
+        }
+
+        await Promise.all([closeWebSocketServer(), closeHttpServer()]);
+
+        options.logger.info("broker.server.closed");
+      },
+    };
+  } catch (error) {
+    await cleanupStartupFailure();
+    throw error;
+  }
+}

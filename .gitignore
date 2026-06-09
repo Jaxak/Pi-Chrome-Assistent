@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+package-lock.json
 
 # Build output
 dist/
@@ -30,10 +31,16 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+.pi/browser-connect.log
 
 # Test coverage
 coverage/
 .nyc_output/
 
-# pi internal
-.pi/
+# TypeScript
+*.tsbuildinfo
+
+# Pi local state (keep .pi/extensions/ source trackable)
+.pi/*
+!.pi/extensions/
+!.pi/extensions/**

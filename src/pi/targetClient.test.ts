@@ -1,0 +1,299 @@
+import { EventEmitter } from "node:events";
+
+import WebSocket from "ws";
+import { describe, expect, it, vi } from "vitest";
+
+import { PROTOCOL_VERSION } from "../shared/constants";
+import type { ProtocolEnvelope, TargetMetadata } from "../shared/protocol";
+import { createMemoryLogger } from "./logging";
+import {
+  buildTargetMetadata,
+  connectTargetToBroker,
+  getTargetDisplayLabel,
+  handleDeliveredSelection,
+} from "./targetClient";
+
+class FakeWebSocket extends EventEmitter {
+  readyState: number = WebSocket.CONNECTING;
+  readonly sentMessages: string[] = [];
+  terminated = false;
+
+  send(data: string): void {
+    this.sentMessages.push(data);
+  }
+
+  open(): void {
+    this.readyState = WebSocket.OPEN;
+    this.emit("open");
+  }
+
+  receive(envelope: ProtocolEnvelope): void {
+    this.emit("message", Buffer.from(JSON.stringify(envelope)));
+  }
+
+  close(): void {
+    if (this.readyState === WebSocket.CLOSED) {
+      return;
+    }
+
+    this.readyState = WebSocket.CLOSED;
+    this.emit("close");
+  }
+
+  terminate(): void {
+    this.terminated = true;
+    this.close();
+  }
+}
+
+const targetMetadata: TargetMetadata = {
+  targetId: "target-1",
+  alias: "frontend",
+  cwd: "/repo/project",
+  pid: 123,
+  connectedAt: 1_710_000_000_000,
+  lastSeenAt: 1_710_000_000_000,
+};
+
+describe("getTargetDisplayLabel", () => {
+  it("uses alias when present", () => {
+    expect(
+      getTargetDisplayLabel({
+        targetId: "target-1",
+        alias: "frontend",
+        cwd: "/repo/project",
+        pid: 123,
+        connectedAt: 1,
+        lastSeenAt: 1,
+      }),
+    ).toBe("frontend");
+  });
+});
+
+describe("buildTargetMetadata", () => {
+  it("includes cwd, pid, alias and git branch when available", async () => {
+    const metadata = await buildTargetMetadata({
+      targetId: "target-1",
+      alias: "frontend",
+      cwd: "/repo/project",
+      pid: 123,
+      sessionName: "session",
+      now: 1_710_000_000_000,
+      getGitBranch: vi.fn(async () => "feat/test"),
+    });
+
+    expect(metadata).toEqual({
+      targetId: "target-1",
+      alias: "frontend",
+      cwd: "/repo/project",
+      gitBranch: "feat/test",
+      pid: 123,
+      sessionName: "session",
+      connectedAt: 1_710_000_000_000,
+      lastSeenAt: 1_710_000_000_000,
+    });
+  });
+});
+
+describe("handleDeliveredSelection", () => {
+  it("sends selection immediately when Pi is idle", async () => {
+    const sendUserMessage = vi.fn();
+
+    await handleDeliveredSelection({
+      selection: {
+        url: "https://example.com",
+        title: "Example",
+        selectedText: "hello",
+        selectedHtml: "<p>hello</p>",
+        capturedAt: Date.now(),
+      },
+      isIdle: () => true,
+      sendUserMessage,
+    });
+
+    expect(sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("hello"), undefined);
+  });
+
+  it("queues as followUp when Pi is busy", async () => {
+    const sendUserMessage = vi.fn();
+
+    await handleDeliveredSelection({
+      selection: {
+        url: "https://example.com",
+        title: "Example",
+        selectedText: "hello",
+        selectedHtml: "<p>hello</p>",
+        capturedAt: Date.now(),
+      },
+      isIdle: () => false,
+      sendUserMessage,
+    });
+
+    expect(sendUserMessage).toHaveBeenCalledWith(expect.any(String), { deliverAs: "followUp" });
+  });
+});
+
+describe("connectTargetToBroker", () => {
+  it("resolves only after a matching target.registered ack", async () => {
+    const socket = new FakeWebSocket();
+    const connectPromise = connectTargetToBroker({
+      token: "test-token",
+      metadata: targetMetadata,
+      logger: createMemoryLogger(),
+      onDeliveredSelection: vi.fn(async () => ({ ok: true })),
+      webSocketFactory: () => socket as unknown as WebSocket,
+      heartbeatIntervalMs: 60_000,
+    });
+    let settled = false;
+
+    void connectPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    socket.open();
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(socket.sentMessages).toHaveLength(1);
+
+    const registerEnvelope = JSON.parse(socket.sentMessages[0]) as ProtocolEnvelope<{
+      token: string;
+      target: TargetMetadata;
+    }>;
+
+    expect(registerEnvelope).toMatchObject({
+      version: PROTOCOL_VERSION,
+      type: "target.register",
+      payload: {
+        token: "test-token",
+        target: targetMetadata,
+      },
+    });
+    expect(registerEnvelope.requestId).toEqual(expect.any(String));
+
+    socket.receive({
+      version: PROTOCOL_VERSION,
+      type: "target.registered",
+      requestId: registerEnvelope.requestId,
+    });
+
+    const connected = await connectPromise;
+    expect(connected.url).toBe("ws://127.0.0.1:17345");
+
+    await connected.close();
+  });
+
+  it("rejects when the broker closes before registration ack", async () => {
+    const socket = new FakeWebSocket();
+    const connectPromise = connectTargetToBroker({
+      token: "test-token",
+      metadata: targetMetadata,
+      logger: createMemoryLogger(),
+      onDeliveredSelection: vi.fn(async () => ({ ok: true })),
+      webSocketFactory: () => socket as unknown as WebSocket,
+    });
+
+    socket.open();
+    socket.close();
+
+    await expect(connectPromise).rejects.toThrow(/registration/i);
+  });
+
+  it("times out registration when the broker never acknowledges and terminates the socket", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeWebSocket();
+
+    try {
+      const connectPromise = connectTargetToBroker({
+        token: "test-token",
+        metadata: targetMetadata,
+        logger: createMemoryLogger(),
+        onDeliveredSelection: vi.fn(async () => ({ ok: true })),
+        webSocketFactory: () => socket as unknown as WebSocket,
+        registrationTimeoutMs: 25,
+        heartbeatIntervalMs: 60_000,
+      });
+
+      socket.open();
+      await Promise.resolve();
+
+      expect(socket.sentMessages).toHaveLength(1);
+      expect(socket.terminated).toBe(false);
+
+      const rejection = expect(connectPromise).rejects.toThrow(/timed out/i);
+
+      await vi.advanceTimersByTimeAsync(25);
+
+      await rejection;
+      expect(socket.terminated).toBe(true);
+      expect(socket.readyState).toBe(WebSocket.CLOSED);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports whether the established broker socket is still open", async () => {
+    const socket = new FakeWebSocket();
+    const connectPromise = connectTargetToBroker({
+      token: "test-token",
+      metadata: targetMetadata,
+      logger: createMemoryLogger(),
+      onDeliveredSelection: vi.fn(async () => ({ ok: true })),
+      webSocketFactory: () => socket as unknown as WebSocket,
+      heartbeatIntervalMs: 60_000,
+    });
+
+    socket.open();
+
+    const registerEnvelope = JSON.parse(socket.sentMessages[0]) as ProtocolEnvelope;
+    socket.receive({
+      version: PROTOCOL_VERSION,
+      type: "target.registered",
+      requestId: registerEnvelope.requestId,
+    });
+
+    const connected = await connectPromise;
+    expect(connected.isOpen()).toBe(true);
+
+    socket.close();
+
+    expect(connected.isOpen()).toBe(false);
+
+    await connected.close();
+  });
+
+  it("calls onDisconnect when an established broker socket closes unexpectedly", async () => {
+    const socket = new FakeWebSocket();
+    const onDisconnect = vi.fn();
+    const connectPromise = connectTargetToBroker({
+      token: "test-token",
+      metadata: targetMetadata,
+      logger: createMemoryLogger(),
+      onDeliveredSelection: vi.fn(async () => ({ ok: true })),
+      onDisconnect,
+      webSocketFactory: () => socket as unknown as WebSocket,
+      heartbeatIntervalMs: 60_000,
+    });
+
+    socket.open();
+
+    const registerEnvelope = JSON.parse(socket.sentMessages[0]) as ProtocolEnvelope;
+    socket.receive({
+      version: PROTOCOL_VERSION,
+      type: "target.registered",
+      requestId: registerEnvelope.requestId,
+    });
+
+    const connected = await connectPromise;
+    socket.close();
+
+    expect(onDisconnect).toHaveBeenCalledOnce();
+
+    await connected.close();
+  });
+});

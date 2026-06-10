@@ -277,6 +277,7 @@ async function runAddTrustedBrowserTokenInChildProcess(options: {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
+  vi.doUnmock("node:fs");
 });
 
 describe("trustedBrowserStore", () => {
@@ -292,6 +293,40 @@ describe("trustedBrowserStore", () => {
       await expect(isTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toBe(true);
       await expect(isTrustedBrowserToken(trustedBrowsersPath, "other-token")).resolves.toBe(false);
       expect(statSync(trustedBrowsersPath).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
+        { token: "browser-token" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stores trusted browser tokens even when current process start time cannot be read", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+
+    vi.doMock("node:fs", () => ({
+      ...actualFs,
+      readFileSync: vi.fn((path: Parameters<typeof actualFs.readFileSync>[0], ...args: unknown[]) => {
+        if (path === `/proc/${process.pid}/stat`) {
+          const error = new Error("missing") as NodeJS.ErrnoException;
+          error.code = "ENOENT";
+          throw error;
+        }
+
+        return Reflect.apply(actualFs.readFileSync, actualFs, [path, ...args]);
+      }),
+    }));
+
+    const { addTrustedBrowserToken, isTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toEqual({
+        token: "browser-token",
+      });
+      await expect(isTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toBe(true);
+      expect(existsSync(`${trustedBrowsersPath}.lock`)).toBe(false);
       expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
         { token: "browser-token" },
       ]);

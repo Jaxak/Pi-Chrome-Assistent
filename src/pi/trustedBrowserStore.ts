@@ -267,14 +267,18 @@ function readLinuxProcessStartTime(pid: number): string | undefined {
   }
 }
 
-function getCurrentProcessStartTime(): string {
-  cachedCurrentProcessStartTime ??= readLinuxProcessStartTime(process.pid);
-
-  if (cachedCurrentProcessStartTime === undefined) {
-    throw new Error(`Failed to read current process start time for pid ${process.pid}`);
+function getCurrentProcessStartTime(): string | undefined {
+  if (cachedCurrentProcessStartTime !== undefined) {
+    return cachedCurrentProcessStartTime;
   }
 
-  return cachedCurrentProcessStartTime;
+  const processStartTime = readLinuxProcessStartTime(process.pid);
+
+  if (processStartTime !== undefined) {
+    cachedCurrentProcessStartTime = processStartTime;
+  }
+
+  return processStartTime;
 }
 
 function writeTrustedBrowserStoreLockMetadata(
@@ -283,12 +287,19 @@ function writeTrustedBrowserStoreLockMetadata(
   label = "trusted browser store lock",
 ): void {
   validateTrustedBrowserStoreFile(fd, label);
-  writeFileSync(fd, `${JSON.stringify({
+
+  const metadata: TrustedBrowserStoreLockMetadata = {
     pid: process.pid,
-    processStartTime: getCurrentProcessStartTime(),
     acquiredAt: Date.now(),
     lockId,
-  })}\n`, {
+  };
+  const processStartTime = getCurrentProcessStartTime();
+
+  if (processStartTime !== undefined) {
+    metadata.processStartTime = processStartTime;
+  }
+
+  writeFileSync(fd, `${JSON.stringify(metadata)}\n`, {
     encoding: "utf8",
   });
   enforceTrustedBrowsersFilePermissions(fd, label);

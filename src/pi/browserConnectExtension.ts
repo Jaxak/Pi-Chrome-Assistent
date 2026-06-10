@@ -5,7 +5,6 @@ import {
   constants as fsConstants,
   fchmodSync,
   fstatSync,
-  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -22,6 +21,7 @@ import {
   getGlobalBrokerTokenPath,
 } from "./chromeAssistentPaths";
 import { createFileLogger, type BrowserConnectLogger } from "./logging";
+import { toNodeError, validateDirectoryPathChain } from "./secureFilesystem";
 import {
   buildTargetMetadata,
   connectTargetToBroker,
@@ -38,34 +38,6 @@ function normalizeAlias(args: string): string | undefined {
   return alias.length > 0 ? alias : undefined;
 }
 
-function toNodeError(error: unknown): NodeJS.ErrnoException {
-  return error instanceof Error ? error as NodeJS.ErrnoException : new Error("Unknown error");
-}
-
-function validateExistingTokenDirectoryPath(tokenDirectoryPath: string): void {
-  let stats: ReturnType<typeof lstatSync>;
-
-  try {
-    stats = lstatSync(tokenDirectoryPath);
-  } catch (error) {
-    const nodeError = toNodeError(error);
-
-    if (nodeError.code === "ENOENT") {
-      return;
-    }
-
-    throw error;
-  }
-
-  if (stats.isSymbolicLink()) {
-    throw new Error(`Shared token directory must not be a symlink: ${tokenDirectoryPath}`);
-  }
-
-  if (!stats.isDirectory()) {
-    throw new Error(`Shared token directory must be a directory: ${tokenDirectoryPath}`);
-  }
-}
-
 function enforcePermissions(path: string, mode: number, kind: "token directory" | "token file"): void {
   try {
     chmodSync(path, mode);
@@ -78,12 +50,12 @@ function enforcePermissions(path: string, mode: number, kind: "token directory" 
 
 function ensureTokenDirectoryPermissions(tokenFilePath: string): void {
   const tokenDirectoryPath = dirname(tokenFilePath);
-  validateExistingTokenDirectoryPath(tokenDirectoryPath);
+  validateDirectoryPathChain(tokenDirectoryPath, "Shared token directory");
   mkdirSync(tokenDirectoryPath, {
     recursive: true,
     mode: 0o700,
   });
-  validateExistingTokenDirectoryPath(tokenDirectoryPath);
+  validateDirectoryPathChain(tokenDirectoryPath, "Shared token directory");
   enforcePermissions(tokenDirectoryPath, 0o700, "token directory");
 }
 
@@ -126,6 +98,7 @@ function enforceTokenFilePermissions(fd: number, tokenFilePath: string): void {
 }
 
 function readExistingToken(tokenFilePath: string): string | undefined {
+  validateDirectoryPathChain(dirname(tokenFilePath), "Shared token directory");
   const fd = openTokenFile(tokenFilePath, fsConstants.O_RDONLY | getNoFollowFlag());
 
   try {
@@ -144,6 +117,7 @@ function readExistingToken(tokenFilePath: string): string | undefined {
 }
 
 function createTokenFile(tokenFilePath: string, token: string): void {
+  validateDirectoryPathChain(dirname(tokenFilePath), "Shared token directory");
   const fd = openTokenFile(
     tokenFilePath,
     fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | getNoFollowFlag(),

@@ -5,11 +5,12 @@ import {
   constants as fsConstants,
   fchmodSync,
   fstatSync,
-  lstatSync,
   mkdirSync,
   openSync,
 } from "node:fs";
-import { dirname, join, parse, resolve, sep } from "node:path";
+import { dirname } from "node:path";
+
+import { toNodeError, validateDirectoryPathChain } from "./secureFilesystem";
 
 export type BrowserConnectLogger = {
   info(message: string, details?: Record<string, unknown>): void;
@@ -71,59 +72,14 @@ export function createMemoryLogger(): MemoryBrowserConnectLogger {
   };
 }
 
-function toNodeError(error: unknown): NodeJS.ErrnoException {
-  return error instanceof Error ? error as NodeJS.ErrnoException : new Error("Unknown error");
-}
-
-function validateExistingLogDirectoryPath(logDirectoryPath: string): boolean {
-  let stats: ReturnType<typeof lstatSync>;
-
-  try {
-    stats = lstatSync(logDirectoryPath);
-  } catch (error) {
-    const nodeError = toNodeError(error);
-
-    if (nodeError.code === "ENOENT") {
-      return false;
-    }
-
-    throw error;
-  }
-
-  if (stats.isSymbolicLink()) {
-    throw new Error(`Log directory must not be a symlink: ${logDirectoryPath}`);
-  }
-
-  if (!stats.isDirectory()) {
-    throw new Error(`Log directory must be a directory: ${logDirectoryPath}`);
-  }
-
-  return true;
-}
-
-function validateLogDirectoryPathChain(logDirectoryPath: string): void {
-  const resolvedLogDirectoryPath = resolve(logDirectoryPath);
-  const { root } = parse(resolvedLogDirectoryPath);
-  const pathComponents = resolvedLogDirectoryPath.slice(root.length).split(sep).filter((component) => component.length > 0);
-  let currentPath = root;
-
-  for (const pathComponent of pathComponents) {
-    currentPath = join(currentPath, pathComponent);
-
-    if (!validateExistingLogDirectoryPath(currentPath)) {
-      return;
-    }
-  }
-}
-
 function ensureLogDirectoryPermissions(logFilePath: string): void {
   const logDirectoryPath = dirname(logFilePath);
-  validateLogDirectoryPathChain(logDirectoryPath);
+  validateDirectoryPathChain(logDirectoryPath, "Log directory");
   mkdirSync(logDirectoryPath, {
     recursive: true,
     mode: 0o700,
   });
-  validateLogDirectoryPathChain(logDirectoryPath);
+  validateDirectoryPathChain(logDirectoryPath, "Log directory");
   chmodSync(logDirectoryPath, 0o700);
 }
 

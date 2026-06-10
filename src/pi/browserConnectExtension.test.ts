@@ -78,6 +78,35 @@ describe("readOrCreateSharedToken", () => {
     }
   });
 
+  it("rejects a symlinked ancestor of the global Chrome Assistent broker token path", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-home-"));
+    const tempHome = join(tempDir, "home");
+    const realPiDir = join(tempDir, "real-pi");
+    const redirectedTokenPath = join(realPiDir, "chrome-assistent", "broker.token");
+    const originalHome = process.env.HOME;
+
+    process.env.HOME = tempHome;
+
+    try {
+      mkdirSync(tempHome, { recursive: true, mode: 0o700 });
+      mkdirSync(realPiDir, { recursive: true, mode: 0o700 });
+      symlinkSync(realPiDir, join(tempHome, ".pi"));
+
+      const { readOrCreateSharedToken } = await importBrowserConnectExtensionModule();
+
+      expect(() => readOrCreateSharedToken()).toThrow(/token directory.*symlink/i);
+      expect(fs.existsSync(redirectedTokenPath)).toBe(false);
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("tightens permissions on existing token directories before reuse", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-token-"));
     const tokenDirPath = join(tempDir, ".pi");

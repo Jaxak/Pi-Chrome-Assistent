@@ -549,7 +549,17 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      await addTrustedBrowserToken(getTrustedBrowsersPath(), token.trim());
+      try {
+        await addTrustedBrowserToken(getTrustedBrowsersPath(), token.trim());
+      } catch (error) {
+        const errorMessage = toErrorMessage(error);
+        ctx.ui.notify(`Не удалось сохранить токен браузера: ${errorMessage}`, "error");
+        logger.error("browser_connect.auth.failed", {
+          error: errorMessage,
+        });
+        throw error;
+      }
+
       ctx.ui.notify("Токен браузера сохранён", "info");
     },
   });

@@ -1,8 +1,14 @@
-import { DEFAULT_BROKER_HOST, DEFAULT_BROKER_PORT, PROTOCOL_VERSION } from "../shared/constants";
+import {
+  BROWSER_TOKEN_STORAGE_KEY,
+  DEFAULT_BROKER_HOST,
+  DEFAULT_BROKER_PORT,
+  PROTOCOL_VERSION,
+} from "../shared/constants";
 import {
   createRequestId,
   parseProtocolEnvelope,
   validateSelectionPayload,
+  type BrowserClientSendSelectionPayload,
   type DeliveryResult,
   type ProtocolEnvelope,
   type SelectionPayload,
@@ -17,7 +23,6 @@ import {
 } from "./diagnostics";
 
 const storage = chromeStorageAdapter();
-const BROKER_TOKEN_STORAGE_KEY = "brokerToken";
 const SELECTED_TARGET_STORAGE_KEY = "selectedTargetId";
 const BROKER_URL = `ws://${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`;
 const SOCKET_CONNECTING = 0;
@@ -133,14 +138,9 @@ async function getStoredString(
 async function maybePersistBrokerSettings(
   diagnosticStorage: StorageAdapter,
   message: {
-    token?: unknown;
     targetId?: unknown;
   },
 ): Promise<void> {
-  if (typeof message.token === "string" && message.token.trim().length > 0) {
-    await diagnosticStorage.set(BROKER_TOKEN_STORAGE_KEY, message.token.trim());
-  }
-
   if (typeof message.targetId === "string" && message.targetId.trim().length > 0) {
     await diagnosticStorage.set(SELECTED_TARGET_STORAGE_KEY, message.targetId.trim());
   }
@@ -351,11 +351,11 @@ function getProtocolErrorMessage(payload: unknown, phase: string): string {
 }
 
 async function listBrokerTargets(
-  token: string,
+  browserToken: string,
   options: BrokerRequestOptions = {},
 ): Promise<TargetMetadata[]> {
   const payload = await authenticatedBrokerRequest<{ targets?: unknown }>(
-    token,
+    browserToken,
     {
       type: "client.listTargets",
       accept: (envelope) => {
@@ -382,20 +382,20 @@ async function listBrokerTargets(
 }
 
 async function deliverSelection(
-  token: string,
+  browserToken: string,
   targetId: string,
   selection: SelectionPayload,
   options: BrokerRequestOptions = {},
 ): Promise<DeliveryResult> {
   const payload = await authenticatedBrokerRequest<DeliveryResult>(
-    token,
+    browserToken,
     {
       type: "client.sendSelection",
       payload: {
-        token,
+        token: browserToken,
         targetId,
         selection,
-      },
+      } satisfies BrowserClientSendSelectionPayload,
       accept: (envelope) => {
         if (envelope.type !== "client.sendResult") {
           return null;
@@ -535,13 +535,13 @@ export function createBackgroundMessageListener(
         try {
           await maybePersistBrokerSettings(backgroundStorage, requestMessage);
           const selectedTargetId = await getStoredString(backgroundStorage, SELECTED_TARGET_STORAGE_KEY);
-          const brokerToken = await getStoredString(backgroundStorage, BROKER_TOKEN_STORAGE_KEY);
+          const browserToken = await getStoredString(backgroundStorage, BROWSER_TOKEN_STORAGE_KEY);
 
-          if (!brokerToken) {
-            throw new Error("No broker token configured in chrome.storage.local");
+          if (!browserToken) {
+            throw new Error("No browser token configured in chrome.storage.local");
           }
 
-          const targets = await listBrokerTargets(brokerToken, brokerRequestOptions);
+          const targets = await listBrokerTargets(browserToken, brokerRequestOptions);
 
           sendResponse({
             ok: true,
@@ -552,14 +552,14 @@ export function createBackgroundMessageListener(
         } catch (error) {
           const errorMessage = await recordDiagnostic(backgroundStorage, now, "listTargets", error);
           const selectedTargetId = await getStoredString(backgroundStorage, SELECTED_TARGET_STORAGE_KEY);
-          const brokerToken = await getStoredString(backgroundStorage, BROKER_TOKEN_STORAGE_KEY);
+          const browserToken = await getStoredString(backgroundStorage, BROWSER_TOKEN_STORAGE_KEY);
 
           sendResponse({
             ok: false,
             error: errorMessage,
             targets: [],
             selectedTargetId,
-            tokenConfigured: brokerToken !== undefined,
+            tokenConfigured: browserToken !== undefined,
           });
         }
       })();
@@ -579,10 +579,10 @@ export function createBackgroundMessageListener(
             return;
           }
 
-          const brokerToken = await getStoredString(backgroundStorage, BROKER_TOKEN_STORAGE_KEY);
+          const browserToken = await getStoredString(backgroundStorage, BROWSER_TOKEN_STORAGE_KEY);
 
-          if (!brokerToken) {
-            throw new Error("No broker token configured in chrome.storage.local");
+          if (!browserToken) {
+            throw new Error("No browser token configured in chrome.storage.local");
           }
 
           const targetId =
@@ -597,7 +597,7 @@ export function createBackgroundMessageListener(
           await backgroundStorage.set(SELECTED_TARGET_STORAGE_KEY, targetId);
 
           const result = await deliverSelection(
-            brokerToken,
+            browserToken,
             targetId,
             requestMessage.selection as SelectionPayload,
             brokerRequestOptions,

@@ -13,7 +13,9 @@ import type {
 import { startBrokerServer, BrowserConnectBrokerState } from "./broker";
 import { createMemoryLogger } from "./logging";
 
-const validToken = "test-token";
+const targetToken = "target-token";
+const browserToken = "browser-token-1";
+const browserNotAuthorizedError = "Браузер не авторизован в Pi";
 
 const target: TargetMetadata = {
   targetId: "target-1",
@@ -121,13 +123,13 @@ async function closeSocket(socket: WebSocket): Promise<void> {
   await closePromise;
 }
 
-function authenticateClient(socket: WebSocket, requestId: string): void {
+function authenticateClient(socket: WebSocket, requestId: string, token = browserToken): void {
   sendEnvelope(socket, {
     version: PROTOCOL_VERSION,
     type: "client.hello",
     requestId,
     payload: {
-      token: validToken,
+      token,
     },
   });
 }
@@ -250,7 +252,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -264,7 +267,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-list-unauth",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -304,7 +307,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -319,7 +323,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-list-authenticated",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -354,7 +358,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -368,7 +373,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-list-invalid-hello",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -405,7 +410,7 @@ describe("startBrokerServer", () => {
         type: "client.error",
         requestId: "hello-invalid-list",
         payload: {
-          error: "Invalid token",
+          error: browserNotAuthorizedError,
         },
       });
       await once(clientSocket, "close");
@@ -423,7 +428,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -437,7 +443,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-2",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -448,7 +454,7 @@ describe("startBrokerServer", () => {
         type: "client.hello",
         requestId: "hello-2",
         payload: {
-          token: validToken,
+          token: browserToken,
         },
       });
       sendEnvelope(clientSocket, {
@@ -456,7 +462,7 @@ describe("startBrokerServer", () => {
         type: "client.sendSelection",
         requestId: "send-1",
         payload: {
-          token: validToken,
+          token: browserToken,
           targetId: target.targetId,
           selection: selectionPayload,
         },
@@ -502,7 +508,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -516,7 +523,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-same-socket-a",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -526,7 +533,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-same-socket-b",
         payload: {
-          token: validToken,
+          token: targetToken,
           target: otherTarget,
         },
       });
@@ -555,7 +562,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -570,7 +578,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-reconnect-a",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -581,7 +589,7 @@ describe("startBrokerServer", () => {
         type: "client.hello",
         requestId: "hello-reconnect",
         payload: {
-          token: validToken,
+          token: browserToken,
         },
       });
       sendEnvelope(clientSocket, {
@@ -589,7 +597,7 @@ describe("startBrokerServer", () => {
         type: "client.sendSelection",
         requestId: "send-reconnect",
         payload: {
-          token: validToken,
+          token: browserToken,
           targetId: target.targetId,
           selection: selectionPayload,
         },
@@ -604,7 +612,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-reconnect-b",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -634,7 +642,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -649,7 +658,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-wrong-socket-a",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -660,7 +669,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-wrong-socket-b",
         payload: {
-          token: validToken,
+          token: targetToken,
           target: otherTarget,
         },
       });
@@ -671,7 +680,7 @@ describe("startBrokerServer", () => {
         type: "client.hello",
         requestId: "hello-wrong-socket",
         payload: {
-          token: validToken,
+          token: browserToken,
         },
       });
       sendEnvelope(clientSocket, {
@@ -679,7 +688,7 @@ describe("startBrokerServer", () => {
         type: "client.sendSelection",
         requestId: "send-wrong-socket",
         payload: {
-          token: validToken,
+          token: browserToken,
           targetId: target.targetId,
           selection: selectionPayload,
         },
@@ -732,7 +741,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
       staleAfterMs: 10,
     });
@@ -747,7 +757,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-stale-cleanup",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -758,7 +768,7 @@ describe("startBrokerServer", () => {
         type: "client.hello",
         requestId: "hello-stale-cleanup",
         payload: {
-          token: validToken,
+          token: browserToken,
         },
       });
       sendEnvelope(clientSocket, {
@@ -766,7 +776,7 @@ describe("startBrokerServer", () => {
         type: "client.sendSelection",
         requestId: "send-stale-cleanup",
         payload: {
-          token: validToken,
+          token: browserToken,
           targetId: target.targetId,
           selection: selectionPayload,
         },
@@ -800,7 +810,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
       staleAfterMs: 25,
     });
@@ -815,7 +826,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-future-skew",
         payload: {
-          token: validToken,
+          token: targetToken,
           target: {
             ...target,
             lastSeenAt: Date.now() + 60_000,
@@ -844,7 +855,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
       staleAfterMs: 250,
     });
@@ -860,7 +872,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-past-skew",
         payload: {
-          token: validToken,
+          token: targetToken,
           target: {
             ...target,
             lastSeenAt: 0,
@@ -888,7 +900,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
       deliveryTimeoutMs: 50,
     });
@@ -903,7 +916,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-delivery-timeout",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -914,7 +927,7 @@ describe("startBrokerServer", () => {
         type: "client.hello",
         requestId: "hello-delivery-timeout",
         payload: {
-          token: validToken,
+          token: browserToken,
         },
       });
       sendEnvelope(clientSocket, {
@@ -922,7 +935,7 @@ describe("startBrokerServer", () => {
         type: "client.sendSelection",
         requestId: "send-delivery-timeout",
         payload: {
-          token: validToken,
+          token: browserToken,
           targetId: target.targetId,
           selection: selectionPayload,
         },
@@ -954,7 +967,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
       deliveryTimeoutMs: 50,
     });
@@ -969,7 +983,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-late-timeout",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -980,7 +994,7 @@ describe("startBrokerServer", () => {
         type: "client.hello",
         requestId: "hello-late-timeout",
         payload: {
-          token: validToken,
+          token: browserToken,
         },
       });
       sendEnvelope(clientSocket, {
@@ -988,7 +1002,7 @@ describe("startBrokerServer", () => {
         type: "client.sendSelection",
         requestId: "send-late-timeout-1",
         payload: {
-          token: validToken,
+          token: browserToken,
           targetId: target.targetId,
           selection: selectionPayload,
         },
@@ -1028,7 +1042,7 @@ describe("startBrokerServer", () => {
         type: "client.sendSelection",
         requestId: "send-late-timeout-2",
         payload: {
-          token: validToken,
+          token: browserToken,
           targetId: target.targetId,
           selection: selectionPayload,
         },
@@ -1065,7 +1079,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -1080,7 +1095,7 @@ describe("startBrokerServer", () => {
         type: "target.register",
         requestId: "register-late-client-disconnect",
         payload: {
-          token: validToken,
+          token: targetToken,
           target,
         },
       });
@@ -1091,7 +1106,7 @@ describe("startBrokerServer", () => {
         type: "client.hello",
         requestId: "hello-late-client-disconnect-1",
         payload: {
-          token: validToken,
+          token: browserToken,
         },
       });
       sendEnvelope(firstClientSocket, {
@@ -1099,7 +1114,7 @@ describe("startBrokerServer", () => {
         type: "client.sendSelection",
         requestId: "send-late-client-disconnect-1",
         payload: {
-          token: validToken,
+          token: browserToken,
           targetId: target.targetId,
           selection: selectionPayload,
         },
@@ -1132,7 +1147,7 @@ describe("startBrokerServer", () => {
         type: "client.hello",
         requestId: "hello-late-client-disconnect-2",
         payload: {
-          token: validToken,
+          token: browserToken,
         },
       });
       sendEnvelope(secondClientSocket, {
@@ -1140,7 +1155,7 @@ describe("startBrokerServer", () => {
         type: "client.sendSelection",
         requestId: "send-late-client-disconnect-2",
         payload: {
-          token: validToken,
+          token: browserToken,
           targetId: target.targetId,
           selection: selectionPayload,
         },
@@ -1184,7 +1199,8 @@ describe("startBrokerServer", () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -1208,7 +1224,7 @@ describe("startBrokerServer", () => {
         type: "client.error",
         requestId: "hello-invalid",
         payload: {
-          error: "Invalid token",
+          error: browserNotAuthorizedError,
         },
       });
       await once(invalidClientSocket, "close");
@@ -1257,7 +1273,8 @@ describe("startBrokerServer", () => {
     const firstBroker = await startBrokerServer({
       host: "127.0.0.1",
       port: 0,
-      token: validToken,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
       logger: createMemoryLogger(),
     });
 
@@ -1266,8 +1283,9 @@ describe("startBrokerServer", () => {
         startBrokerServer({
           host: "127.0.0.1",
           port: firstBroker.port,
-          token: validToken,
-          logger: createMemoryLogger(),
+          targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
         }),
       ).rejects.toThrow();
     } finally {

@@ -22,7 +22,7 @@ import {
   getTrustedBrowsersPath,
 } from "./chromeAssistentPaths";
 import { createFileLogger, type BrowserConnectLogger } from "./logging";
-import { addTrustedBrowserToken } from "./trustedBrowserStore";
+import { addTrustedBrowserToken, isTrustedBrowserToken } from "./trustedBrowserStore";
 import { toNodeError, validateDirectoryPathChain } from "./secureFilesystem";
 import {
   buildTargetMetadata,
@@ -482,7 +482,8 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
               startBroker: () => startBrokerServer({
                 host: DEFAULT_BROKER_HOST,
                 port: DEFAULT_BROKER_PORT,
-                token,
+                targetToken: token,
+                isBrowserTokenTrusted: (browserToken) => isTrustedBrowserToken(getTrustedBrowsersPath(), browserToken),
                 logger,
               }),
               setOwnedBroker: (broker) => {

@@ -36,6 +36,16 @@ export type SelectionPayload = {
   capturedAt: number;
 };
 
+export type BrowserClientHelloPayload = {
+  token: string;
+};
+
+export type BrowserClientSendSelectionPayload = {
+  token: string;
+  targetId: string;
+  selection: SelectionPayload;
+};
+
 export type TargetMetadata = {
   targetId: string;
   alias?: string;

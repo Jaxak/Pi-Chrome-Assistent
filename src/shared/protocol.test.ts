@@ -6,8 +6,11 @@ import {
   isProtocolEnvelope,
   parseProtocolEnvelope,
   validateSelectionPayload,
+  type BrowserClientHelloPayload,
+  type BrowserClientSendSelectionPayload,
   type SelectionPayload,
 } from "./protocol";
+import { BROWSER_NOT_AUTHORIZED_ERROR, BROWSER_TOKEN_STORAGE_KEY } from "./constants";
 
 const validSelection: SelectionPayload = {
   url: "https://example.com/page",
@@ -63,6 +66,29 @@ describe("protocol envelope", () => {
   it("does not import node:crypto in shared protocol source", () => {
     const source = readFileSync(new URL("./protocol.ts", import.meta.url), "utf8");
     expect(source).not.toContain('from "node:crypto"');
+  });
+});
+
+
+
+describe("browser auth protocol helpers", () => {
+  it("exposes stable browser auth constants and payload shapes", () => {
+    const helloPayload: BrowserClientHelloPayload = {
+      token: "browser-token-1",
+    };
+    const sendSelectionPayload: BrowserClientSendSelectionPayload = {
+      token: helloPayload.token,
+      targetId: "target-1",
+      selection: validSelection,
+    };
+
+    expect(BROWSER_TOKEN_STORAGE_KEY).toBe("browserToken");
+    expect(BROWSER_NOT_AUTHORIZED_ERROR).toBe("Браузер не авторизован в Pi");
+    expect(sendSelectionPayload).toMatchObject({
+      token: "browser-token-1",
+      targetId: "target-1",
+      selection: validSelection,
+    });
   });
 });
 

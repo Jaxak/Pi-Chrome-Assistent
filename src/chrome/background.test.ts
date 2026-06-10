@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StorageAdapter, DiagnosticEntry } from "./diagnostics";
 import { createBackgroundMessageListener, brokerRequest } from "./background";
-import { PROTOCOL_VERSION } from "../shared/constants";
+import { BROWSER_TOKEN_STORAGE_KEY, PROTOCOL_VERSION } from "../shared/constants";
 import type { TargetMetadata } from "../shared/protocol";
 
 class FakeStorageAdapter implements StorageAdapter {
@@ -149,7 +149,7 @@ describe("background", () => {
 
   it("lists broker targets from the background message handler after broker auth", async () => {
     const storage = new FakeStorageAdapter({
-      brokerToken: "shared-token",
+      [BROWSER_TOKEN_STORAGE_KEY]: "browser-token-1",
       selectedTargetId: "target-1",
     });
     const socket = new FakeWebSocket();
@@ -171,7 +171,7 @@ describe("background", () => {
       type: "client.hello",
       requestId: expect.any(String),
       payload: {
-        token: "shared-token",
+        token: "browser-token-1",
       },
     });
 
@@ -214,7 +214,7 @@ describe("background", () => {
 
     await expect(invokeMessageListener(listener, { type: "listTargets" })).resolves.toEqual({
       ok: false,
-      error: "No broker token configured in chrome.storage.local",
+      error: "No browser token configured in chrome.storage.local",
       targets: [],
       selectedTargetId: "target-1",
       tokenConfigured: false,
@@ -223,14 +223,14 @@ describe("background", () => {
     await expect(readDiagnostics(storage)).resolves.toEqual([
       expect.objectContaining({
         phase: "listTargets",
-        message: "No broker token configured in chrome.storage.local",
+        message: "No browser token configured in chrome.storage.local",
       }),
     ]);
   });
 
   it("uses the authenticated broker path for sendSelection", async () => {
     const storage = new FakeStorageAdapter({
-      brokerToken: "shared-token",
+      [BROWSER_TOKEN_STORAGE_KEY]: "browser-token-1",
       selectedTargetId: "target-1",
     });
     const socket = new FakeWebSocket();
@@ -261,7 +261,7 @@ describe("background", () => {
       type: "client.hello",
       requestId: expect.any(String),
       payload: {
-        token: "shared-token",
+        token: "browser-token-1",
       },
     });
 
@@ -275,7 +275,7 @@ describe("background", () => {
       type: "client.sendSelection",
       requestId: expect.any(String),
       payload: {
-        token: "shared-token",
+        token: "browser-token-1",
         targetId: "target-1",
         selection: {
           url: "https://example.com",
@@ -302,7 +302,7 @@ describe("background", () => {
 
   it("records diagnostics when sendSelection times out", async () => {
     const storage = new FakeStorageAdapter({
-      brokerToken: "shared-token",
+      [BROWSER_TOKEN_STORAGE_KEY]: "browser-token-1",
       selectedTargetId: "target-1",
     });
     const socket = new FakeWebSocket();

@@ -1,6 +1,8 @@
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_BROKER_HOST = "127.0.0.1";
 export const DEFAULT_BROKER_PORT = 17345;
+export const BROWSER_TOKEN_STORAGE_KEY = "browserToken";
+export const BROWSER_NOT_AUTHORIZED_ERROR = "Браузер не авторизован в Pi";
 export const MAX_SELECTED_TEXT_BYTES = 50 * 1024;
 export const MAX_SELECTED_HTML_BYTES = 100 * 1024;
 export const TARGET_HEARTBEAT_INTERVAL_MS = 5_000;

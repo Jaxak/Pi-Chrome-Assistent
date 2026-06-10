@@ -2,11 +2,17 @@ import { createServer } from "node:http";
 
 import WebSocket, { WebSocketServer } from "ws";
 
-import { PROTOCOL_VERSION, TARGET_STALE_AFTER_MS } from "../shared/constants";
+import {
+  BROWSER_NOT_AUTHORIZED_ERROR,
+  PROTOCOL_VERSION,
+  TARGET_STALE_AFTER_MS,
+} from "../shared/constants";
 import {
   createRequestId,
   parseProtocolEnvelope,
   validateSelectionPayload,
+  type BrowserClientHelloPayload,
+  type BrowserClientSendSelectionPayload,
   type DeliveryResult,
   type SelectionPayload,
   type TargetMetadata,
@@ -98,7 +104,8 @@ export class BrowserConnectBrokerState {
 export type StartBrokerServerOptions = {
   host: string;
   port: number;
-  token: string;
+  targetToken: string;
+  isBrowserTokenTrusted(token: string): boolean | Promise<boolean>;
   logger: BrowserConnectLogger;
   staleAfterMs?: number;
   deliveryTimeoutMs?: number;
@@ -158,6 +165,22 @@ function isValidToken(value: unknown, token: string): boolean {
   return typeof value === "string" && value === token;
 }
 
+function parseClientHelloPayload(
+  payload: BrokerMessagePayload,
+): { ok: true; token: string } | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, error: "Payload must be an object" };
+  }
+
+  const candidate = payload as Partial<BrowserClientHelloPayload>;
+
+  if (typeof candidate.token !== "string" || candidate.token.length === 0) {
+    return { ok: false, error: "Missing token" };
+  }
+
+  return { ok: true, token: candidate.token };
+}
+
 function isTargetMetadata(value: unknown): value is TargetMetadata {
   if (!value || typeof value !== "object") {
     return false;
@@ -185,17 +208,13 @@ function isTargetMetadata(value: unknown): value is TargetMetadata {
 function parseClientSendSelectionPayload(
   payload: BrokerMessagePayload,
 ):
-  | { ok: true; token: string; targetId: string; selection: SelectionPayload }
+  | ({ ok: true } & BrowserClientSendSelectionPayload)
   | { ok: false; error: string } {
   if (!payload || typeof payload !== "object") {
     return { ok: false, error: "Payload must be an object" };
   }
 
-  const candidate = payload as {
-    token?: unknown;
-    targetId?: unknown;
-    selection?: unknown;
-  };
+  const candidate = payload as Partial<BrowserClientSendSelectionPayload>;
 
   if (typeof candidate.token !== "string") {
     return { ok: false, error: "Missing token" };
@@ -229,6 +248,7 @@ export async function startBrokerServer(
   const webSocketServer = new WebSocketServer({ server });
   const sockets = new Set<WebSocket>();
   const authenticatedClientSockets = new Set<WebSocket>();
+  const authenticatingClientSockets = new Map<WebSocket, Promise<boolean>>();
   const socketToTargetId = new Map<WebSocket, string>();
   const targetIdToSocket = new Map<string, WebSocket>();
   const pendingDeliveries = new Map<string, PendingDelivery>();
@@ -393,24 +413,42 @@ export async function startBrokerServer(
 
       switch (envelope.type) {
         case "client.hello": {
-          const token = payload?.token;
+          const parsedPayload = parseClientHelloPayload(payload);
 
-          if (!isValidToken(token, options.token)) {
-            sendClientError(socket, envelope.requestId, "Invalid token");
-            socket.close();
-            return;
-          }
+          const authenticationPromise = (async () => {
+            if (!parsedPayload.ok || !await options.isBrowserTokenTrusted(parsedPayload.token)) {
+              sendClientError(socket, envelope.requestId, BROWSER_NOT_AUTHORIZED_ERROR);
+              socket.close();
+              return false;
+            }
 
-          authenticatedClientSockets.add(socket);
-          options.logger.info("broker.client.authenticated");
+            authenticatedClientSockets.add(socket);
+            options.logger.info("broker.client.authenticated");
+            return true;
+          })().finally(() => {
+            authenticatingClientSockets.delete(socket);
+          });
+
+          authenticatingClientSockets.set(socket, authenticationPromise);
+          await authenticationPromise;
           return;
         }
 
         case "client.listTargets": {
           if (!authenticatedClientSockets.has(socket)) {
-            sendClientError(socket, envelope.requestId, "Client is not authenticated");
-            socket.close();
-            return;
+            const authenticationPromise = authenticatingClientSockets.get(socket);
+
+            if (authenticationPromise) {
+              const authenticated = await authenticationPromise;
+
+              if (!authenticated || !authenticatedClientSockets.has(socket)) {
+                return;
+              }
+            } else {
+              sendClientError(socket, envelope.requestId, "Client is not authenticated");
+              socket.close();
+              return;
+            }
           }
 
           sendEnvelope(socket, {
@@ -431,8 +469,24 @@ export async function startBrokerServer(
             return;
           }
 
-          if (!isValidToken(parsedPayload.token, options.token)) {
-            sendClientError(socket, envelope.requestId, "Invalid token");
+          if (!authenticatedClientSockets.has(socket)) {
+            const authenticationPromise = authenticatingClientSockets.get(socket);
+
+            if (authenticationPromise) {
+              const authenticated = await authenticationPromise;
+
+              if (!authenticated || !authenticatedClientSockets.has(socket)) {
+                return;
+              }
+            } else {
+              sendClientError(socket, envelope.requestId, "Client is not authenticated");
+              socket.close();
+              return;
+            }
+          }
+
+          if (!await options.isBrowserTokenTrusted(parsedPayload.token)) {
+            sendClientError(socket, envelope.requestId, BROWSER_NOT_AUTHORIZED_ERROR);
             socket.close();
             return;
           }
@@ -451,7 +505,7 @@ export async function startBrokerServer(
           const token = payload?.token;
           const target = payload?.target;
 
-          if (!isValidToken(token, options.token) || !isTargetMetadata(target)) {
+          if (!isValidToken(token, options.targetToken) || !isTargetMetadata(target)) {
             socket.close();
             return;
           }
@@ -581,6 +635,7 @@ export async function startBrokerServer(
     socket.on("close", () => {
       sockets.delete(socket);
       authenticatedClientSockets.delete(socket);
+      authenticatingClientSockets.delete(socket);
 
       if (socketToTargetId.has(socket)) {
         unregisterSocketTarget(socket);

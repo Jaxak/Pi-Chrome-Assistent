@@ -468,6 +468,33 @@ describe("trustedBrowserStore", () => {
     }
   });
 
+  it("does not reclaim a very old trusted browser store lock when the live owner PID has no recorded process start time", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const trustedBrowsersLockPath = `${trustedBrowsersPath}.lock`;
+    const { addTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      writeFileSync(
+        trustedBrowsersLockPath,
+        `${JSON.stringify({
+          pid: process.pid,
+          acquiredAt: Date.now() - 86_400_000,
+        })}\n`,
+        {
+          encoding: "utf8",
+          mode: 0o600,
+        },
+      );
+
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).rejects.toThrow(/timed out waiting for trusted browser store lock/i);
+      expect(existsSync(trustedBrowsersLockPath)).toBe(true);
+      expect(existsSync(trustedBrowsersPath)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not reclaim a very old trusted browser store lock when the live owner identity still matches", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
     const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");

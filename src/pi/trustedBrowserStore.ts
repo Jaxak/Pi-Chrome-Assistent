@@ -403,8 +403,16 @@ function isTrustedBrowserStoreLockStale(
 ): boolean {
   const lockAgeMs = getTrustedBrowserStoreLockAgeMs(lockState);
 
-  if (lockState.metadata === undefined || lockState.metadata.processStartTime === undefined) {
+  if (lockState.metadata === undefined) {
     return lockAgeMs >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS;
+  }
+
+  if (lockState.metadata.processStartTime === undefined) {
+    try {
+      return !isProcessAlive(lockState.metadata.pid);
+    } catch {
+      return false;
+    }
   }
 
   try {

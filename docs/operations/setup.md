@@ -49,7 +49,29 @@ npm run build:chrome
 /reload
 ```
 
-## 5. Подключите текущую Pi-сессию к broker
+## 5. Создайте и сохраните `browserToken` в браузере
+
+Сейчас это ручной шаг MVP. Один из рабочих вариантов — DevTools service worker расширения:
+
+```js
+const browserToken = crypto.randomUUID();
+await chrome.storage.local.set({ browserToken });
+console.log(browserToken);
+```
+
+Скопируйте выведенный токен.
+
+## 6. Авторизуйте браузер в Pi
+
+Внутри Pi выполните:
+
+```text
+/chrome-assistent-auth
+```
+
+Когда Pi запросит токен, вставьте тот же `browserToken`.
+
+## 7. Подключите текущую Pi-сессию к broker
 
 Внутри Pi выполните:
 
@@ -67,18 +89,12 @@ npm run build:chrome
 
 После этого Pi-сессия:
 
-- прочитает или создаст `.pi/browser-connect.token`;
+- прочитает или создаст глобальный broker token в `~/.pi/chrome-assistent/broker.token`;
 - попробует подключиться к локальному broker на `127.0.0.1:17345`;
 - при необходимости поднимет broker сама;
 - покажет статус подключения в UI Pi.
 
-## 6. Настройте токен в браузере
-
-Это обязательный ручной шаг MVP. Без него popup увидит цели слишком поздно или сразу покажет, что отправка недоступна.
-
-Подробная инструкция: [Ручная настройка browserToken](./token-setup.md).
-
-## 7. Проверьте работу popup
+## 8. Проверьте работу popup
 
 1. Откройте popup расширения.
 2. Убедитесь, что появилась хотя бы одна цель Pi.
@@ -91,13 +107,13 @@ npm run build:chrome
 ## Полезные пути и адреса
 
 - WebSocket broker: `ws://127.0.0.1:17345`
-- Токен Pi: `.pi/browser-connect.token`
-- Логи Pi/broker: `.pi/browser-connect.log`
+- Глобальный broker token Pi: `~/.pi/chrome-assistent/broker.token`
+- Логи Pi/broker: `~/.pi/chrome-assistent/chrome-assistent.log`
 - Сборка Chrome-расширения: `dist/chrome`
 
 ## Что не делает setup автоматически
 
-- не копирует токен из Pi в `chrome.storage.local`;
+- не генерирует `browserToken` за пользователя;
 - не создаёт UI для привязки браузера к токену;
 - не возвращает ответы Pi в popup.
 

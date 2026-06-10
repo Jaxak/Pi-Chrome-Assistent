@@ -32,29 +32,9 @@ pi
 /reload
 ```
 
-## 4. Подключить текущую сессию Pi
+## 4. Сгенерировать браузерный токен
 
-Внутри Pi:
-
-```text
-/chrome-assistent-connect test
-```
-
-После этого должен появиться файл:
-
-```text
-.pi/browser-connect.token
-```
-
-## 5. Скопировать токен в Chrome
-
-Скопируйте токен:
-
-```bash
-cat .pi/browser-connect.token
-```
-
-Затем откройте DevTools у service worker расширения:
+Откройте DevTools у service worker расширения:
 
 1. Откройте `chrome://extensions`.
 2. Найдите **Pi Chrome Assistent**.
@@ -63,12 +43,32 @@ cat .pi/browser-connect.token
 В консоли DevTools выполните:
 
 ```js
-await chrome.storage.local.set({
-  browserToken: "<вставьте_сюда_токен>"
-});
+const browserToken = crypto.randomUUID();
+await chrome.storage.local.set({ browserToken });
+console.log(browserToken);
 ```
 
-## 6. Проверить отправку
+Скопируйте выведенный `browserToken`.
+
+## 5. Авторизовать браузер в Pi
+
+Внутри Pi:
+
+```text
+/chrome-assistent-auth
+```
+
+Когда Pi запросит токен, вставьте тот же `browserToken`.
+
+## 6. Подключить текущую сессию Pi
+
+Внутри Pi:
+
+```text
+/chrome-assistent-connect test
+```
+
+## 7. Проверить отправку
 
 1. Откройте любую страницу.
 2. Нажмите на иконку расширения **Pi Chrome Assistent**.
@@ -77,7 +77,7 @@ await chrome.storage.local.set({
 5. Кликните по элементу на странице.
 6. Подтвердите отправку.
 
-## 7. Где смотреть результат
+## 8. Где смотреть результат
 
 - В браузере виден статус отправки.
 - Ответ Pi нужно читать в терминале, где запущен `pi`.
@@ -88,5 +88,5 @@ await chrome.storage.local.set({
 
 - Pi всё ещё запущен;
 - команда `/chrome-assistent-connect test` была выполнена в текущей сессии;
-- токен из `.pi/browser-connect.token` сохранён в `chrome.storage.local`;
+- один и тот же `browserToken` сохранён в `chrome.storage.local` и авторизован через `/chrome-assistent-auth`;
 - расширение загружено именно из `dist/chrome`.

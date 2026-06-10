@@ -74,25 +74,25 @@ Pi-логи Browser Connect пишутся в:
 После успешного подключения Pi показывает статус вида:
 
 ```text
-browser-connect: <label> · connected · 127.0.0.1:<port>
+/chrome-assistent-connect: <label> · подключено · 127.0.0.1:<port>
 ```
 
 И уведомление:
 
 ```text
-Browser connect active: <label> · 127.0.0.1:<port>
+Подключение /chrome-assistent-connect активно: <label> · 127.0.0.1:<port>
 ```
 
 При ошибке команда сообщает:
 
 ```text
-Browser connect failed: <текст ошибки>
+Не удалось выполнить /chrome-assistent-connect: <текст ошибки>
 ```
 
 При неожиданном отключении активной цели:
 
 ```text
-Browser connect disconnected: <label> · 127.0.0.1:<port>
+Подключение /chrome-assistent-connect прервано: <label> · 127.0.0.1:<port>
 ```
 
 ## Как Pi получает выделение из браузера

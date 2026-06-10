@@ -26,7 +26,8 @@ import {
   type ConnectedTargetClient,
 } from "./targetClient";
 
-const STATUS_KEY = "browser-connect";
+const STATUS_KEY = "chrome-assistent-connect";
+const PUBLIC_COMMAND_NAME = "/chrome-assistent-connect";
 const TOKEN_FILE_PATH = join(process.cwd(), ".pi", "browser-connect.token");
 const LOG_FILE_PATH = join(process.cwd(), ".pi", "browser-connect.log");
 
@@ -198,7 +199,7 @@ export function readOrCreateSharedToken(tokenFilePath = TOKEN_FILE_PATH): string
 }
 
 function buildStatusText(label: string, port: number): string {
-  return `browser-connect: ${label} · connected · ${DEFAULT_BROKER_HOST}:${port}`;
+  return `${PUBLIC_COMMAND_NAME}: ${label} · подключено · ${DEFAULT_BROKER_HOST}:${port}`;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -244,7 +245,7 @@ export async function activateBrowserConnectConnection(options: {
   }
 
   throw new Error(
-    `Browser connect closed before activation completed: ${options.label} · ${DEFAULT_BROKER_HOST}:${options.connection.port}`,
+    `Подключение ${PUBLIC_COMMAND_NAME} закрылось до завершения активации: ${options.label} · ${DEFAULT_BROKER_HOST}:${options.connection.port}`,
   );
 }
 
@@ -280,7 +281,7 @@ export function handleUnexpectedBrowserConnectDisconnect(options: {
 
   options.ctx.ui.setStatus(STATUS_KEY, undefined);
   options.ctx.ui.notify(
-    `Browser connect disconnected: ${options.label} · ${DEFAULT_BROKER_HOST}:${options.port}`,
+    `Подключение ${PUBLIC_COMMAND_NAME} прервано: ${options.label} · ${DEFAULT_BROKER_HOST}:${options.port}`,
     "warning",
   );
   options.logger.warn("browser_connect.target.disconnected", {
@@ -530,7 +531,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
 
         const errorMessage = toErrorMessage(error);
         ctx.ui.setStatus(STATUS_KEY, undefined);
-        ctx.ui.notify(`Browser connect failed: ${errorMessage}`, "error");
+        ctx.ui.notify(`Не удалось выполнить ${PUBLIC_COMMAND_NAME}: ${errorMessage}`, "error");
         logger.error("browser_connect.command.failed", {
           error: errorMessage,
           alias,
@@ -541,13 +542,13 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       const connectedTargetConnection = activeTargetConnection;
 
       if (!connectedTargetConnection) {
-        throw new Error("Browser connect activation completed without an active connection");
+        throw new Error(`Активация ${PUBLIC_COMMAND_NAME} завершилась без активного подключения`);
       }
 
       const port = connectedTargetConnection.port;
 
       ctx.ui.setStatus(STATUS_KEY, buildStatusText(label, port));
-      ctx.ui.notify(`Browser connect active: ${label} · ${DEFAULT_BROKER_HOST}:${port}`, "info");
+      ctx.ui.notify(`Подключение ${PUBLIC_COMMAND_NAME} активно: ${label} · ${DEFAULT_BROKER_HOST}:${port}`, "info");
       logger.info("browser_connect.command.connected", {
         alias,
         port,

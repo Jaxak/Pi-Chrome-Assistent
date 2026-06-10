@@ -479,11 +479,11 @@ describe("browserConnectExtension", () => {
       expect(secondConnection.close).not.toHaveBeenCalled();
       expect(startBrokerClose).not.toHaveBeenCalled();
       expect(setStatus).toHaveBeenCalledWith(
-        "browser-connect",
-        `browser-connect: frontend · connected · ${DEFAULT_BROKER_HOST}:${secondConnection.port}`,
+        "chrome-assistent-connect",
+        `/chrome-assistent-connect: frontend · подключено · ${DEFAULT_BROKER_HOST}:${secondConnection.port}`,
       );
       expect(notify).toHaveBeenCalledWith(
-        `Browser connect active: frontend · ${DEFAULT_BROKER_HOST}:${secondConnection.port}`,
+        `Подключение /chrome-assistent-connect активно: frontend · ${DEFAULT_BROKER_HOST}:${secondConnection.port}`,
         "info",
       );
     } finally {
@@ -580,12 +580,84 @@ describe("browserConnectExtension", () => {
       });
       expect(startBrokerServer).toHaveBeenCalledOnce();
       expect(setStatus).toHaveBeenCalledWith(
-        "browser-connect",
-        `browser-connect: frontend · connected · ${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`,
+        "chrome-assistent-connect",
+        `/chrome-assistent-connect: frontend · подключено · ${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`,
       );
       expect(notify).toHaveBeenCalledWith(
-        `Browser connect active: frontend · ${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`,
+        `Подключение /chrome-assistent-connect активно: frontend · ${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`,
         "info",
+      );
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("shows renamed Russian failure copy when connection setup fails", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-command-"));
+    const originalCwd = process.cwd();
+    const startupError = new Error("не удалось запустить локальный брокер");
+    const connectTargetToBroker = vi.fn().mockRejectedValueOnce(new Error("connect ECONNREFUSED 127.0.0.1:17345"));
+    const startBrokerServer = vi.fn().mockRejectedValueOnce(startupError);
+
+    vi.doMock("./targetClient", async () => {
+      const actual = await vi.importActual<typeof import("./targetClient")>("./targetClient");
+
+      return {
+        ...actual,
+        buildTargetMetadata: vi.fn(async () => ({
+          targetId: "target-1",
+          alias: "frontend",
+          cwd: "/repo/project",
+          pid: 123,
+          connectedAt: 1,
+          lastSeenAt: 1,
+        })),
+        getTargetDisplayLabel: vi.fn(() => "frontend"),
+        connectTargetToBroker,
+      };
+    });
+    vi.doMock("./broker", () => ({
+      startBrokerServer,
+    }));
+
+    process.chdir(tempDir);
+
+    try {
+      const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
+      let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const pi = {
+        registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
+          if (name === "chrome-assistent-connect") {
+            commandHandler = options.handler;
+          }
+        }),
+        on: vi.fn(),
+        getSessionName: vi.fn(() => "session"),
+        sendUserMessage: vi.fn(),
+      } as unknown as ExtensionAPI;
+      const setStatus = vi.fn();
+      const notify = vi.fn();
+      const ctx = {
+        cwd: "/repo/project",
+        isIdle: () => true,
+        ui: {
+          setStatus,
+          notify,
+        },
+      };
+
+      browserConnectExtension(pi);
+
+      expect(commandHandler).toBeDefined();
+      await expect(commandHandler?.("frontend", ctx)).rejects.toThrow(startupError);
+
+      expect(connectTargetToBroker).toHaveBeenCalledOnce();
+      expect(startBrokerServer).toHaveBeenCalledOnce();
+      expect(setStatus).toHaveBeenCalledWith("chrome-assistent-connect", undefined);
+      expect(notify).toHaveBeenCalledWith(
+        "Не удалось выполнить /chrome-assistent-connect: не удалось запустить локальный брокер",
+        "error",
       );
     } finally {
       process.chdir(originalCwd);
@@ -716,11 +788,11 @@ describe("browserConnectExtension", () => {
       expect(secondOwnedBrokerClose).not.toHaveBeenCalled();
       expect(startBrokerServer).toHaveBeenCalledTimes(2);
       expect(setStatus).toHaveBeenLastCalledWith(
-        "browser-connect",
-        `browser-connect: frontend · connected · ${DEFAULT_BROKER_HOST}:${secondOwnedBrokerConnection.port}`,
+        "chrome-assistent-connect",
+        `/chrome-assistent-connect: frontend · подключено · ${DEFAULT_BROKER_HOST}:${secondOwnedBrokerConnection.port}`,
       );
       expect(notify).toHaveBeenLastCalledWith(
-        `Browser connect active: frontend · ${DEFAULT_BROKER_HOST}:${secondOwnedBrokerConnection.port}`,
+        `Подключение /chrome-assistent-connect активно: frontend · ${DEFAULT_BROKER_HOST}:${secondOwnedBrokerConnection.port}`,
         "info",
       );
     } finally {
@@ -756,7 +828,7 @@ describe("activateBrowserConnectConnection", () => {
       setActiveConnection,
       label: "frontend",
       logger,
-    })).rejects.toThrow(/activation completed/i);
+    })).rejects.toThrow(/завершения активации/i);
 
     expect(setActiveConnection).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();
@@ -791,9 +863,9 @@ describe("handleUnexpectedBrowserConnectDisconnect", () => {
     });
 
     expect(clearActiveConnection).toHaveBeenCalledOnce();
-    expect(setStatus).toHaveBeenCalledWith("browser-connect", undefined);
+    expect(setStatus).toHaveBeenCalledWith("chrome-assistent-connect", undefined);
     expect(notify).toHaveBeenCalledWith(
-      "Browser connect disconnected: frontend · 127.0.0.1:8765",
+      "Подключение /chrome-assistent-connect прервано: frontend · 127.0.0.1:8765",
       "warning",
     );
     expect(logger.entries).toContainEqual(
@@ -832,9 +904,9 @@ describe("handleUnexpectedBrowserConnectDisconnect", () => {
 
     expect(clearActiveConnection).toHaveBeenCalledOnce();
     expect(resetOwnedBroker).toHaveBeenCalledOnce();
-    expect(setStatus).toHaveBeenCalledWith("browser-connect", undefined);
+    expect(setStatus).toHaveBeenCalledWith("chrome-assistent-connect", undefined);
     expect(notify).toHaveBeenCalledWith(
-      "Browser connect disconnected: frontend · 127.0.0.1:8765",
+      "Подключение /chrome-assistent-connect прервано: frontend · 127.0.0.1:8765",
       "warning",
     );
   });

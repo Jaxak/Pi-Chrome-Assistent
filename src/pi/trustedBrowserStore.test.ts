@@ -60,11 +60,18 @@ function createTrustedBrowserStoreWorkerFixture(tempDir: string): {
 
 const require = createRequire(import.meta.url);
 const fs = require("node:fs");
+const path = require("node:path");
 const storePath = process.env.STORE_PATH;
-const markerPath = process.env.READ_MARKER_PATH;
+const readMarkerPath = process.env.READ_MARKER_PATH;
+const writeMarkerPath = process.env.WRITE_MARKER_PATH;
 const delayAfterReadMs = Number(process.env.DELAY_AFTER_READ_MS ?? "0");
+const delayDuringWriteMs = Number(process.env.DELAY_DURING_WRITE_MS ?? "0");
+const storeDirectoryPath = path.dirname(storePath);
+const lockPath = storePath + ".lock";
 let delayedRead = false;
+let delayedWrite = false;
 let trackedStoreFd;
+let trackedWriteFd;
 
 function sleep(milliseconds) {
   if (milliseconds <= 0) {
@@ -75,31 +82,69 @@ function sleep(milliseconds) {
 }
 
 const originalOpenSync = fs.openSync.bind(fs);
-fs.openSync = function patchedOpenSync(path, ...args) {
-  const fd = originalOpenSync(path, ...args);
+fs.openSync = function patchedOpenSync(openPath, ...args) {
+  const fd = originalOpenSync(openPath, ...args);
+  const resolvedPath = String(openPath);
+  const flags = args[0];
+  const isWritable = typeof flags === "number"
+    && (flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR)) !== 0;
 
-  if (trackedStoreFd === undefined && String(path) === storePath) {
+  if (trackedStoreFd === undefined && resolvedPath === storePath) {
     trackedStoreFd = fd;
+  }
+
+  if (
+    trackedWriteFd === undefined
+    && isWritable
+    && resolvedPath !== lockPath
+    && resolvedPath.startsWith(storeDirectoryPath + path.sep)
+  ) {
+    trackedWriteFd = fd;
   }
 
   return fd;
 };
 
 const originalReadFileSync = fs.readFileSync.bind(fs);
-fs.readFileSync = function patchedReadFileSync(path, ...args) {
-  const result = originalReadFileSync(path, ...args);
+fs.readFileSync = function patchedReadFileSync(readPath, ...args) {
+  const result = originalReadFileSync(readPath, ...args);
 
-  if (!delayedRead && path === trackedStoreFd) {
+  if (!delayedRead && readPath === trackedStoreFd) {
     delayedRead = true;
 
-    if (typeof markerPath === "string" && markerPath.length > 0) {
-      fs.writeFileSync(markerPath, "", "utf8");
+    if (typeof readMarkerPath === "string" && readMarkerPath.length > 0) {
+      fs.writeFileSync(readMarkerPath, "", "utf8");
     }
 
     sleep(delayAfterReadMs);
   }
 
   return result;
+};
+
+const originalWriteFileSync = fs.writeFileSync.bind(fs);
+fs.writeFileSync = function patchedWriteFileSync(writePath, data, ...args) {
+  if (
+    !delayedWrite
+    && delayDuringWriteMs > 0
+    && writePath === trackedWriteFd
+    && (typeof data === "string" || Buffer.isBuffer(data))
+  ) {
+    delayedWrite = true;
+
+    if (typeof writeMarkerPath === "string" && writeMarkerPath.length > 0) {
+      originalWriteFileSync(writeMarkerPath, "", "utf8");
+    }
+
+    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
+    const splitOffset = Math.max(1, Math.floor(buffer.length / 2));
+    fs.writeSync(writePath, buffer.subarray(0, splitOffset));
+    sleep(delayDuringWriteMs);
+    fs.writeSync(writePath, buffer.subarray(splitOffset));
+    return;
+  }
+
+  return originalWriteFileSync(writePath, data, ...args);
 };
 
 syncBuiltinESMExports();
@@ -134,17 +179,21 @@ async function runAddTrustedBrowserTokenInChildProcess(options: {
   trustedBrowsersPath: string;
   token: string;
   readMarkerPath?: string;
+  writeMarkerPath?: string;
   delayAfterReadMs?: number;
+  delayDuringWriteMs?: number;
 }): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [options.workerPath], {
       env: {
         ...process.env,
         DELAY_AFTER_READ_MS: String(options.delayAfterReadMs ?? 0),
+        DELAY_DURING_WRITE_MS: String(options.delayDuringWriteMs ?? 0),
         MODULE_URL: options.moduleUrl,
         READ_MARKER_PATH: options.readMarkerPath ?? "",
         STORE_PATH: options.trustedBrowsersPath,
         TOKEN: options.token,
+        WRITE_MARKER_PATH: options.writeMarkerPath ?? "",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -250,6 +299,76 @@ describe("trustedBrowserStore", () => {
       expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
         { token: "browser-token-a" },
         { token: "browser-token-b" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a stale trusted browser store lock", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const trustedBrowsersLockPath = `${trustedBrowsersPath}.lock`;
+    const { addTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      writeFileSync(
+        trustedBrowsersLockPath,
+        `${JSON.stringify({ pid: 999_999, acquiredAt: Date.now() - 120_000 })}\n`,
+        {
+          encoding: "utf8",
+          mode: 0o600,
+        },
+      );
+
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toEqual({
+        token: "browser-token",
+      });
+
+      expect(existsSync(trustedBrowsersLockPath)).toBe(false);
+      expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
+        { token: "browser-token" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps concurrent readers on well-formed JSON while add writes", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersDirectory = join(tempDir, "trusted-browsers");
+    const trustedBrowsersPath = join(trustedBrowsersDirectory, "trusted-browsers.json");
+    const writeMarkerPath = join(tempDir, "writer-partial.marker");
+    const { isTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+    const { moduleUrl, workerPath } = createTrustedBrowserStoreWorkerFixture(tempDir);
+
+    try {
+      mkdirSync(trustedBrowsersDirectory, { recursive: true, mode: 0o700 });
+      writeFileSync(trustedBrowsersPath, "[]\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+
+      const writerPromise = runAddTrustedBrowserTokenInChildProcess({
+        workerPath,
+        moduleUrl,
+        trustedBrowsersPath,
+        token: "browser-token",
+        writeMarkerPath,
+        delayDuringWriteMs: 300,
+      });
+
+      await waitForFile(writeMarkerPath);
+
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        expect(typeof await isTrustedBrowserToken(trustedBrowsersPath, "browser-token")).toBe("boolean");
+        await delay(5);
+      }
+
+      await expect(writerPromise).resolves.toBeUndefined();
+      await expect(isTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toBe(true);
+      expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
+        { token: "browser-token" },
       ]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

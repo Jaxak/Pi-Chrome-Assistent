@@ -4,10 +4,11 @@ import {
   constants as fsConstants,
   fchmodSync,
   fstatSync,
-  ftruncateSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -18,6 +19,11 @@ import { toNodeError, validateDirectoryPathChain } from "./secureFilesystem";
 
 export interface TrustedBrowserRecord {
   token: string;
+}
+
+interface TrustedBrowserStoreLockMetadata {
+  pid: number;
+  acquiredAt: number;
 }
 
 function ensureTrustedBrowsersDirectory(trustedBrowsersPath: string): void {
@@ -138,47 +144,72 @@ function readTrustedBrowserRecords(trustedBrowsersPath: string): TrustedBrowserR
   }
 }
 
-function writeTrustedBrowserRecordsToFd(fd: number, trustedBrowsersPath: string, records: TrustedBrowserRecord[]): void {
-  validateTrustedBrowserStoreFile(fd, trustedBrowsersPath);
-  ftruncateSync(fd, 0);
-  writeFileSync(fd, `${JSON.stringify(records, null, 2)}\n`, {
-    encoding: "utf8",
-  });
-  enforceTrustedBrowsersFilePermissions(fd, trustedBrowsersPath);
-}
-
-function createTrustedBrowserStoreFile(
-  trustedBrowsersPath: string,
-  records: TrustedBrowserRecord[],
-): void {
-  validateDirectoryPathChain(dirname(trustedBrowsersPath), "Trusted browser directory");
-  const fd = openTrustedBrowserStoreFile(
-    trustedBrowsersPath,
-    fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | getNoFollowFlag(),
-    0o600,
-  );
+function validateTrustedBrowserStoreTargetForWrite(trustedBrowsersPath: string): void {
+  let fd: number | undefined;
 
   try {
-    writeTrustedBrowserRecordsToFd(fd, trustedBrowsersPath, records);
+    fd = openTrustedBrowserStoreFile(
+      trustedBrowsersPath,
+      fsConstants.O_RDONLY | getNoFollowFlag(),
+    );
+    validateTrustedBrowserStoreFile(fd, trustedBrowsersPath);
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ENOENT") {
+      return;
+    }
+
+    throw error;
   } finally {
-    closeSync(fd);
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
   }
 }
 
-function updateTrustedBrowserStoreFile(
+function writeTrustedBrowserRecordsAtomically(
   trustedBrowsersPath: string,
   records: TrustedBrowserRecord[],
 ): void {
+  ensureTrustedBrowsersDirectory(trustedBrowsersPath);
   validateDirectoryPathChain(dirname(trustedBrowsersPath), "Trusted browser directory");
-  const fd = openTrustedBrowserStoreFile(
-    trustedBrowsersPath,
-    fsConstants.O_RDWR | getNoFollowFlag(),
-  );
+  validateTrustedBrowserStoreTargetForWrite(trustedBrowsersPath);
+
+  const tempPath = `${trustedBrowsersPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  const rawContent = `${JSON.stringify(records, null, 2)}\n`;
+  let tempFd: number | undefined;
 
   try {
-    writeTrustedBrowserRecordsToFd(fd, trustedBrowsersPath, records);
-  } finally {
-    closeSync(fd);
+    tempFd = openTrustedBrowserStoreFile(
+      tempPath,
+      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | getNoFollowFlag(),
+      0o600,
+    );
+    validateTrustedBrowserStoreFile(tempFd, tempPath);
+    writeFileSync(tempFd, rawContent, {
+      encoding: "utf8",
+    });
+    enforceTrustedBrowsersFilePermissions(tempFd, tempPath);
+    closeSync(tempFd);
+    tempFd = undefined;
+    renameSync(tempPath, trustedBrowsersPath);
+  } catch (error) {
+    if (tempFd !== undefined) {
+      closeSync(tempFd);
+    }
+
+    try {
+      unlinkSync(tempPath);
+    } catch (unlinkError) {
+      const unlinkNodeError = toNodeError(unlinkError);
+
+      if (unlinkNodeError.code !== "ENOENT") {
+        throw unlinkError;
+      }
+    }
+
+    throw error;
   }
 }
 
@@ -186,34 +217,142 @@ function writeTrustedBrowserRecords(
   trustedBrowsersPath: string,
   records: TrustedBrowserRecord[],
 ): void {
-  ensureTrustedBrowsersDirectory(trustedBrowsersPath);
-
-  try {
-    updateTrustedBrowserStoreFile(trustedBrowsersPath, records);
-    return;
-  } catch (error) {
-    const nodeError = toNodeError(error);
-
-    if (nodeError.code !== "ENOENT") {
-      throw error;
-    }
-  }
-
-  try {
-    createTrustedBrowserStoreFile(trustedBrowsersPath, records);
-  } catch (error) {
-    const nodeError = toNodeError(error);
-
-    if (nodeError.code !== "EEXIST") {
-      throw error;
-    }
-
-    updateTrustedBrowserStoreFile(trustedBrowsersPath, records);
-  }
+  writeTrustedBrowserRecordsAtomically(trustedBrowsersPath, records);
 }
 
 const TRUSTED_BROWSER_STORE_LOCK_RETRY_DELAY_MS = 10;
 const TRUSTED_BROWSER_STORE_LOCK_MAX_ATTEMPTS = 200;
+const TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS = 60_000;
+
+function writeTrustedBrowserStoreLockMetadata(fd: number): void {
+  validateTrustedBrowserStoreFile(fd, "trusted browser store lock");
+  writeFileSync(fd, `${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`, {
+    encoding: "utf8",
+  });
+  enforceTrustedBrowsersFilePermissions(fd, "trusted browser store lock");
+}
+
+function readTrustedBrowserStoreLockMetadata(lockPath: string): {
+  fileStats: ReturnType<typeof fstatSync>;
+  metadata?: TrustedBrowserStoreLockMetadata;
+} {
+  let fd: number | undefined;
+
+  try {
+    fd = openTrustedBrowserStoreFile(
+      lockPath,
+      fsConstants.O_RDONLY | getNoFollowFlag(),
+    );
+    validateTrustedBrowserStoreFile(fd, lockPath);
+    const fileStats = fstatSync(fd);
+    const rawContent = readFileSync(fd, "utf8").trim();
+
+    if (rawContent.length === 0) {
+      return { fileStats };
+    }
+
+    let parsedContent: unknown;
+
+    try {
+      parsedContent = JSON.parse(rawContent) as unknown;
+    } catch {
+      return { fileStats };
+    }
+
+    if (
+      typeof parsedContent !== "object"
+      || parsedContent === null
+      || typeof (parsedContent as { pid?: unknown }).pid !== "number"
+      || !Number.isInteger((parsedContent as { pid: number }).pid)
+      || (parsedContent as { pid: number }).pid <= 0
+      || typeof (parsedContent as { acquiredAt?: unknown }).acquiredAt !== "number"
+      || !Number.isFinite((parsedContent as { acquiredAt: number }).acquiredAt)
+    ) {
+      return { fileStats };
+    }
+
+    return {
+      fileStats,
+      metadata: {
+        pid: (parsedContent as { pid: number }).pid,
+        acquiredAt: (parsedContent as { acquiredAt: number }).acquiredAt,
+      },
+    };
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ESRCH") {
+      return false;
+    }
+
+    if (nodeError.code === "EPERM") {
+      return true;
+    }
+
+    throw error;
+  }
+}
+
+function tryReclaimTrustedBrowserStoreLock(lockPath: string): void {
+  let lockState: ReturnType<typeof readTrustedBrowserStoreLockMetadata>;
+
+  try {
+    lockState = readTrustedBrowserStoreLockMetadata(lockPath);
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ENOENT") {
+      return;
+    }
+
+    throw error;
+  }
+
+  const lockAgeMs = lockState.metadata === undefined
+    ? Date.now() - Number(lockState.fileStats.mtimeMs)
+    : Date.now() - lockState.metadata.acquiredAt;
+  const isStale = lockAgeMs >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS
+    || (lockState.metadata !== undefined && !isProcessAlive(lockState.metadata.pid));
+
+  if (!isStale) {
+    return;
+  }
+
+  let currentLockStats: ReturnType<typeof lstatSync>;
+
+  try {
+    currentLockStats = lstatSync(lockPath);
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ENOENT") {
+      return;
+    }
+
+    throw error;
+  }
+
+  if (
+    currentLockStats.isSymbolicLink()
+    || currentLockStats.dev !== lockState.fileStats.dev
+    || currentLockStats.ino !== lockState.fileStats.ino
+  ) {
+    return;
+  }
+
+  unlinkSync(lockPath);
+}
 
 async function acquireTrustedBrowserStoreLock(trustedBrowsersPath: string): Promise<() => void> {
   ensureTrustedBrowsersDirectory(trustedBrowsersPath);
@@ -228,6 +367,7 @@ async function acquireTrustedBrowserStoreLock(trustedBrowsersPath: string): Prom
         fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | getNoFollowFlag(),
         0o600,
       );
+      writeTrustedBrowserStoreLockMetadata(fd);
 
       return () => {
         if (fd === undefined) {
@@ -251,6 +391,16 @@ async function acquireTrustedBrowserStoreLock(trustedBrowsersPath: string): Prom
     } catch (error) {
       if (fd !== undefined) {
         closeSync(fd);
+
+        try {
+          unlinkSync(lockPath);
+        } catch (unlinkError) {
+          const unlinkNodeError = toNodeError(unlinkError);
+
+          if (unlinkNodeError.code !== "ENOENT") {
+            throw unlinkError;
+          }
+        }
       }
 
       const nodeError = toNodeError(error);
@@ -258,6 +408,8 @@ async function acquireTrustedBrowserStoreLock(trustedBrowsersPath: string): Prom
       if (nodeError.code !== "EEXIST") {
         throw error;
       }
+
+      tryReclaimTrustedBrowserStoreLock(lockPath);
     }
 
     await delay(TRUSTED_BROWSER_STORE_LOCK_RETRY_DELAY_MS);

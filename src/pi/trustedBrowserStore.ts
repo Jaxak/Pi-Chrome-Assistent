@@ -4,7 +4,6 @@ import {
   constants as fsConstants,
   fchmodSync,
   fstatSync,
-  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -224,12 +223,15 @@ const TRUSTED_BROWSER_STORE_LOCK_RETRY_DELAY_MS = 10;
 const TRUSTED_BROWSER_STORE_LOCK_MAX_ATTEMPTS = 200;
 const TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS = 60_000;
 
-function writeTrustedBrowserStoreLockMetadata(fd: number): void {
-  validateTrustedBrowserStoreFile(fd, "trusted browser store lock");
+function writeTrustedBrowserStoreLockMetadata(
+  fd: number,
+  label = "trusted browser store lock",
+): void {
+  validateTrustedBrowserStoreFile(fd, label);
   writeFileSync(fd, `${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`, {
     encoding: "utf8",
   });
-  enforceTrustedBrowsersFilePermissions(fd, "trusted browser store lock");
+  enforceTrustedBrowsersFilePermissions(fd, label);
 }
 
 function readTrustedBrowserStoreLockMetadata(lockPath: string): {
@@ -304,54 +306,140 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function tryReclaimTrustedBrowserStoreLock(lockPath: string): void {
-  let lockState: ReturnType<typeof readTrustedBrowserStoreLockMetadata>;
-
-  try {
-    lockState = readTrustedBrowserStoreLockMetadata(lockPath);
-  } catch (error) {
-    const nodeError = toNodeError(error);
-
-    if (nodeError.code === "ENOENT") {
-      return;
-    }
-
-    throw error;
-  }
-
-  const lockAgeMs = lockState.metadata === undefined
+function getTrustedBrowserStoreLockAgeMs(
+  lockState: ReturnType<typeof readTrustedBrowserStoreLockMetadata>,
+): number {
+  return lockState.metadata === undefined
     ? Date.now() - Number(lockState.fileStats.mtimeMs)
     : Date.now() - lockState.metadata.acquiredAt;
-  const isStale = lockAgeMs >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS
-    || (lockState.metadata !== undefined && !isProcessAlive(lockState.metadata.pid));
+}
 
-  if (!isStale) {
-    return;
+function isTrustedBrowserStoreLockStale(
+  lockState: ReturnType<typeof readTrustedBrowserStoreLockMetadata>,
+): boolean {
+  if (lockState.metadata === undefined) {
+    return getTrustedBrowserStoreLockAgeMs(lockState) >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS;
   }
 
-  let currentLockStats: ReturnType<typeof lstatSync>;
+  try {
+    return !isProcessAlive(lockState.metadata.pid);
+  } catch {
+    return getTrustedBrowserStoreLockAgeMs(lockState) >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS;
+  }
+}
+
+function getTrustedBrowserStoreLockQuarantinePath(lockPath: string): string {
+  return `${lockPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.stale`;
+}
+
+function tryAcquireTrustedBrowserStoreReclaimGuard(lockPath: string): (() => void) | undefined {
+  const reclaimGuardPath = `${lockPath}.reclaim`;
+  let fd: number | undefined;
 
   try {
-    currentLockStats = lstatSync(lockPath);
+    fd = openTrustedBrowserStoreFile(
+      reclaimGuardPath,
+      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | getNoFollowFlag(),
+      0o600,
+    );
+    writeTrustedBrowserStoreLockMetadata(fd, "trusted browser store reclaim guard");
+
+    return () => {
+      if (fd === undefined) {
+        return;
+      }
+
+      const acquiredFd = fd;
+      fd = undefined;
+      closeSync(acquiredFd);
+
+      try {
+        unlinkSync(reclaimGuardPath);
+      } catch (error) {
+        const nodeError = toNodeError(error);
+
+        if (nodeError.code !== "ENOENT") {
+          throw error;
+        }
+      }
+    };
   } catch (error) {
+    if (fd !== undefined) {
+      closeSync(fd);
+
+      try {
+        unlinkSync(reclaimGuardPath);
+      } catch (unlinkError) {
+        const unlinkNodeError = toNodeError(unlinkError);
+
+        if (unlinkNodeError.code !== "ENOENT") {
+          throw unlinkError;
+        }
+      }
+    }
+
     const nodeError = toNodeError(error);
 
-    if (nodeError.code === "ENOENT") {
-      return;
+    if (nodeError.code === "EEXIST") {
+      return undefined;
     }
 
     throw error;
   }
+}
 
-  if (
-    currentLockStats.isSymbolicLink()
-    || currentLockStats.dev !== lockState.fileStats.dev
-    || currentLockStats.ino !== lockState.fileStats.ino
-  ) {
+function tryReclaimTrustedBrowserStoreLock(lockPath: string): void {
+  const releaseReclaimGuard = tryAcquireTrustedBrowserStoreReclaimGuard(lockPath);
+
+  if (releaseReclaimGuard === undefined) {
     return;
   }
 
-  unlinkSync(lockPath);
+  try {
+    let lockState: ReturnType<typeof readTrustedBrowserStoreLockMetadata>;
+
+    try {
+      lockState = readTrustedBrowserStoreLockMetadata(lockPath);
+    } catch (error) {
+      const nodeError = toNodeError(error);
+
+      if (nodeError.code === "ENOENT") {
+        return;
+      }
+
+      throw error;
+    }
+
+    if (!isTrustedBrowserStoreLockStale(lockState)) {
+      return;
+    }
+
+    const quarantinePath = getTrustedBrowserStoreLockQuarantinePath(lockPath);
+
+    try {
+      renameSync(lockPath, quarantinePath);
+    } catch (error) {
+      const nodeError = toNodeError(error);
+
+      if (nodeError.code === "ENOENT") {
+        return;
+      }
+
+      throw error;
+    }
+
+    try {
+      unlinkSync(quarantinePath);
+    } catch (error) {
+      const nodeError = toNodeError(error);
+
+      if (nodeError.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  } finally {
+    releaseReclaimGuard();
+  }
 }
 
 async function acquireTrustedBrowserStoreLock(trustedBrowsersPath: string): Promise<() => void> {

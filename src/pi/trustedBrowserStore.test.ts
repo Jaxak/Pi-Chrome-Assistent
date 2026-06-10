@@ -66,10 +66,13 @@ const readMarkerPath = process.env.READ_MARKER_PATH;
 const writeMarkerPath = process.env.WRITE_MARKER_PATH;
 const delayAfterReadMs = Number(process.env.DELAY_AFTER_READ_MS ?? "0");
 const delayDuringWriteMs = Number(process.env.DELAY_DURING_WRITE_MS ?? "0");
+const reclaimMarkerPath = process.env.RECLAIM_MARKER_PATH;
+const reclaimRemoveDelayMs = Number(process.env.RECLAIM_REMOVE_DELAY_MS ?? "0");
 const storeDirectoryPath = path.dirname(storePath);
 const lockPath = storePath + ".lock";
 let delayedRead = false;
 let delayedWrite = false;
+let delayedReclaim = false;
 let trackedStoreFd;
 let trackedWriteFd;
 
@@ -147,6 +150,36 @@ fs.writeFileSync = function patchedWriteFileSync(writePath, data, ...args) {
   return originalWriteFileSync(writePath, data, ...args);
 };
 
+const originalRenameSync = fs.renameSync.bind(fs);
+fs.renameSync = function patchedRenameSync(oldPath, newPath, ...args) {
+  if (!delayedReclaim && reclaimRemoveDelayMs > 0 && oldPath === lockPath) {
+    delayedReclaim = true;
+
+    if (typeof reclaimMarkerPath === "string" && reclaimMarkerPath.length > 0) {
+      originalWriteFileSync(reclaimMarkerPath, "", "utf8");
+    }
+
+    sleep(reclaimRemoveDelayMs);
+  }
+
+  return originalRenameSync(oldPath, newPath, ...args);
+};
+
+const originalUnlinkSync = fs.unlinkSync.bind(fs);
+fs.unlinkSync = function patchedUnlinkSync(unlinkPath, ...args) {
+  if (!delayedReclaim && reclaimRemoveDelayMs > 0 && unlinkPath === lockPath) {
+    delayedReclaim = true;
+
+    if (typeof reclaimMarkerPath === "string" && reclaimMarkerPath.length > 0) {
+      originalWriteFileSync(reclaimMarkerPath, "", "utf8");
+    }
+
+    sleep(reclaimRemoveDelayMs);
+  }
+
+  return originalUnlinkSync(unlinkPath, ...args);
+};
+
 syncBuiltinESMExports();
 
 const { addTrustedBrowserToken } = await import(process.env.MODULE_URL);
@@ -182,6 +215,8 @@ async function runAddTrustedBrowserTokenInChildProcess(options: {
   writeMarkerPath?: string;
   delayAfterReadMs?: number;
   delayDuringWriteMs?: number;
+  reclaimMarkerPath?: string;
+  reclaimRemoveDelayMs?: number;
 }): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [options.workerPath], {
@@ -191,6 +226,8 @@ async function runAddTrustedBrowserTokenInChildProcess(options: {
         DELAY_DURING_WRITE_MS: String(options.delayDuringWriteMs ?? 0),
         MODULE_URL: options.moduleUrl,
         READ_MARKER_PATH: options.readMarkerPath ?? "",
+        RECLAIM_MARKER_PATH: options.reclaimMarkerPath ?? "",
+        RECLAIM_REMOVE_DELAY_MS: String(options.reclaimRemoveDelayMs ?? 0),
         STORE_PATH: options.trustedBrowsersPath,
         TOKEN: options.token,
         WRITE_MARKER_PATH: options.writeMarkerPath ?? "",
@@ -328,6 +365,88 @@ describe("trustedBrowserStore", () => {
       expect(existsSync(trustedBrowsersLockPath)).toBe(false);
       expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
         { token: "browser-token" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reclaim an old trusted browser store lock whose owner PID is still alive", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const trustedBrowsersLockPath = `${trustedBrowsersPath}.lock`;
+    const { addTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      writeFileSync(
+        trustedBrowsersLockPath,
+        `${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() - 120_000 })}\n`,
+        {
+          encoding: "utf8",
+          mode: 0o600,
+        },
+      );
+
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).rejects.toThrow(/timed out waiting for trusted browser store lock/i);
+      expect(existsSync(trustedBrowsersLockPath)).toBe(true);
+      expect(existsSync(trustedBrowsersPath)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let concurrent stale-lock reclaim attempts delete a fresh lock", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersDirectory = join(tempDir, "trusted-browsers");
+    const trustedBrowsersPath = join(trustedBrowsersDirectory, "trusted-browsers.json");
+    const trustedBrowsersLockPath = `${trustedBrowsersPath}.lock`;
+    const reclaimMarkerPath = join(tempDir, "reclaim.marker");
+    const { moduleUrl, workerPath } = createTrustedBrowserStoreWorkerFixture(tempDir);
+
+    try {
+      mkdirSync(trustedBrowsersDirectory, { recursive: true, mode: 0o700 });
+      writeFileSync(trustedBrowsersPath, "[]\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      writeFileSync(
+        trustedBrowsersLockPath,
+        `${JSON.stringify({ pid: 999_999, acquiredAt: Date.now() - 120_000 })}\n`,
+        {
+          encoding: "utf8",
+          mode: 0o600,
+        },
+      );
+
+      const firstAddPromise = runAddTrustedBrowserTokenInChildProcess({
+        workerPath,
+        moduleUrl,
+        trustedBrowsersPath,
+        token: "browser-token-a",
+        reclaimMarkerPath,
+        reclaimRemoveDelayMs: 300,
+      });
+
+      await waitForFile(reclaimMarkerPath);
+
+      await Promise.all([
+        firstAddPromise,
+        runAddTrustedBrowserTokenInChildProcess({
+          workerPath,
+          moduleUrl,
+          trustedBrowsersPath,
+          token: "browser-token-b",
+          delayAfterReadMs: 300,
+        }),
+      ]);
+
+      expect(
+        JSON.parse(readFileSync(trustedBrowsersPath, "utf8")).sort(
+          (left: { token: string }, right: { token: string }) => left.token.localeCompare(right.token),
+        ),
+      ).toEqual([
+        { token: "browser-token-a" },
+        { token: "browser-token-b" },
       ]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

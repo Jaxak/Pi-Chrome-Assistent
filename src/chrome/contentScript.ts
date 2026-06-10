@@ -1,4 +1,4 @@
-import { buildSelectionPayload, findLogicalSelectionElement } from "./domPicker";
+import { buildSelectionPayload, getSelectionCandidates } from "./domPicker";
 import {
   formatSendSelectionErrorToastMessage,
   SEND_SELECTION_SUCCESS_TOAST_MESSAGE,
@@ -57,9 +57,109 @@ function stopActivePicker(): void {
 function startDomPicker(targetId: string): void {
   stopActivePicker();
 
-  const overlay = createSelectionOverlay();
   let isActive = true;
   let modalOpen = false;
+  let currentCandidates: Element[] = [];
+  let currentIndex = 0;
+
+  const overlay = createSelectionOverlay({
+    onNarrow: () => {
+      if (!isActive || modalOpen || currentIndex <= 0) {
+        return;
+      }
+
+      currentIndex -= 1;
+      updateCurrentSelection();
+    },
+    onWiden: () => {
+      if (!isActive || modalOpen || currentIndex >= currentCandidates.length - 1) {
+        return;
+      }
+
+      currentIndex += 1;
+      updateCurrentSelection();
+    },
+    onConfirm: () => {
+      if (!isActive || modalOpen) {
+        return;
+      }
+
+      const logicalSelection = getCurrentSelection();
+
+      if (!logicalSelection) {
+        return;
+      }
+
+      modalOpen = true;
+      overlay.showCommentModal({
+        onCancel: () => {
+          cleanup();
+        },
+        onSubmit: (comment) => {
+          modalOpen = false;
+
+          void (async () => {
+            try {
+              const activeTargetId = pickerWindow[PICKER_SESSION_KEY]?.targetId;
+
+              if (!activeTargetId) {
+                throw new Error("No selected target configured for picker session");
+              }
+
+              const selection = buildSelectionPayload(logicalSelection, comment);
+              const response = (await chrome.runtime.sendMessage({
+                type: "sendSelection",
+                targetId: activeTargetId,
+                selection,
+              })) as SendSelectionResponse;
+
+              if (response?.ok) {
+                showToast(SEND_SELECTION_SUCCESS_TOAST_MESSAGE, "success");
+              } else {
+                const rawErrorMessage = response?.error ?? "Unable to send selection to Pi.";
+                showToast(formatSendSelectionErrorToastMessage(rawErrorMessage), "error");
+                await reportPickerFailure("sendSelection", rawErrorMessage);
+              }
+            } catch (error) {
+              showToast(formatSendSelectionErrorToastMessage(error), "error");
+              await reportPickerFailure("sendSelection", error);
+            } finally {
+              cleanup();
+            }
+          })();
+        },
+      });
+    },
+    onCancel: () => {
+      cleanup();
+    },
+  });
+
+  function getCurrentSelection(): Element | undefined {
+    return currentCandidates[currentIndex];
+  }
+
+  function updateCurrentSelection(): void {
+    const currentSelection = getCurrentSelection();
+
+    if (!currentSelection) {
+      overlay.setNavigationState({ canNarrow: false, canWiden: false });
+      return;
+    }
+
+    overlay.update(currentSelection);
+    overlay.setNavigationState({
+      canNarrow: currentIndex > 0,
+      canWiden: currentIndex < currentCandidates.length - 1,
+    });
+  }
+
+  function applyCandidates(hovered: Element): void {
+    const result = getSelectionCandidates(hovered);
+    currentCandidates = result.candidates.length > 0 ? result.candidates : [hovered];
+    currentIndex = Math.min(Math.max(result.recommendedIndex, 0), currentCandidates.length - 1);
+    updateCurrentSelection();
+  }
 
   const cleanup = () => {
     if (!isActive) {
@@ -69,7 +169,6 @@ function startDomPicker(targetId: string): void {
     isActive = false;
     modalOpen = false;
     document.removeEventListener("mousemove", handleMouseMove, true);
-    document.removeEventListener("click", handleClick, true);
     document.removeEventListener("keydown", handleKeyDown, true);
     overlay.cleanup();
 
@@ -91,66 +190,7 @@ function startDomPicker(targetId: string): void {
       return;
     }
 
-    overlay.update(findLogicalSelectionElement(hovered));
-  };
-
-  const handleClick = (event: MouseEvent) => {
-    if (!isActive || modalOpen) {
-      return;
-    }
-
-    const clickedElement = event.target instanceof Element ? event.target : null;
-
-    if (!clickedElement || isPickerUiElement(clickedElement)) {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-
-    const logicalSelection = findLogicalSelectionElement(clickedElement);
-    overlay.update(logicalSelection);
-    modalOpen = true;
-
-    overlay.showCommentModal({
-      onCancel: () => {
-        cleanup();
-      },
-      onSubmit: (comment) => {
-        modalOpen = false;
-
-        void (async () => {
-          try {
-            const activeTargetId = pickerWindow[PICKER_SESSION_KEY]?.targetId;
-
-            if (!activeTargetId) {
-              throw new Error("No selected target configured for picker session");
-            }
-
-            const selection = buildSelectionPayload(logicalSelection, comment);
-            const response = (await chrome.runtime.sendMessage({
-              type: "sendSelection",
-              targetId: activeTargetId,
-              selection,
-            })) as SendSelectionResponse;
-
-            if (response?.ok) {
-              showToast(SEND_SELECTION_SUCCESS_TOAST_MESSAGE, "success");
-            } else {
-              const rawErrorMessage = response?.error ?? "Unable to send selection to Pi.";
-              showToast(formatSendSelectionErrorToastMessage(rawErrorMessage), "error");
-              await reportPickerFailure("sendSelection", rawErrorMessage);
-            }
-          } catch (error) {
-            showToast(formatSendSelectionErrorToastMessage(error), "error");
-            await reportPickerFailure("sendSelection", error);
-          } finally {
-            cleanup();
-          }
-        })();
-      },
-    });
+    applyCandidates(hovered);
   };
 
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -166,7 +206,6 @@ function startDomPicker(targetId: string): void {
   };
 
   document.addEventListener("mousemove", handleMouseMove, true);
-  document.addEventListener("click", handleClick, true);
   document.addEventListener("keydown", handleKeyDown, true);
   pickerWindow[PICKER_SESSION_KEY] = {
     cleanup,

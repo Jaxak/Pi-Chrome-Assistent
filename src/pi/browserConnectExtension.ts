@@ -380,7 +380,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   };
 
   pi.registerCommand("chrome-assistent-connect", {
-    description: "Connect this Pi session to the local Chrome Assistent broker",
+    description: "Подключить текущую сессию Pi к локальному брокеру Chrome Assistent",
     handler: async (args, ctx) => {
       const alias = normalizeAlias(args);
       const token = sharedToken ?? readOrCreateSharedToken();

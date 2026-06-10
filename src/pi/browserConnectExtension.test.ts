@@ -364,7 +364,7 @@ describe("browserConnectExtension", () => {
     expect(registerCommand).toHaveBeenCalledWith(
       "chrome-assistent-connect",
       expect.objectContaining({
-        description: expect.stringContaining("Chrome Assistent"),
+        description: "Подключить текущую сессию Pi к локальному брокеру Chrome Assistent",
       }),
     );
     expect(registerCommand).not.toHaveBeenCalledWith("browser-connect", expect.anything());

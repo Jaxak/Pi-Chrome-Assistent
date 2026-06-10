@@ -1,7 +1,7 @@
 export const SEND_SELECTION_SUCCESS_TOAST_MESSAGE = "Отправлено в Pi";
 export const GENERAL_FAILURE_TOAST_PREFIX = "Не удалось отправить в Pi";
 export const MISSING_TARGET_TOAST_MESSAGE = "Выбранный терминал Pi недоступен. Выберите другой.";
-export const BROKER_UNAVAILABLE_TOAST_MESSAGE = "Pi не подключён. Выполните /browser-connect в терминале.";
+export const BROKER_UNAVAILABLE_TOAST_MESSAGE = "Pi не подключён. Выполните /chrome-assistent-connect в терминале.";
 
 const FALLBACK_GENERIC_REASON = "без подробностей";
 const USELESS_ERROR_PATTERNS = [

@@ -2,7 +2,7 @@
 
 ## Версия и транспорт
 
-Browser Connect использует JSON-сообщения поверх WebSocket.
+Chrome Assistent использует JSON-сообщения поверх WebSocket.
 
 - **transport:** `ws://127.0.0.1:17345`
 - **protocol version:** `1`
@@ -24,7 +24,7 @@ Browser Connect использует JSON-сообщения поверх WebSoc
 
 | Тип | Направление | Назначение |
 |---|---|---|
-| `client.hello` | browser → broker | Аутентифицировать клиентский socket по токену |
+| `client.hello` | browser → broker | Аутентифицировать браузерный socket по browser token |
 | `client.listTargets` | browser → broker | Получить список активных Pi-целей |
 | `client.sendSelection` | browser → broker | Отправить выделение в выбранную цель |
 | `client.targets` | broker → browser | Вернуть список целей |
@@ -35,20 +35,20 @@ Browser Connect использует JSON-сообщения поверх WebSoc
 | `target.heartbeat` | Pi → broker | Обновить liveness цели |
 | `target.unregister` | Pi → broker | Явно снять цель с регистрации |
 | `target.deliverSelection` | broker → Pi | Передать браузерное выделение конкретной цели |
-| `target.sendSelectionResult` | Pi → broker | Вернуть итог обработки конкретной доставки |
+| `target.sendSelectionResult` | Pi → broker | Вернуть итог обработки доставки |
 
-## Handshake ожидания для браузерного клиента
+## Handshake браузерного клиента
 
 ### Получение списка целей
 
-Корректная последовательность сейчас такая:
+Корректная последовательность:
 
 1. Открыть WebSocket.
 2. Отправить `client.hello` с payload:
 
 ```json
 {
-  "token": "<brokerToken>"
+  "token": "<browserToken>"
 }
 ```
 
@@ -56,15 +56,15 @@ Browser Connect использует JSON-сообщения поверх WebSoc
 4. Отправить `client.listTargets`.
 5. Получить `client.targets` с массивом `targets`.
 
-Важно: `client.listTargets` **не работает без предварительного `client.hello`**. Неаутентифицированный клиент получает `client.error` с текстом `Client is not authenticated`, после чего broker закрывает соединение.
+Если browser token неизвестен Pi, broker возвращает `client.error` с ошибкой авторизации.
 
 ### Отправка выделения
 
-Background-скрипт сейчас тоже начинает с `client.hello`, а затем отправляет `client.sendSelection` с payload вида:
+Background тоже начинает с `client.hello`, а затем отправляет `client.sendSelection` с payload вида:
 
 ```json
 {
-  "token": "<brokerToken>",
+  "token": "<browserToken>",
   "targetId": "<uuid>",
   "selection": {
     "url": "https://example.com",
@@ -95,7 +95,7 @@ Background-скрипт сейчас тоже начинает с `client.hello`
 }
 ```
 
-## Handshake ожидания для Pi-цели
+## Handshake Pi-цели
 
 Pi-сессия работает как `target` и должна:
 
@@ -104,7 +104,7 @@ Pi-сессия работает как `target` и должна:
 
 ```json
 {
-  "token": "<brokerToken>",
+  "token": "<targetToken>",
   "target": {
     "targetId": "<uuid>",
     "cwd": "/path/to/project",
@@ -120,26 +120,24 @@ Pi-сессия работает как `target` и должна:
 5. При получении `target.deliverSelection` обработать payload и ответить `target.sendSelectionResult`.
 6. По штатному завершению отправить `target.unregister`.
 
-Если broker не подтвердил регистрацию вовремя, `connectTargetToBroker(...)` считает подключение неуспешным.
+## Ответственность клиентов
 
-## Ответственность клиента
+### Браузер
 
 Браузерный клиент обязан:
 
-- знать корректный `brokerToken`;
+- знать корректный browser token;
 - отправлять `client.hello` перед `client.listTargets`;
 - передавать валидный `targetId` при отправке;
-- учитывать, что background открывает новый socket на каждый запрос;
 - обрабатывать `client.error` и таймауты.
 
-## Ответственность цели
+### Pi-цель
 
 Pi-цель обязана:
 
-- зарегистрироваться с валидным токеном;
+- зарегистрироваться с валидным target token;
 - поддерживать heartbeat;
-- возвращать `target.sendSelectionResult` на каждый `target.deliverSelection`;
-- быть готовой к вытеснению старого socket, если тот же `targetId` зарегистрирован повторно.
+- возвращать `target.sendSelectionResult` на каждый `target.deliverSelection`.
 
 ## Валидация payload выделения
 
@@ -154,16 +152,15 @@ Pi-цель обязана:
 - `capturedAt` — конечное число;
 - хотя бы одно из `selectedText` или `selectedHtml` непустое.
 
-## Ограничения и наблюдаемые особенности
+## Наблюдаемые особенности
 
 - `requestId` используется для сопоставления ответов и pending deliveries.
-- `client.sendSelection` сейчас несёт токен и в `client.hello`, и в собственном payload.
-- При неверном токене broker возвращает `client.error` с текстом `Invalid token` и закрывает socket.
+- Browser token участвует и в `client.hello`, и в payload `client.sendSelection`.
+- Target token используется только для Pi-регистрации и не предназначен для браузера.
 - Если цель не отвечает в течение `30_000 ms`, результатом будет `Delivery timed out`.
-- Если поздний ответ цели приходит уже после таймаута, broker его игнорирует по tombstone-механизму.
 
 ## Связанные документы
 
-- [Локальный broker](./broker.md)
+- [Broker](./broker.md)
 - [Pi-расширение](./pi-extension.md)
 - [Chrome-расширение](./chrome-extension.md)

@@ -356,6 +356,54 @@ describe("trustedBrowserStore", () => {
     }
   });
 
+  it("keeps duplicate auth as a true no-op when a second write would fail", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const noFollowFlag = actualFs.constants.O_NOFOLLOW ?? 0;
+    let failDuplicateWrite = false;
+
+    vi.doMock("node:fs", () => ({
+      ...actualFs,
+      openSync: vi.fn((path: Parameters<typeof actualFs.openSync>[0], flags: number | string, mode?: number) => {
+        if (
+          failDuplicateWrite
+          && typeof path === "string"
+          && path.startsWith(`${trustedBrowsersPath}.`)
+          && path.endsWith(".tmp")
+          && typeof flags === "number"
+          && (flags & actualFs.constants.O_CREAT) !== 0
+          && (flags & actualFs.constants.O_EXCL) !== 0
+          && (flags & noFollowFlag) === noFollowFlag
+        ) {
+          throw new Error("duplicate auth must not attempt a second store write");
+        }
+
+        return mode === undefined ? actualFs.openSync(path, flags) : actualFs.openSync(path, flags, mode);
+      }),
+    }));
+
+    const { addTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toEqual({
+        token: "browser-token",
+      });
+
+      failDuplicateWrite = true;
+
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toEqual({
+        token: "browser-token",
+      });
+
+      expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
+        { token: "browser-token" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("persists concurrent adds of different tokens", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
     const trustedBrowsersDirectory = join(tempDir, "trusted-browsers");

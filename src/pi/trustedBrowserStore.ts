@@ -679,7 +679,6 @@ export async function addTrustedBrowserToken(
     const existingRecord = records.find((record) => record.token === token);
 
     if (existingRecord) {
-      writeTrustedBrowserRecords(trustedBrowsersPath, records, () => lock.assertOwnership());
       return existingRecord;
     }
 

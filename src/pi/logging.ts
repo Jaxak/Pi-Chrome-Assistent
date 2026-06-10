@@ -9,7 +9,7 @@ import {
   mkdirSync,
   openSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join, parse, resolve, sep } from "node:path";
 
 export type BrowserConnectLogger = {
   info(message: string, details?: Record<string, unknown>): void;
@@ -75,7 +75,7 @@ function toNodeError(error: unknown): NodeJS.ErrnoException {
   return error instanceof Error ? error as NodeJS.ErrnoException : new Error("Unknown error");
 }
 
-function validateExistingLogDirectoryPath(logDirectoryPath: string): void {
+function validateExistingLogDirectoryPath(logDirectoryPath: string): boolean {
   let stats: ReturnType<typeof lstatSync>;
 
   try {
@@ -84,7 +84,7 @@ function validateExistingLogDirectoryPath(logDirectoryPath: string): void {
     const nodeError = toNodeError(error);
 
     if (nodeError.code === "ENOENT") {
-      return;
+      return false;
     }
 
     throw error;
@@ -97,16 +97,33 @@ function validateExistingLogDirectoryPath(logDirectoryPath: string): void {
   if (!stats.isDirectory()) {
     throw new Error(`Log directory must be a directory: ${logDirectoryPath}`);
   }
+
+  return true;
+}
+
+function validateLogDirectoryPathChain(logDirectoryPath: string): void {
+  const resolvedLogDirectoryPath = resolve(logDirectoryPath);
+  const { root } = parse(resolvedLogDirectoryPath);
+  const pathComponents = resolvedLogDirectoryPath.slice(root.length).split(sep).filter((component) => component.length > 0);
+  let currentPath = root;
+
+  for (const pathComponent of pathComponents) {
+    currentPath = join(currentPath, pathComponent);
+
+    if (!validateExistingLogDirectoryPath(currentPath)) {
+      return;
+    }
+  }
 }
 
 function ensureLogDirectoryPermissions(logFilePath: string): void {
   const logDirectoryPath = dirname(logFilePath);
-  validateExistingLogDirectoryPath(logDirectoryPath);
+  validateLogDirectoryPathChain(logDirectoryPath);
   mkdirSync(logDirectoryPath, {
     recursive: true,
     mode: 0o700,
   });
-  validateExistingLogDirectoryPath(logDirectoryPath);
+  validateLogDirectoryPathChain(logDirectoryPath);
   chmodSync(logDirectoryPath, 0o700);
 }
 
@@ -166,6 +183,7 @@ export function createFileLogger(path: string): BrowserConnectLogger {
     }
 
     try {
+      ensureLogDirectoryPermissions(path);
       appendLogEntry(path, `${JSON.stringify(entry)}\n`);
     } catch {
       isWritable = false;

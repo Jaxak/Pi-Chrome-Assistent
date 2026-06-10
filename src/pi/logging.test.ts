@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -115,5 +115,89 @@ describe("createFileLogger", () => {
     const [, flags] = openSync.mock.calls[0];
     expect(typeof flags).toBe("number");
     expect((flags as number) & (actualFs.constants.O_NOFOLLOW ?? 0x20000)).not.toBe(0);
+  });
+
+  it("rejects a symlinked runtime ancestor directory", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "chrome-assistent-logging-"));
+    const homeDir = join(tempDir, "home");
+    const realPiDir = join(tempDir, "real-pi");
+    const symlinkPiDir = join(homeDir, ".pi");
+    const redirectedLogFilePath = join(realPiDir, "chrome-assistent", "chrome-assistent.log");
+    const logFilePath = join(symlinkPiDir, "chrome-assistent", "chrome-assistent.log");
+    const { createFileLogger } = await importLoggingModule();
+
+    try {
+      mkdirSync(homeDir, { recursive: true, mode: 0o700 });
+      mkdirSync(realPiDir, { recursive: true, mode: 0o700 });
+      symlinkSync(realPiDir, symlinkPiDir);
+
+      const logger = createFileLogger(logFilePath);
+      logger.info("browser_connect.command.connected", {
+        port: 8765,
+      });
+
+      expect(existsSync(redirectedLogFilePath)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("revalidates the runtime directory before each write", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "chrome-assistent-logging-"));
+    const runtimeDir = join(tempDir, ".pi", "chrome-assistent");
+    const redirectedRuntimeDir = join(tempDir, "redirected-runtime");
+    const redirectedLogFilePath = join(redirectedRuntimeDir, "chrome-assistent.log");
+    const logFilePath = join(runtimeDir, "chrome-assistent.log");
+    const { createFileLogger } = await importLoggingModule();
+
+    try {
+      mkdirSync(redirectedRuntimeDir, { recursive: true, mode: 0o700 });
+
+      const logger = createFileLogger(logFilePath);
+      logger.info("browser_connect.command.connected", {
+        port: 8765,
+      });
+
+      expect(readFileSync(logFilePath, "utf8")).toContain("browser_connect.command.connected");
+
+      rmSync(runtimeDir, { recursive: true, force: true });
+      symlinkSync(redirectedRuntimeDir, runtimeDir);
+
+      logger.info("browser_connect.command.redirected", {
+        port: 8765,
+      });
+
+      expect(lstatSync(runtimeDir).isSymbolicLink()).toBe(true);
+      expect(existsSync(redirectedLogFilePath)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a symlinked log file", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "chrome-assistent-logging-"));
+    const runtimeDir = join(tempDir, ".pi", "chrome-assistent");
+    const redirectedLogFilePath = join(tempDir, "redirected.log");
+    const logFilePath = join(runtimeDir, "chrome-assistent.log");
+    const { createFileLogger } = await importLoggingModule();
+
+    try {
+      mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+      writeFileSync(redirectedLogFilePath, "existing entry\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      symlinkSync(redirectedLogFilePath, logFilePath);
+
+      const logger = createFileLogger(logFilePath);
+      logger.info("browser_connect.command.connected", {
+        port: 8765,
+      });
+
+      expect(lstatSync(logFilePath).isSymbolicLink()).toBe(true);
+      expect(readFileSync(redirectedLogFilePath, "utf8")).toBe("existing entry\n");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

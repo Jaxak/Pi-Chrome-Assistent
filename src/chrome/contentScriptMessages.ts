@@ -16,6 +16,7 @@ const MISSING_TARGET_ERROR_PATTERNS = [
   /target.*(not found|unavailable|missing|inactive)/i,
 ];
 const BROKER_UNAVAILABLE_ERROR_PATTERNS = [
+  /no browser token configured/i,
   /no broker token configured/i,
   /unable to connect to broker/i,
   /broker connection timed out/i,

@@ -1,13 +1,13 @@
-# Ручная настройка brokerToken
+# Ручная настройка browserToken
 
 ## Зачем это нужно
 
-В текущем MVP браузерное расширение не умеет само получать токен от Pi. Поэтому `brokerToken` нужно вручную перенести из файла Pi в `chrome.storage.local`.
+В текущем MVP браузерное расширение не умеет само получать токен от Pi. Поэтому `browserToken` нужно вручную перенести из файла Pi в `chrome.storage.local`.
 
 Без этого popup не даст начать отправку и покажет подсказку:
 
 ```text
-Для отправки настройте brokerToken в chrome.storage.local.
+Для отправки настройте browserToken в chrome.storage.local.
 ```
 
 ## Шаг 1. Создайте токен на стороне Pi
@@ -50,27 +50,27 @@ cat .pi/browser-connect.token
 
 ```js
 await chrome.storage.local.set({
-  brokerToken: "<токен из .pi/browser-connect.token>"
+  browserToken: "<токен из .pi/browser-connect.token>"
 });
 ```
 
 ## Шаг 5. Проверьте, что значение сохранилось
 
 ```js
-await chrome.storage.local.get("brokerToken")
+await chrome.storage.local.get("browserToken")
 ```
 
 Ожидаемый результат:
 
 ```js
-{ brokerToken: "<тот же токен>" }
+{ browserToken: "<тот же токен>" }
 ```
 
 ## Шаг 6. Обновите popup
 
 Закройте и снова откройте popup расширения. После этого:
 
-- сообщение про обязательный `brokerToken` должно исчезнуть;
+- сообщение про обязательный `browserToken` должно исчезнуть;
 - кнопка **Отправить в Pi** станет доступной, если есть активные цели и выбрана цель.
 
 ## Как сменить токен
@@ -79,14 +79,14 @@ await chrome.storage.local.get("brokerToken")
 
 ```js
 await chrome.storage.local.set({
-  brokerToken: "<новый токен>"
+  browserToken: "<новый токен>"
 });
 ```
 
 ## Как удалить токен
 
 ```js
-await chrome.storage.local.remove("brokerToken")
+await chrome.storage.local.remove("browserToken")
 ```
 
 После удаления popup снова будет считать отправку недоступной.

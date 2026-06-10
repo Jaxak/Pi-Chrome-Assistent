@@ -24,9 +24,9 @@ Pi Chrome Assistent — MVP-связка для Chrome-подобного бра
 4. Запустите `pi` в нужном проекте.
 5. Выполните `/reload`, если локальное расширение Pi было добавлено после запуска `pi`.
 6. Выполните `/chrome-assistent-connect [alias]` в той сессии Pi, куда хотите отправлять данные из браузера.
-7. Скопируйте общий токен из `.pi/browser-connect.token` и вручную сохраните его в `chrome.storage.local` под ключом `brokerToken`, например в DevTools сервис-воркера расширения:
+7. Скопируйте общий токен из `.pi/browser-connect.token` и вручную сохраните его в `chrome.storage.local` под ключом `browserToken`, например в DevTools сервис-воркера расширения:
    ```js
-   await chrome.storage.local.set({ brokerToken: "<токен из .pi/browser-connect.token>" });
+   await chrome.storage.local.set({ browserToken: "<токен из .pi/browser-connect.token>" });
    ```
 8. Откройте popup-окно расширения, выберите цель Pi, нажмите **Send to Pi**, затем выберите элемент на странице и при необходимости добавьте комментарий.
 
@@ -43,7 +43,7 @@ Pi Chrome Assistent — MVP-связка для Chrome-подобного бра
 
 Эксплуатация:
 - [Установка и запуск](docs/operations/setup.md)
-- [Ручная настройка brokerToken](docs/operations/token-setup.md)
+- [Ручная настройка browserToken](docs/operations/token-setup.md)
 - [Тестирование](docs/operations/testing.md)
 - [Устранение неполадок](docs/operations/troubleshooting.md)
 

@@ -36,7 +36,7 @@ npm run build:chrome
 1. Запустите `pi` в проекте.
 2. Выполните `/reload`, если расширение Pi добавлялось после старта Pi.
 3. Выполните `/chrome-assistent-connect frontend`.
-4. Скопируйте токен из `.pi/browser-connect.token` в `chrome.storage.local` как `brokerToken`.
+4. Скопируйте токен из `.pi/browser-connect.token` в `chrome.storage.local` как `browserToken`.
 5. Откройте popup расширения.
 6. Убедитесь, что цель появилась в списке.
 7. Нажмите **Send to Pi**.
@@ -49,11 +49,11 @@ npm run build:chrome
 
 ### Сценарий 2. Ранняя блокировка без токена
 
-1. Удалите `brokerToken` из `chrome.storage.local`.
+1. Удалите `browserToken` из `chrome.storage.local`.
 2. Откройте popup.
 3. Проверьте, что:
    - кнопка отправки отключена;
-   - popup показывает подсказку `Для отправки настройте brokerToken в chrome.storage.local.`;
+   - popup показывает подсказку `Для отправки настройте browserToken в chrome.storage.local.`;
    - DOM picker не стартует.
 
 ### Сценарий 3. Несколько Pi-сессий в одном проекте
@@ -81,13 +81,13 @@ npm run build:chrome
 - что при ошибке отправки показывается понятный toast;
 - что `Diagnostics` в popup отражает последние ошибки;
 - что `.pi/browser-connect.log` создаётся и пополняется;
-- что после перезагрузки extension `brokerToken` и `selectedTargetId` сохраняются в `chrome.storage.local`.
+- что после перезагрузки extension `browserToken` и `selectedTargetId` сохраняются в `chrome.storage.local`.
 
 ## Полезные артефакты при отладке
 
 - логи Pi/broker: `.pi/browser-connect.log`
 - диагностика браузера: `chrome.storage.local["diagnostics"]`
-- токен браузера: `chrome.storage.local["brokerToken"]`
+- токен браузера: `chrome.storage.local["browserToken"]`
 - текущая выбранная цель: `chrome.storage.local["selectedTargetId"]`
 
 ## Связанные документы

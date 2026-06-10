@@ -23,6 +23,9 @@ describe("contentScriptMessages", () => {
 
   it("maps broker connectivity issues to the agreed broker guidance", () => {
     expect(BROKER_UNAVAILABLE_TOAST_MESSAGE).toBe("Pi не подключён. Выполните /chrome-assistent-connect в терминале.");
+    expect(formatSendSelectionErrorToastMessage("No browser token configured in chrome.storage.local")).toBe(
+      BROKER_UNAVAILABLE_TOAST_MESSAGE,
+    );
     expect(formatSendSelectionErrorToastMessage("No broker token configured in chrome.storage.local")).toBe(
       BROKER_UNAVAILABLE_TOAST_MESSAGE,
     );

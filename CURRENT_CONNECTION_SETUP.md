@@ -64,7 +64,7 @@ cat .pi/browser-connect.token
 
 ```js
 await chrome.storage.local.set({
-  brokerToken: "<вставьте_сюда_токен>"
+  browserToken: "<вставьте_сюда_токен>"
 });
 ```
 

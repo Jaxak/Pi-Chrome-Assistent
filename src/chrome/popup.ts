@@ -28,8 +28,8 @@ type PopupElements = {
 };
 
 const SELECTED_TARGET_STORAGE_KEY = "selectedTargetId";
-const BROKER_UNAVAILABLE_GUIDANCE = "Pi не подключён. Выполните /browser-connect в терминале.";
-const NO_TARGETS_GUIDANCE = "Нет активных целей. Выполните /browser-connect в нужной сессии Pi.";
+const BROKER_UNAVAILABLE_GUIDANCE = "Pi не подключён. Выполните /chrome-assistent-connect в терминале.";
+const NO_TARGETS_GUIDANCE = "Нет активных целей. Выполните /chrome-assistent-connect в нужной сессии Pi.";
 const SELECT_TARGET_PROMPT = "Выберите цель Pi, затем нажмите «Отправить в Pi».";
 const TOKEN_REQUIRED_GUIDANCE = "Для отправки настройте brokerToken в chrome.storage.local.";
 const START_PICKER_PROMPT = "Выберите элемент на странице, чтобы отправить его в Pi.";
@@ -351,6 +351,7 @@ export async function refreshPopupState(elements = getPopupElements()): Promise<
 
       renderTargetPlaceholder(elements, BROKER_UNAVAILABLE_GUIDANCE, "warning");
       updateSendButton(elements);
+      setStatus(elements, BROKER_UNAVAILABLE_GUIDANCE);
       setBaseDiagnostics(elements, baseDiagnostics);
       return;
     }

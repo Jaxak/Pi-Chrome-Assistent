@@ -1,11 +1,11 @@
 # Pi-расширение
 
-## Что делает команда `/browser-connect`
+## Что делает команда `/chrome-assistent-connect`
 
 Pi-часть регистрирует команду:
 
 ```text
-/browser-connect [alias]
+/chrome-assistent-connect [alias]
 ```
 
 Команда подключает текущую Pi-сессию к локальному broker-контру Browser Connect и делает эту сессию доступной для выбора из popup браузерного расширения.
@@ -42,7 +42,7 @@ Pi-логи Browser Connect пишутся в:
 При подключении Pi строит объект `TargetMetadata`:
 
 - `targetId` — UUID текущей цели;
-- `alias` — пользовательский псевдоним из `/browser-connect [alias]`, если указан;
+- `alias` — пользовательский псевдоним из `/chrome-assistent-connect [alias]`, если указан;
 - `cwd` — текущий рабочий каталог сессии;
 - `gitBranch` — текущая git-ветка, если её удалось определить;
 - `pid` — PID процесса Pi;
@@ -124,7 +124,7 @@ Browser connect disconnected: <label> · 127.0.0.1:<port>
 
 Pi-расширение очищает состояние в двух случаях:
 
-- при повторном `/browser-connect` — старая target-связь закрывается перед новым подключением;
+- при повторном `/chrome-assistent-connect` — старая target-связь закрывается перед новым подключением;
 - при `session_shutdown` — закрывается target connection и, если нужно, owning broker.
 
 Если активная target-связь обрывается неожиданно, статус в Pi сбрасывается.

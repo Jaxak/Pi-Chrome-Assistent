@@ -467,6 +467,19 @@ describe("popup interactions", () => {
     expect(refs.statusText.textContent).toBe("Pi подключён · целей: 2");
   });
 
+  it("shows the renamed connect guidance when Pi is unavailable", async () => {
+    const { refs } = await setupPopup({
+      listTargetsResponse: {
+        ok: false,
+        error: "Broker unavailable",
+      },
+      diagnostics: [],
+    });
+
+    expect(refs.statusText.textContent).toContain("/chrome-assistent-connect");
+    expect(refs.diagnosticsOutput.textContent).not.toContain("/browser-connect");
+  });
+
   it("keeps popup usable when storage read fails during refresh", async () => {
     const targetOne = createTarget({ targetId: "target-1", alias: "Alpha" });
     const targetTwo = createTarget({ targetId: "target-2", alias: "Beta", cwd: "/tmp/pi-beta" });

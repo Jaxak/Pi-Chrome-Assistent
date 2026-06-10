@@ -349,6 +349,27 @@ describe("readOrCreateSharedToken", () => {
 });
 
 describe("browserConnectExtension", () => {
+  it("registers only the chrome-assistent-connect command", async () => {
+    const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
+    const registerCommand = vi.fn();
+    const pi = {
+      registerCommand,
+      on: vi.fn(),
+      getSessionName: vi.fn(() => "session"),
+      sendUserMessage: vi.fn(),
+    } as unknown as ExtensionAPI;
+
+    browserConnectExtension(pi);
+
+    expect(registerCommand).toHaveBeenCalledWith(
+      "chrome-assistent-connect",
+      expect.objectContaining({
+        description: expect.stringContaining("Chrome Assistent"),
+      }),
+    );
+    expect(registerCommand).not.toHaveBeenCalledWith("browser-connect", expect.anything());
+  });
+
   it("retries with a fresh activation state when the first attempt disconnects before activation", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-command-"));
     const originalCwd = process.cwd();
@@ -420,7 +441,7 @@ describe("browserConnectExtension", () => {
       let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
       const pi = {
         registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
-          if (name === "browser-connect") {
+          if (name === "chrome-assistent-connect") {
             commandHandler = options.handler;
           }
         }),
@@ -524,7 +545,7 @@ describe("browserConnectExtension", () => {
       let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
       const pi = {
         registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
-          if (name === "browser-connect") {
+          if (name === "chrome-assistent-connect") {
             commandHandler = options.handler;
           }
         }),
@@ -648,7 +669,7 @@ describe("browserConnectExtension", () => {
       let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
       const pi = {
         registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
-          if (name === "browser-connect") {
+          if (name === "chrome-assistent-connect") {
             commandHandler = options.handler;
           }
         }),

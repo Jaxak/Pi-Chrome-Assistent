@@ -54,15 +54,15 @@ npm run build:chrome
 Внутри Pi выполните:
 
 ```text
-/browser-connect [alias]
+/chrome-assistent-connect [alias]
 ```
 
 Примеры:
 
 ```text
-/browser-connect
-/browser-connect frontend
-/browser-connect docs
+/chrome-assistent-connect
+/chrome-assistent-connect frontend
+/chrome-assistent-connect docs
 ```
 
 После этого Pi-сессия:

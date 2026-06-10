@@ -360,100 +360,100 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
     description: "Подключить текущую сессию Pi к локальному брокеру Chrome Assistent",
     handler: async (args, ctx) => {
       const alias = normalizeAlias(args);
-      const token = sharedToken ?? readOrCreateSharedToken();
-      sharedToken = token;
-
-      await closeTargetConnection().catch((error) => {
-        logger.warn("browser_connect.target.reconnect_cleanup_failed", {
-          error: toErrorMessage(error),
-        });
-      });
-
-      await closingOwnedBroker;
-
-      const metadata = await buildTargetMetadata({
-        targetId,
-        alias,
-        cwd: ctx.cwd,
-        pid: process.pid,
-        sessionName: pi.getSessionName(),
-      });
-
-      const label = getTargetDisplayLabel(metadata);
-      const connectOptions = {
-        host: DEFAULT_BROKER_HOST,
-        port: ownedBroker?.port ?? DEFAULT_BROKER_PORT,
-        token,
-        metadata,
-        logger,
-        onDeliveredSelection: (selection: Parameters<typeof handleDeliveredSelection>[0]["selection"]) =>
-          handleDeliveredSelection({
-            selection,
-            isIdle: () => ctx.isIdle(),
-            sendUserMessage: (content, options) => pi.sendUserMessage(content, options),
-            logger,
-          }),
-      } as const;
-
       let startedBrokerForThisCommand: BrowserConnectBrokerServer | undefined;
 
-      const connectAndActivate = async (port: number) => {
-        let attemptConnectionPort = port;
-        let attemptActivationCommitted = false;
-        let attemptDisconnectedBeforeActivation = false;
-        let attemptPendingTargetConnection: ConnectedTargetClient | undefined;
-        const onDisconnect = () => {
-          attemptDisconnectedBeforeActivation = true;
+      try {
+        const token = sharedToken ?? readOrCreateSharedToken();
+        sharedToken = token;
 
-          if (!attemptActivationCommitted || !attemptPendingTargetConnection) {
-            logger.warn("browser_connect.target.disconnected_before_activation", {
+        await closeTargetConnection().catch((error) => {
+          logger.warn("browser_connect.target.reconnect_cleanup_failed", {
+            error: toErrorMessage(error),
+          });
+        });
+
+        await closingOwnedBroker;
+
+        const metadata = await buildTargetMetadata({
+          targetId,
+          alias,
+          cwd: ctx.cwd,
+          pid: process.pid,
+          sessionName: pi.getSessionName(),
+        });
+
+        const label = getTargetDisplayLabel(metadata);
+        const connectOptions = {
+          host: DEFAULT_BROKER_HOST,
+          port: ownedBroker?.port ?? DEFAULT_BROKER_PORT,
+          token,
+          metadata,
+          logger,
+          onDeliveredSelection: (selection: Parameters<typeof handleDeliveredSelection>[0]["selection"]) =>
+            handleDeliveredSelection({
+              selection,
+              isIdle: () => ctx.isIdle(),
+              sendUserMessage: (content, options) => pi.sendUserMessage(content, options),
+              logger,
+            }),
+        } as const;
+
+        const connectAndActivate = async (port: number) => {
+          let attemptConnectionPort = port;
+          let attemptActivationCommitted = false;
+          let attemptDisconnectedBeforeActivation = false;
+          let attemptPendingTargetConnection: ConnectedTargetClient | undefined;
+          const onDisconnect = () => {
+            attemptDisconnectedBeforeActivation = true;
+
+            if (!attemptActivationCommitted || !attemptPendingTargetConnection) {
+              logger.warn("browser_connect.target.disconnected_before_activation", {
+                label,
+                port: attemptConnectionPort,
+              });
+              return;
+            }
+
+            handleUnexpectedBrowserConnectDisconnect({
+              disconnectedConnection: attemptPendingTargetConnection,
+              activeTargetConnection,
+              ownedBroker,
+              clearActiveConnection: () => {
+                activeTargetConnection = undefined;
+              },
+              resetOwnedBroker: () => {
+                void closeOwnedBroker().catch((error) => {
+                  logger.warn("browser_connect.broker.disconnect_cleanup_failed", {
+                    error: toErrorMessage(error),
+                    port: attemptConnectionPort,
+                  });
+                });
+              },
+              ctx,
               label,
               port: attemptConnectionPort,
+              logger,
             });
-            return;
-          }
+          };
 
-          handleUnexpectedBrowserConnectDisconnect({
-            disconnectedConnection: attemptPendingTargetConnection,
-            activeTargetConnection,
-            ownedBroker,
-            clearActiveConnection: () => {
-              activeTargetConnection = undefined;
+          attemptPendingTargetConnection = await connectTargetToBroker({
+            ...connectOptions,
+            port,
+            onDisconnect,
+          });
+          attemptConnectionPort = attemptPendingTargetConnection.port;
+          await activateBrowserConnectConnection({
+            connection: attemptPendingTargetConnection,
+            disconnectedBeforeActivation: attemptDisconnectedBeforeActivation,
+            setActiveConnection: (connection) => {
+              activeTargetConnection = connection;
+              attemptActivationCommitted = true;
             },
-            resetOwnedBroker: () => {
-              void closeOwnedBroker().catch((error) => {
-                logger.warn("browser_connect.broker.disconnect_cleanup_failed", {
-                  error: toErrorMessage(error),
-                  port: attemptConnectionPort,
-                });
-              });
-            },
-            ctx,
             label,
-            port: attemptConnectionPort,
             logger,
           });
         };
 
-        attemptPendingTargetConnection = await connectTargetToBroker({
-          ...connectOptions,
-          port,
-          onDisconnect,
-        });
-        attemptConnectionPort = attemptPendingTargetConnection.port;
-        await activateBrowserConnectConnection({
-          connection: attemptPendingTargetConnection,
-          disconnectedBeforeActivation: attemptDisconnectedBeforeActivation,
-          setActiveConnection: (connection) => {
-            activeTargetConnection = connection;
-            attemptActivationCommitted = true;
-          },
-          label,
-          logger,
-        });
-      };
-
-      try {
         try {
           await connectAndActivate(connectOptions.port);
         } catch (connectError) {
@@ -500,6 +500,23 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
 
           await connectAndActivate(ownedBroker?.port ?? DEFAULT_BROKER_PORT);
         }
+
+        const connectedTargetConnection = activeTargetConnection;
+
+        if (!connectedTargetConnection) {
+          throw new Error(`Активация ${PUBLIC_COMMAND_NAME} завершилась без активного подключения`);
+        }
+
+        const port = connectedTargetConnection.port;
+
+        ctx.ui.setStatus(STATUS_KEY, buildStatusText(label, port));
+        ctx.ui.notify(`Подключение ${PUBLIC_COMMAND_NAME} активно: ${label} · ${DEFAULT_BROKER_HOST}:${port}`, "info");
+        logger.info("browser_connect.command.connected", {
+          alias,
+          port,
+          targetId,
+          ownsBroker: ownedBroker !== undefined,
+        });
       } catch (error) {
         if (startedBrokerForThisCommand) {
           await closeOwnedBroker().catch(() => undefined);
@@ -514,23 +531,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
         });
         throw error;
       }
-
-      const connectedTargetConnection = activeTargetConnection;
-
-      if (!connectedTargetConnection) {
-        throw new Error(`Активация ${PUBLIC_COMMAND_NAME} завершилась без активного подключения`);
-      }
-
-      const port = connectedTargetConnection.port;
-
-      ctx.ui.setStatus(STATUS_KEY, buildStatusText(label, port));
-      ctx.ui.notify(`Подключение ${PUBLIC_COMMAND_NAME} активно: ${label} · ${DEFAULT_BROKER_HOST}:${port}`, "info");
-      logger.info("browser_connect.command.connected", {
-        alias,
-        port,
-        targetId,
-        ownsBroker: ownedBroker !== undefined,
-      });
     },
   });
 

@@ -777,6 +777,74 @@ describe("browserConnectExtension", () => {
     }
   });
 
+  it("surfaces token initialization failures through the normal command error path", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-home-"));
+    const tempHome = join(tempDir, "home");
+    const realPiDir = join(tempDir, "real-pi");
+    const originalHome = process.env.HOME;
+    const createFileLogger = vi.fn(() => createMemoryLogger());
+
+    vi.doMock("./logging", async () => {
+      const actual = await vi.importActual<typeof import("./logging")>("./logging");
+
+      return {
+        ...actual,
+        createFileLogger,
+      };
+    });
+
+    process.env.HOME = tempHome;
+
+    try {
+      mkdirSync(tempHome, { recursive: true, mode: 0o700 });
+      mkdirSync(realPiDir, { recursive: true, mode: 0o700 });
+      symlinkSync(realPiDir, join(tempHome, ".pi"));
+
+      const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
+      let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const pi = {
+        registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
+          if (name === "chrome-assistent-connect") {
+            commandHandler = options.handler;
+          }
+        }),
+        on: vi.fn(),
+        getSessionName: vi.fn(() => "session"),
+        sendUserMessage: vi.fn(),
+      } as unknown as ExtensionAPI;
+      const setStatus = vi.fn();
+      const notify = vi.fn();
+      const ctx = {
+        cwd: "/repo/project",
+        isIdle: () => true,
+        ui: {
+          setStatus,
+          notify,
+        },
+      };
+
+      browserConnectExtension(pi);
+
+      expect(commandHandler).toBeDefined();
+      await expect(commandHandler?.("frontend", ctx)).rejects.toThrow(/token directory.*symlink/i);
+
+      expect(createFileLogger).toHaveBeenCalledOnce();
+      expect(setStatus).toHaveBeenCalledWith("chrome-assistent-connect", undefined);
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringMatching(/не удалось выполнить \/chrome-assistent-connect: .*token directory.*symlink/i),
+        "error",
+      );
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("preserves owned-broker recovery by closing and replacing a failed owned broker", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-command-"));
     const originalCwd = process.cwd();

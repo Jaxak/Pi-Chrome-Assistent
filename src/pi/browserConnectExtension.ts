@@ -19,8 +19,10 @@ import { startBrokerServer, type BrowserConnectBrokerServer } from "./broker";
 import {
   getChromeAssistentLogPath,
   getGlobalBrokerTokenPath,
+  getTrustedBrowsersPath,
 } from "./chromeAssistentPaths";
 import { createFileLogger, type BrowserConnectLogger } from "./logging";
+import { addTrustedBrowserToken } from "./trustedBrowserStore";
 import { toNodeError, validateDirectoryPathChain } from "./secureFilesystem";
 import {
   buildTargetMetadata,
@@ -531,6 +533,24 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
         });
         throw error;
       }
+    },
+  });
+
+  pi.registerCommand("chrome-assistent-auth", {
+    description: "Добавить токен доверенного браузера Chrome Assistent",
+    handler: async (_args, ctx) => {
+      const token = await ctx.ui.input(
+        "Токен браузера",
+        "Вставьте токен из вкладки «Авторизация»",
+      );
+
+      if (!token?.trim()) {
+        ctx.ui.notify("Токен браузера не указан", "warning");
+        return;
+      }
+
+      await addTrustedBrowserToken(getTrustedBrowsersPath(), token.trim());
+      ctx.ui.notify("Токен браузера сохранён", "info");
     },
   });
 

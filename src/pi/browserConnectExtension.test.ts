@@ -11,6 +11,7 @@ import { DEFAULT_BROKER_HOST, DEFAULT_BROKER_PORT } from "../shared/constants";
 import {
   getChromeAssistentLogPath,
   getGlobalBrokerTokenPath,
+  getTrustedBrowsersPath,
 } from "./chromeAssistentPaths";
 import { createMemoryLogger } from "./logging";
 import type { ConnectedTargetClient } from "./targetClient";
@@ -461,7 +462,7 @@ describe("browserConnectExtension", () => {
     }
   });
 
-  it("registers only the chrome-assistent-connect command", async () => {
+  it("registers chrome-assistent-connect and chrome-assistent-auth commands", async () => {
     const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
     const registerCommand = vi.fn();
     const pi = {
@@ -479,7 +480,116 @@ describe("browserConnectExtension", () => {
         description: "Подключить текущую сессию Pi к локальному брокеру Chrome Assistent",
       }),
     );
+    expect(registerCommand).toHaveBeenCalledWith(
+      "chrome-assistent-auth",
+      expect.objectContaining({
+        description: "Добавить токен доверенного браузера Chrome Assistent",
+      }),
+    );
     expect(registerCommand).not.toHaveBeenCalledWith("browser-connect", expect.anything());
+  });
+
+  it("prompts for a browser token when chrome-assistent-auth runs", async () => {
+    const tempHome = mkdtempSync(join(tmpdir(), "browser-connect-home-"));
+    const originalHome = process.env.HOME;
+
+    process.env.HOME = tempHome;
+
+    try {
+      const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
+      let authHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const pi = {
+        registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
+          if (name === "chrome-assistent-auth") {
+            authHandler = options.handler;
+          }
+        }),
+        on: vi.fn(),
+        getSessionName: vi.fn(() => "session"),
+        sendUserMessage: vi.fn(),
+      } as unknown as ExtensionAPI;
+      const input = vi.fn(async () => undefined);
+      const notify = vi.fn();
+      const ctx = {
+        ui: {
+          input,
+          notify,
+        },
+      };
+
+      browserConnectExtension(pi);
+
+      expect(authHandler).toBeDefined();
+      await expect(authHandler?.("", ctx)).resolves.toBeUndefined();
+
+      expect(input).toHaveBeenCalledWith(
+        "Токен браузера",
+        "Вставьте токен из вкладки «Авторизация»",
+      );
+      expect(notify).toHaveBeenCalledWith("Токен браузера не указан", "warning");
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it("stores the browser token and keeps duplicate auth idempotent", async () => {
+    const tempHome = mkdtempSync(join(tmpdir(), "browser-connect-home-"));
+    const originalHome = process.env.HOME;
+
+    process.env.HOME = tempHome;
+
+    try {
+      const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
+      let authHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const pi = {
+        registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
+          if (name === "chrome-assistent-auth") {
+            authHandler = options.handler;
+          }
+        }),
+        on: vi.fn(),
+        getSessionName: vi.fn(() => "session"),
+        sendUserMessage: vi.fn(),
+      } as unknown as ExtensionAPI;
+      const input = vi.fn()
+        .mockResolvedValueOnce("  browser-token  ")
+        .mockResolvedValueOnce("browser-token");
+      const notify = vi.fn();
+      const ctx = {
+        ui: {
+          input,
+          notify,
+        },
+      };
+
+      browserConnectExtension(pi);
+
+      expect(authHandler).toBeDefined();
+      await expect(authHandler?.("", ctx)).resolves.toBeUndefined();
+      await expect(authHandler?.("", ctx)).resolves.toBeUndefined();
+
+      expect(notify).toHaveBeenNthCalledWith(1, "Токен браузера сохранён", "info");
+      expect(notify).toHaveBeenNthCalledWith(2, "Токен браузера сохранён", "info");
+      const trustedBrowsersPath = getTrustedBrowsersPath(tempHome);
+      expect(statSync(trustedBrowsersPath).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(fs.readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
+        { token: "browser-token" },
+      ]);
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      rmSync(tempHome, { recursive: true, force: true });
+    }
   });
 
   it("retries with a fresh activation state when the first attempt disconnects before activation", async () => {

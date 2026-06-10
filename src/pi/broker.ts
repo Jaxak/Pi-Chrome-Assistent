@@ -248,6 +248,7 @@ export async function startBrokerServer(
   const webSocketServer = new WebSocketServer({ server });
   const sockets = new Set<WebSocket>();
   const authenticatedClientSockets = new Set<WebSocket>();
+  const authenticatedBrowserTokens = new Map<WebSocket, string>();
   const authenticatingClientSockets = new Map<WebSocket, Promise<boolean>>();
   const socketToTargetId = new Map<WebSocket, string>();
   const targetIdToSocket = new Map<string, WebSocket>();
@@ -434,6 +435,7 @@ export async function startBrokerServer(
             }
 
             authenticatedClientSockets.add(socket);
+            authenticatedBrowserTokens.set(socket, parsedPayload.token);
             options.logger.info("broker.client.authenticated");
             return true;
           })().finally(() => {
@@ -496,7 +498,9 @@ export async function startBrokerServer(
             }
           }
 
-          if (!await verifyBrowserToken(parsedPayload.token)) {
+          const authenticatedBrowserToken = authenticatedBrowserTokens.get(socket);
+
+          if (!authenticatedBrowserToken || parsedPayload.token !== authenticatedBrowserToken) {
             sendClientError(socket, envelope.requestId, BROWSER_NOT_AUTHORIZED_ERROR);
             socket.close();
             return;
@@ -646,6 +650,7 @@ export async function startBrokerServer(
     socket.on("close", () => {
       sockets.delete(socket);
       authenticatedClientSockets.delete(socket);
+      authenticatedBrowserTokens.delete(socket);
       authenticatingClientSockets.delete(socket);
 
       if (socketToTargetId.has(socket)) {

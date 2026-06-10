@@ -465,8 +465,7 @@ describe("startBrokerServer", () => {
     }
   });
 
-  it("fails closed when browser trust check throws during client.sendSelection", async () => {
-    const logger = createMemoryLogger();
+  it("reuses the authenticated browser token for client.sendSelection without a second trust lookup", async () => {
     let callCount = 0;
     const broker = await startBrokerServer({
       host: "127.0.0.1",
@@ -480,7 +479,7 @@ describe("startBrokerServer", () => {
 
         throw new Error("trusted browser store unavailable");
       },
-      logger,
+      logger: createMemoryLogger(),
     });
 
     const targetSocket = createSocket(broker.port);
@@ -491,7 +490,7 @@ describe("startBrokerServer", () => {
       sendEnvelope(targetSocket, {
         version: PROTOCOL_VERSION,
         type: "target.register",
-        requestId: "register-trust-throws-send-selection",
+        requestId: "register-send-selection-authenticated-socket",
         payload: {
           token: targetToken,
           target,
@@ -501,17 +500,17 @@ describe("startBrokerServer", () => {
       await expect(waitForProtocolMessage(targetSocket, "target.registered")).resolves.toEqual({
         version: PROTOCOL_VERSION,
         type: "target.registered",
-        requestId: "register-trust-throws-send-selection",
+        requestId: "register-send-selection-authenticated-socket",
       });
 
       await waitForOpen(clientSocket);
-      authenticateClient(clientSocket, "hello-trust-throws-send-selection");
-      await listTargets(clientSocket, "list-trust-throws-send-selection");
+      authenticateClient(clientSocket, "hello-send-selection-authenticated-socket");
+      await listTargets(clientSocket, "list-send-selection-authenticated-socket");
 
       sendEnvelope(clientSocket, {
         version: PROTOCOL_VERSION,
         type: "client.sendSelection",
-        requestId: "send-trust-throws-send-selection",
+        requestId: "send-selection-authenticated-socket",
         payload: {
           token: browserToken,
           targetId: target.targetId,
@@ -519,24 +518,29 @@ describe("startBrokerServer", () => {
         },
       });
 
-      await expect(waitForProtocolMessage<{ error: string }>(clientSocket, "client.error")).resolves.toEqual({
+      const deliverMessage = await waitForProtocolMessage<{ selection: SelectionPayload }>(
+        targetSocket,
+        "target.deliverSelection",
+      );
+      expect(callCount).toBe(1);
+
+      sendEnvelope(targetSocket, {
         version: PROTOCOL_VERSION,
-        type: "client.error",
-        requestId: "send-trust-throws-send-selection",
+        type: "target.sendSelectionResult",
+        requestId: deliverMessage.requestId,
         payload: {
-          error: browserNotAuthorizedError,
+          ok: true,
         },
       });
-      await once(clientSocket, "close");
-      expect(logger.entries).toContainEqual(
-        expect.objectContaining({
-          level: "warn",
-          message: "broker.client.browser_token_check_failed",
-          details: expect.objectContaining({
-            error: "trusted browser store unavailable",
-          }),
-        }),
-      );
+
+      await expect(waitForProtocolMessage<DeliveryResult>(clientSocket, "client.sendResult")).resolves.toEqual({
+        version: PROTOCOL_VERSION,
+        type: "client.sendResult",
+        requestId: "send-selection-authenticated-socket",
+        payload: {
+          ok: true,
+        },
+      });
     } finally {
       await Promise.allSettled([
         closeSocket(clientSocket),

@@ -465,6 +465,69 @@ describe("startBrokerServer", () => {
     }
   });
 
+  it("does not mark a socket as authenticated if it closes before async browser auth resolves", async () => {
+    const logger = createMemoryLogger();
+    let resolveTrustCheck!: (value: boolean) => void;
+    const trustCheckPromise = new Promise<boolean>((resolve) => {
+      resolveTrustCheck = resolve;
+    });
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async () => trustCheckPromise,
+      logger,
+    });
+
+    const clientSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(clientSocket);
+      authenticateClient(clientSocket, "hello-delayed-auth-close");
+      await closeSocket(clientSocket);
+      resolveTrustCheck(true);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      expect(logger.entries).not.toContainEqual(
+        expect.objectContaining({
+          message: "broker.client.authenticated",
+        }),
+      );
+    } finally {
+      await broker.close();
+    }
+  });
+
+  it("rejects overlapping client.hello requests on the same socket", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async () => true,
+      logger: createMemoryLogger(),
+    });
+
+    const clientSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(clientSocket);
+      authenticateClient(clientSocket, "hello-first");
+      authenticateClient(clientSocket, "hello-second");
+
+      await expect(waitForProtocolMessage<{ error: string }>(clientSocket, "client.error")).resolves.toEqual({
+        version: PROTOCOL_VERSION,
+        type: "client.error",
+        requestId: "hello-second",
+        payload: {
+          error: "Client authentication is already in progress",
+        },
+      });
+      await once(clientSocket, "close");
+    } finally {
+      await Promise.allSettled([closeSocket(clientSocket), broker.close()]);
+    }
+  });
+
   it("reuses the authenticated browser token for client.sendSelection without a second trust lookup", async () => {
     let callCount = 0;
     const broker = await startBrokerServer({

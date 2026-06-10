@@ -425,12 +425,23 @@ export async function startBrokerServer(
 
       switch (envelope.type) {
         case "client.hello": {
-          const parsedPayload = parseClientHelloPayload(payload);
+          if (authenticatedClientSockets.has(socket) || authenticatingClientSockets.has(socket)) {
+            sendClientError(socket, envelope.requestId, "Client authentication is already in progress");
+            socket.close();
+            return;
+          }
 
-          const authenticationPromise = (async () => {
+          const parsedPayload = parseClientHelloPayload(payload);
+          let authenticationPromise!: Promise<boolean>;
+
+          authenticationPromise = (async () => {
             if (!parsedPayload.ok || !await verifyBrowserToken(parsedPayload.token)) {
               sendClientError(socket, envelope.requestId, BROWSER_NOT_AUTHORIZED_ERROR);
               socket.close();
+              return false;
+            }
+
+            if (socket.readyState !== WebSocket.OPEN || authenticatingClientSockets.get(socket) !== authenticationPromise) {
               return false;
             }
 
@@ -439,7 +450,9 @@ export async function startBrokerServer(
             options.logger.info("broker.client.authenticated");
             return true;
           })().finally(() => {
-            authenticatingClientSockets.delete(socket);
+            if (authenticatingClientSockets.get(socket) === authenticationPromise) {
+              authenticatingClientSockets.delete(socket);
+            }
           });
 
           authenticatingClientSockets.set(socket, authenticationPromise);

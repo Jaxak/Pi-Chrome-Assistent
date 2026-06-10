@@ -1127,6 +1127,15 @@ describe("popup css", () => {
 
     expect(popupCss).toContain("min-width: 420px");
   });
+
+  it("keeps tab hover states separate from action button hover styles", () => {
+    const popupCss = readFileSync(new URL("./popup.css", import.meta.url), "utf8");
+
+    expect(popupCss).toContain("button:not(.tab-button):not(:disabled):hover");
+    expect(popupCss).toContain(".tab-button:not(:disabled):hover");
+    expect(popupCss).toContain(".tab-button--active:not(:disabled):hover");
+    expect(popupCss).not.toMatch(/(^|\n)button:not\(:disabled\):hover\s*\{/);
+  });
 });
 
 describe("popup russian ui copy", () => {

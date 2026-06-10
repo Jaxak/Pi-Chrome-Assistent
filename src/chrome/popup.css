@@ -252,8 +252,19 @@ button.button-compact {
   padding: 8px 10px;
 }
 
-button:not(:disabled):hover {
+button:not(.tab-button):not(:disabled):hover {
   background: var(--accent-strong);
+}
+
+.tab-button:not(:disabled):hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.tab-button--active:not(:disabled):hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 button.button-secondary:not(:disabled):hover {

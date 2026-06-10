@@ -39,6 +39,7 @@ class FakeElement {
 
   className = "";
   disabled = false;
+  hidden = false;
   id = "";
   title = "";
   type = "";
@@ -129,11 +130,22 @@ class FakeDocument {
 }
 
 type PopupRefs = {
+  assistantTabButton: FakeElement;
+  sessionsTabButton: FakeElement;
+  authorizationTabButton: FakeElement;
+  assistantPanel: FakeElement;
+  sessionsPanel: FakeElement;
+  authorizationPanel: FakeElement;
   statusText: FakeElement;
   sendButton: FakeElement;
   diagnosticsButton: FakeElement;
   diagnosticsOutput: FakeElement;
   targetContainer: FakeElement;
+  authStatusText: FakeElement;
+  browserTokenOutput: FakeElement;
+  copyBrowserTokenButton: FakeElement;
+  regenerateBrowserTokenButton: FakeElement;
+  clearBrowserTokenButton: FakeElement;
 };
 
 type PopupSetupOptions = {
@@ -145,6 +157,24 @@ type PopupSetupOptions = {
     selectedTargetId?: string;
     tokenConfigured?: boolean;
   };
+  browserAuthStateResponse?: {
+    ok?: boolean;
+    error?: string;
+    browserToken?: string;
+    tokenConfigured?: boolean;
+  };
+  regenerateBrowserTokenResponses?: Array<{
+    ok?: boolean;
+    error?: string;
+    browserToken?: string;
+    tokenConfigured?: boolean;
+  }>;
+  clearBrowserTokenResponses?: Array<{
+    ok?: boolean;
+    error?: string;
+    browserToken?: string;
+    tokenConfigured?: boolean;
+  }>;
   runtimeSendMessage?: (message: { type: string; targetId?: string }) => unknown;
   startDomPickerResponses?: Array<{ ok?: boolean; error?: string }>;
   storedSelectedTargetId?: string;
@@ -183,15 +213,30 @@ function createTarget(overrides: Partial<TargetMetadata> = {}): TargetMetadata {
 function createPopupDom(): { document: FakeDocument; refs: PopupRefs } {
   const document = new FakeDocument();
   const refs: PopupRefs = {
+    assistantTabButton: document.register("tab-assistant", "button", "Асистент"),
+    sessionsTabButton: document.register("tab-sessions", "button", "Сессии"),
+    authorizationTabButton: document.register("tab-auth", "button", "Авторизация"),
+    assistantPanel: document.register("panel-assistant", "section"),
+    sessionsPanel: document.register("panel-sessions", "section"),
+    authorizationPanel: document.register("panel-auth", "section"),
     statusText: document.register("status-text", "span", "Ожидание"),
     sendButton: document.register("send-button", "button", "Отправить в Pi"),
     diagnosticsButton: document.register("diagnostics-button", "button", "Диагностика"),
     diagnosticsOutput: document.register("diagnostics-output", "pre", "Диагностика ещё не запускалась."),
     targetContainer: document.register("target-container", "div", "Цели появятся здесь."),
+    authStatusText: document.register("auth-status-text", "p", "Откройте вкладку «Авторизация», чтобы получить токен браузера."),
+    browserTokenOutput: document.register("browser-token-output", "code", "Токен ещё не загружен."),
+    copyBrowserTokenButton: document.register("copy-browser-token-button", "button", "Скопировать токен"),
+    regenerateBrowserTokenButton: document.register("regenerate-browser-token-button", "button", "Сгенерировать новый токен"),
+    clearBrowserTokenButton: document.register("clear-browser-token-button", "button", "Удалить токен"),
   };
 
   refs.sendButton.disabled = true;
   refs.sendButton.setAttribute("aria-disabled", "true");
+  refs.copyBrowserTokenButton.disabled = true;
+  refs.clearBrowserTokenButton.disabled = true;
+  refs.sessionsPanel.hidden = true;
+  refs.authorizationPanel.hidden = true;
 
   return { document, refs };
 }
@@ -201,6 +246,8 @@ function createChromeMock(options: PopupSetupOptions) {
   const storageSetCalls: Array<Record<string, unknown>> = [];
   const storedValues = new Map<string, unknown>();
   const startDomPickerResponses = [...(options.startDomPickerResponses ?? [])];
+  const regenerateBrowserTokenResponses = [...(options.regenerateBrowserTokenResponses ?? [])];
+  const clearBrowserTokenResponses = [...(options.clearBrowserTokenResponses ?? [])];
 
   if (options.storedSelectedTargetId) {
     storedValues.set("selectedTargetId", options.storedSelectedTargetId);
@@ -220,6 +267,20 @@ function createChromeMock(options: PopupSetupOptions) {
             return options.listTargetsResponse ?? { ok: true, targets: [] };
           case "getDiagnostics":
             return { ok: true, diagnostics: options.diagnostics ?? [] };
+          case "getBrowserAuthState":
+            return options.browserAuthStateResponse ?? {
+              ok: true,
+              browserToken: "11111111-1111-4111-8111-111111111111",
+              tokenConfigured: true,
+            };
+          case "regenerateBrowserToken":
+            return regenerateBrowserTokenResponses.shift() ?? {
+              ok: true,
+              browserToken: "22222222-2222-4222-8222-222222222222",
+              tokenConfigured: true,
+            };
+          case "clearBrowserToken":
+            return clearBrowserTokenResponses.shift() ?? { ok: true, tokenConfigured: false };
           case "startDomPicker":
             return startDomPickerResponses.shift() ?? { ok: true };
           default:
@@ -465,6 +526,122 @@ describe("popup interactions", () => {
     expect(refs.targetContainer.children[0]?.textContent).toContain("Alpha");
     expect(refs.targetContainer.children[1]?.textContent).toContain("Beta");
     expect(refs.statusText.textContent).toBe("Pi подключён · целей: 2");
+  });
+
+  it("switches between sessions and authorization tabs", async () => {
+    const { refs } = await setupPopup({
+      diagnostics: [
+        {
+          timestamp: Date.UTC(2024, 0, 1, 10, 0, 0),
+          phase: "listTargets",
+          message: "Broker reachable",
+        },
+      ],
+      listTargetsResponse: {
+        ok: true,
+        targets: [createTarget()],
+        selectedTargetId: "target-1",
+      },
+      browserAuthStateResponse: {
+        ok: true,
+        browserToken: "11111111-1111-4111-8111-111111111111",
+        tokenConfigured: true,
+      },
+    });
+
+    refs.authorizationTabButton.click();
+    await flushAsyncWork();
+
+    expect(refs.authorizationPanel.hidden).toBe(false);
+    expect(refs.browserTokenOutput.textContent).toMatch(/[0-9a-f-]{36}/i);
+
+    refs.sessionsTabButton.click();
+    await flushAsyncWork();
+
+    expect(refs.sessionsPanel.hidden).toBe(false);
+    expect(refs.assistantPanel.hidden).toBe(true);
+    expect(refs.diagnosticsOutput.textContent).toContain("listTargets");
+  });
+
+  it("regenerates and clears the browser token from the authorization tab", async () => {
+    const { refs, sentMessages } = await setupPopup({
+      listTargetsResponse: {
+        ok: true,
+        targets: [createTarget()],
+        selectedTargetId: "target-1",
+      },
+      browserAuthStateResponse: {
+        ok: true,
+        browserToken: "11111111-1111-4111-8111-111111111111",
+        tokenConfigured: true,
+      },
+      regenerateBrowserTokenResponses: [
+        {
+          ok: true,
+          browserToken: "22222222-2222-4222-8222-222222222222",
+          tokenConfigured: true,
+        },
+      ],
+    });
+
+    refs.authorizationTabButton.click();
+    await flushAsyncWork();
+
+    refs.regenerateBrowserTokenButton.click();
+    await flushAsyncWork();
+
+    expect(refs.browserTokenOutput.textContent).toBe("22222222-2222-4222-8222-222222222222");
+
+    refs.clearBrowserTokenButton.click();
+    await flushAsyncWork();
+
+    expect(sentMessages.filter((message) => message.type === "regenerateBrowserToken")).toHaveLength(1);
+    expect(sentMessages.filter((message) => message.type === "clearBrowserToken")).toHaveLength(1);
+    expect(refs.browserTokenOutput.textContent).toContain("Токен удалён");
+  });
+
+  it("ignores stale browser auth responses after token regeneration", async () => {
+    const staleAuthState = createDeferred<{ ok?: boolean; browserToken?: string; tokenConfigured?: boolean }>();
+
+    const { refs } = await setupPopup({
+      runtimeSendMessage: (message) => {
+        switch (message.type) {
+          case "listTargets":
+            return {
+              ok: true,
+              targets: [createTarget()],
+              selectedTargetId: "target-1",
+            };
+          case "getDiagnostics":
+            return { ok: true, diagnostics: [] };
+          case "getBrowserAuthState":
+            return staleAuthState.promise;
+          case "regenerateBrowserToken":
+            return {
+              ok: true,
+              browserToken: "22222222-2222-4222-8222-222222222222",
+              tokenConfigured: true,
+            };
+          default:
+            throw new Error(`Unexpected message type: ${message.type}`);
+        }
+      },
+    });
+
+    refs.authorizationTabButton.click();
+    await flushAsyncWork();
+
+    refs.regenerateBrowserTokenButton.click();
+    await flushAsyncWork();
+
+    staleAuthState.resolve({
+      ok: true,
+      browserToken: "11111111-1111-4111-8111-111111111111",
+      tokenConfigured: true,
+    });
+    await flushAsyncWork();
+
+    expect(refs.browserTokenOutput.textContent).toBe("22222222-2222-4222-8222-222222222222");
   });
 
   it("shows the renamed connect guidance when Pi is unavailable", async () => {
@@ -931,6 +1108,25 @@ describe("popup html", () => {
     expect(popupHtml).toContain(">Отправить в Pi<");
     expect(popupHtml).not.toContain(">Send<");
   });
+
+  it("renders assistant, sessions, and authorization tabs", () => {
+    const popupHtml = readFileSync(new URL("./popup.html", import.meta.url), "utf8");
+
+    expect(popupHtml).toContain(">Асистент<");
+    expect(popupHtml).toContain(">Сессии<");
+    expect(popupHtml).toContain(">Авторизация<");
+    expect(popupHtml).toContain('id="panel-assistant"');
+    expect(popupHtml).toContain('id="panel-sessions"');
+    expect(popupHtml).toContain('id="panel-auth"');
+  });
+});
+
+describe("popup css", () => {
+  it("uses a wider popup width for the tabbed layout", () => {
+    const popupCss = readFileSync(new URL("./popup.css", import.meta.url), "utf8");
+
+    expect(popupCss).toContain("min-width: 420px");
+  });
 });
 
 describe("popup russian ui copy", () => {
@@ -938,10 +1134,15 @@ describe("popup russian ui copy", () => {
     const popupHtml = readFileSync(new URL("./popup.html", import.meta.url), "utf8");
 
     expect(popupHtml).toContain('<html lang="ru">');
+    expect(popupHtml).toContain(">Асистент<");
+    expect(popupHtml).toContain(">Сессии<");
+    expect(popupHtml).toContain(">Авторизация<");
     expect(popupHtml).toContain(">Статус<");
-    expect(popupHtml).toContain(">Цель Pi<");
+    expect(popupHtml).toContain(">Сессии Pi<");
     expect(popupHtml).toContain(">Отправить в Pi<");
-    expect(popupHtml).toContain(">Диагностика<");
+    expect(popupHtml).toContain(">Обновить<");
+    expect(popupHtml).toContain(">Скопировать токен<");
+    expect(popupHtml).toContain(">Удалить токен<");
     expect(popupHtml).toContain(">Цели появятся здесь.<");
     expect(popupHtml).toContain(">Диагностика ещё не запускалась.<");
   });

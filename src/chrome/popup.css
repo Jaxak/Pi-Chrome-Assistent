@@ -5,8 +5,8 @@
 
 body {
   margin: 0;
-  min-width: 320px;
-  max-width: 380px;
+  min-width: 420px;
+  max-width: 500px;
   background: #10131a;
   color: #f4f7fb;
 }
@@ -19,9 +19,48 @@ body {
   box-sizing: border-box;
 }
 
+.popup__header {
+  display: grid;
+  gap: 4px;
+}
+
 .popup__header h1 {
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
+}
+
+.popup__subtitle {
+  margin: 0;
+  color: #a9b7cb;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tab-button {
+  border: 1px solid #2c3444;
+  background: #161b24;
+  color: #cdd7e6;
+}
+
+.tab-button--active {
+  border-color: #5a7cff;
+  background: #1a2640;
+  color: #ffffff;
+}
+
+.tab-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.tab-panel[hidden] {
+  display: none;
 }
 
 .panel {
@@ -33,12 +72,26 @@ body {
   background: #161b24;
 }
 
+.panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .panel__label {
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #98a4b8;
+}
+
+.panel__hint {
+  margin: 0;
+  color: #c4cfde;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .status-row {
@@ -84,7 +137,8 @@ body {
   background: #162033;
 }
 
-.target-option:focus-visible {
+.target-option:focus-visible,
+button:focus-visible {
   outline: 2px solid #89a2ff;
   outline-offset: 2px;
 }
@@ -124,7 +178,8 @@ body {
   color: #ffd79a;
 }
 
-.diagnostics-output {
+.diagnostics-output,
+.token-output {
   min-height: 72px;
   margin: 0;
   padding: 10px 12px;
@@ -140,8 +195,19 @@ body {
 
 .actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.actions--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.actions--auth {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.actions--auth > :last-child {
+  grid-column: 1 / -1;
 }
 
 button {
@@ -157,6 +223,14 @@ button {
 
 button.button-secondary {
   background: #293246;
+}
+
+button.button-danger {
+  background: #7a2d33;
+}
+
+button.button-compact {
+  padding: 8px 10px;
 }
 
 button:disabled {

@@ -3,37 +3,64 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Подключение Pi к браузеру</title>
+    <title>Chrome Assistent</title>
     <link rel="stylesheet" href="./popup.css" />
   </head>
   <body>
     <main class="popup">
       <header class="popup__header">
-        <h1>Подключение Pi к браузеру</h1>
+        <h1>Chrome Assistent</h1>
+        <p class="popup__subtitle">Быстрая отправка контента из браузера в Pi</p>
       </header>
 
-      <section class="panel" aria-labelledby="status-heading">
-        <div class="status-row">
-          <span id="status-heading" class="panel__label">Статус</span>
-          <span id="status-text" class="status-pill">Ожидание</span>
+      <nav class="tabs" aria-label="Разделы Chrome Assistent">
+        <button id="tab-assistant" class="tab-button tab-button--active" type="button" aria-selected="true" aria-controls="panel-assistant">Асистент</button>
+        <button id="tab-sessions" class="tab-button" type="button" aria-selected="false" aria-controls="panel-sessions">Сессии</button>
+        <button id="tab-auth" class="tab-button" type="button" aria-selected="false" aria-controls="panel-auth">Авторизация</button>
+      </nav>
+
+      <section id="panel-assistant" class="tab-panel tab-panel--active" aria-labelledby="tab-assistant">
+        <section class="panel" aria-labelledby="status-heading">
+          <div class="status-row">
+            <span id="status-heading" class="panel__label">Статус</span>
+            <span id="status-text" class="status-pill">Ожидание</span>
+          </div>
+          <p class="panel__hint">Выберите активную Pi-сессию на вкладке «Сессии», затем отправьте выделение через DOM picker.</p>
+        </section>
+
+        <div class="actions actions--single">
+          <button id="send-button" type="button" disabled aria-disabled="true">Отправить в Pi</button>
         </div>
       </section>
 
-      <section class="panel" aria-labelledby="target-heading">
-        <div class="panel__label" id="target-heading">Цель Pi</div>
-        <div id="target-container" class="target-container" role="listbox" aria-label="Цели Pi">
-          <div class="target-placeholder">Цели появятся здесь.</div>
-        </div>
+      <section id="panel-sessions" class="tab-panel" aria-labelledby="tab-sessions" hidden>
+        <section class="panel" aria-labelledby="target-heading">
+          <div class="panel__label" id="target-heading">Сессии Pi</div>
+          <div id="target-container" class="target-container" role="listbox" aria-label="Цели Pi">
+            <div class="target-placeholder">Цели появятся здесь.</div>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="diagnostics-heading">
+          <div class="panel__header">
+            <div class="panel__label" id="diagnostics-heading">Диагностика</div>
+            <button id="diagnostics-button" type="button" class="button-secondary button-compact">Обновить</button>
+          </div>
+          <pre id="diagnostics-output" class="diagnostics-output">Диагностика ещё не запускалась.</pre>
+        </section>
       </section>
 
-      <div class="actions">
-        <button id="send-button" type="button" disabled aria-disabled="true">Отправить в Pi</button>
-        <button id="diagnostics-button" type="button" class="button-secondary">Диагностика</button>
-      </div>
-
-      <section class="panel" aria-labelledby="diagnostics-heading">
-        <div class="panel__label" id="diagnostics-heading">Диагностика</div>
-        <pre id="diagnostics-output" class="diagnostics-output">Диагностика ещё не запускалась.</pre>
+      <section id="panel-auth" class="tab-panel" aria-labelledby="tab-auth" hidden>
+        <section class="panel" aria-labelledby="auth-heading">
+          <div class="panel__label" id="auth-heading">Авторизация браузера</div>
+          <p id="auth-status-text" class="panel__hint">Откройте вкладку «Авторизация», чтобы получить токен браузера.</p>
+          <pre id="browser-token-output" class="token-output">Токен ещё не загружен.</pre>
+          <div class="actions actions--auth">
+            <button id="copy-browser-token-button" type="button" class="button-secondary" disabled aria-disabled="true">Скопировать токен</button>
+            <button id="regenerate-browser-token-button" type="button">Сгенерировать новый токен</button>
+            <button id="clear-browser-token-button" type="button" class="button-danger" disabled aria-disabled="true">Удалить токен</button>
+          </div>
+        </section>
       </section>
     </main>
 

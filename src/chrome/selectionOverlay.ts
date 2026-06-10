@@ -36,10 +36,10 @@ function applyOverlayStyles(
   container.style.zIndex = Z_INDEX;
 
   box.style.position = "fixed";
-  box.style.border = "2px solid #22c55e";
+  box.style.border = "2px solid #6f7f3a";
   box.style.borderRadius = "8px";
-  box.style.background = "rgba(34, 197, 94, 0.16)";
-  box.style.boxShadow = "0 0 0 1px rgba(34, 197, 94, 0.28), 0 12px 30px rgba(6, 78, 59, 0.18)";
+  box.style.background = "rgba(111, 127, 58, 0.18)";
+  box.style.boxShadow = "0 0 0 1px rgba(111, 127, 58, 0.28), 0 12px 30px rgba(78, 87, 39, 0.18)";
   box.style.pointerEvents = "none";
 
   panel.setAttribute(UI_ATTRIBUTE, "true");
@@ -51,10 +51,10 @@ function applyOverlayStyles(
   panel.style.width = "min(320px, calc(100vw - 32px))";
   panel.style.padding = "12px";
   panel.style.borderRadius = "14px";
-  panel.style.border = "1px solid #334155";
-  panel.style.background = "rgba(15, 23, 42, 0.94)";
-  panel.style.color = "#f8fafc";
-  panel.style.boxShadow = "0 20px 48px rgba(15, 23, 42, 0.3)";
+  panel.style.border = "1px solid #c4cca8";
+  panel.style.background = "rgba(248, 250, 240, 0.96)";
+  panel.style.color = "#2f361c";
+  panel.style.boxShadow = "0 20px 48px rgba(78, 87, 39, 0.18)";
   panel.style.pointerEvents = "auto";
   panel.style.font = "13px/1.45 Inter, system-ui, sans-serif";
 
@@ -63,20 +63,21 @@ function applyOverlayStyles(
   label.textContent = "Выбор блока";
 
   description.style.margin = "0";
-  description.style.color = "#cbd5e1";
+  description.style.color = "#5e6740";
   description.textContent = "Наведите курсор, при необходимости уточните уровень блока и отправьте фрагмент в Pi.";
 }
 
 function applyControlButtonStyles(button: HTMLButtonElement, variant: "primary" | "secondary"): void {
   button.type = "button";
-  button.style.border = "0";
+  button.style.border = variant === "primary" ? "1px solid #6f7f3a" : "1px solid #c4cca8";
   button.style.borderRadius = "10px";
   button.style.padding = "9px 12px";
   button.style.font = "600 13px/1.2 Inter, system-ui, sans-serif";
   button.style.cursor = "pointer";
   button.style.pointerEvents = "auto";
-  button.style.background = variant === "primary" ? "#5a7cff" : "#334155";
-  button.style.color = "#ffffff";
+  button.style.background = variant === "primary" ? "#6f7f3a" : "#eef2de";
+  button.style.color = variant === "primary" ? "#f8faf0" : "#3a4123";
+  button.style.boxShadow = variant === "primary" ? "0 8px 18px rgba(78, 87, 39, 0.18)" : "none";
 }
 
 function setBoxFromRect(box: HTMLDivElement, rect: DOMRect): void {
@@ -95,7 +96,7 @@ function createModalRoot(): HTMLDivElement {
   root.style.display = "grid";
   root.style.placeItems = "center";
   root.style.padding = "16px";
-  root.style.background = "rgba(15, 23, 42, 0.35)";
+  root.style.background = "rgba(67, 78, 34, 0.18)";
   root.style.zIndex = "2147483647";
   return root;
 }
@@ -136,7 +137,7 @@ export function createSelectionOverlay(callbacks: {
   widenButton.addEventListener("click", callbacks.onWiden);
   applyControlButtonStyles(widenButton, "secondary");
 
-  confirmButton.textContent = "Отправить";
+  confirmButton.textContent = "Отправить в Pi";
   confirmButton.addEventListener("click", callbacks.onConfirm);
   applyControlButtonStyles(confirmButton, "primary");
 
@@ -177,30 +178,30 @@ export function createSelectionOverlay(callbacks: {
       panel.style.gap = "12px";
       panel.style.width = "min(420px, 100%)";
       panel.style.padding = "18px";
-      panel.style.border = "1px solid #2c3444";
+      panel.style.border = "1px solid #d1d8b6";
       panel.style.borderRadius = "14px";
-      panel.style.background = "#111827";
-      panel.style.color = "#f8fafc";
-      panel.style.boxShadow = "0 24px 60px rgba(2, 6, 23, 0.35)";
+      panel.style.background = "#faf9f2";
+      panel.style.color = "#2f361c";
+      panel.style.boxShadow = "0 24px 60px rgba(78, 87, 39, 0.18)";
       panel.style.font = "14px/1.45 Inter, system-ui, sans-serif";
 
       heading.textContent = "Отправить в Pi";
       heading.style.margin = "0";
       heading.style.font = "700 18px/1.2 Inter, system-ui, sans-serif";
 
-      description.textContent = "Добавьте комментарий (необязательно), прежде чем отправить этот фрагмент страницы.";
+      description.textContent = "Добавьте комментарий (необязательно)";
       description.style.margin = "0";
-      description.style.color = "#cbd5e1";
+      description.style.color = "#5e6740";
 
       textarea.rows = 5;
-      textarea.placeholder = "Комментарий (необязательно)";
+      textarea.placeholder = "Добавьте комментарий (необязательно)";
       textarea.style.width = "100%";
       textarea.style.boxSizing = "border-box";
       textarea.style.padding = "10px 12px";
-      textarea.style.border = "1px solid #334155";
+      textarea.style.border = "1px solid #c4cca8";
       textarea.style.borderRadius = "10px";
-      textarea.style.background = "#0f172a";
-      textarea.style.color = "#f8fafc";
+      textarea.style.background = "#fffffa";
+      textarea.style.color = "#2f361c";
       textarea.style.resize = "vertical";
 
       actions.style.display = "flex";

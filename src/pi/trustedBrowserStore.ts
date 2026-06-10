@@ -23,6 +23,7 @@ export interface TrustedBrowserRecord {
 
 interface TrustedBrowserStoreLockMetadata {
   pid: number;
+  processStartTime?: string;
   acquiredAt: number;
   lockId?: string;
 }
@@ -232,7 +233,49 @@ function writeTrustedBrowserRecords(
 const TRUSTED_BROWSER_STORE_LOCK_RETRY_DELAY_MS = 10;
 const TRUSTED_BROWSER_STORE_LOCK_MAX_ATTEMPTS = 200;
 const TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS = 60_000;
-const TRUSTED_BROWSER_STORE_LOCK_MAX_LIVE_PID_TRUST_MS = 15 * 60_000;
+
+let cachedCurrentProcessStartTime: string | undefined;
+
+function readLinuxProcessStartTime(pid: number): string | undefined {
+  try {
+    const rawStat = readFileSync(`/proc/${pid}/stat`, "utf8").trim();
+    const commTerminatorIndex = rawStat.lastIndexOf(") ");
+
+    if (commTerminatorIndex < 0) {
+      return undefined;
+    }
+
+    const statFieldsAfterComm = rawStat.slice(commTerminatorIndex + 2).split(" ");
+    const startTime = statFieldsAfterComm[19];
+
+    return typeof startTime === "string" && startTime.length > 0
+      ? startTime
+      : undefined;
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (
+      nodeError.code === "ENOENT"
+      || nodeError.code === "ESRCH"
+      || nodeError.code === "EACCES"
+      || nodeError.code === "EPERM"
+    ) {
+      return undefined;
+    }
+
+    throw error;
+  }
+}
+
+function getCurrentProcessStartTime(): string {
+  cachedCurrentProcessStartTime ??= readLinuxProcessStartTime(process.pid);
+
+  if (cachedCurrentProcessStartTime === undefined) {
+    throw new Error(`Failed to read current process start time for pid ${process.pid}`);
+  }
+
+  return cachedCurrentProcessStartTime;
+}
 
 function writeTrustedBrowserStoreLockMetadata(
   fd: number,
@@ -240,7 +283,12 @@ function writeTrustedBrowserStoreLockMetadata(
   label = "trusted browser store lock",
 ): void {
   validateTrustedBrowserStoreFile(fd, label);
-  writeFileSync(fd, `${JSON.stringify({ pid: process.pid, acquiredAt: Date.now(), lockId })}\n`, {
+  writeFileSync(fd, `${JSON.stringify({
+    pid: process.pid,
+    processStartTime: getCurrentProcessStartTime(),
+    acquiredAt: Date.now(),
+    lockId,
+  })}\n`, {
     encoding: "utf8",
   });
   enforceTrustedBrowsersFilePermissions(fd, label);
@@ -279,6 +327,13 @@ function readTrustedBrowserStoreLockMetadata(lockPath: string): {
       || typeof (parsedContent as { pid?: unknown }).pid !== "number"
       || !Number.isInteger((parsedContent as { pid: number }).pid)
       || (parsedContent as { pid: number }).pid <= 0
+      || (
+        typeof (parsedContent as { processStartTime?: unknown }).processStartTime !== "undefined"
+        && (
+          typeof (parsedContent as { processStartTime?: unknown }).processStartTime !== "string"
+          || (parsedContent as { processStartTime: string }).processStartTime.length === 0
+        )
+      )
       || typeof (parsedContent as { acquiredAt?: unknown }).acquiredAt !== "number"
       || !Number.isFinite((parsedContent as { acquiredAt: number }).acquiredAt)
       || (
@@ -293,6 +348,7 @@ function readTrustedBrowserStoreLockMetadata(lockPath: string): {
       fileStats,
       metadata: {
         pid: (parsedContent as { pid: number }).pid,
+        processStartTime: (parsedContent as { processStartTime?: string }).processStartTime,
         acquiredAt: (parsedContent as { acquiredAt: number }).acquiredAt,
         lockId: (parsedContent as { lockId?: string }).lockId,
       },
@@ -336,19 +392,25 @@ function isTrustedBrowserStoreLockStale(
 ): boolean {
   const lockAgeMs = getTrustedBrowserStoreLockAgeMs(lockState);
 
-  if (lockState.metadata === undefined) {
+  if (lockState.metadata === undefined || lockState.metadata.processStartTime === undefined) {
     return lockAgeMs >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS;
-  }
-
-  if (lockAgeMs >= TRUSTED_BROWSER_STORE_LOCK_MAX_LIVE_PID_TRUST_MS) {
-    return true;
   }
 
   try {
-    return !isProcessAlive(lockState.metadata.pid);
+    if (!isProcessAlive(lockState.metadata.pid)) {
+      return true;
+    }
   } catch {
     return lockAgeMs >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS;
   }
+
+  const liveProcessStartTime = readLinuxProcessStartTime(lockState.metadata.pid);
+
+  if (liveProcessStartTime === undefined) {
+    return false;
+  }
+
+  return liveProcessStartTime !== lockState.metadata.processStartTime;
 }
 
 function getTrustedBrowserStoreLockQuarantinePath(lockPath: string): string {

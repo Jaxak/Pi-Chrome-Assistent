@@ -371,6 +371,45 @@ describe("trustedBrowserStore", () => {
     }
   });
 
+  it("recovers when both the stale store lock and stale reclaim guard are orphaned", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const trustedBrowsersLockPath = `${trustedBrowsersPath}.lock`;
+    const trustedBrowsersReclaimGuardPath = `${trustedBrowsersLockPath}.reclaim`;
+    const { addTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      writeFileSync(
+        trustedBrowsersLockPath,
+        `${JSON.stringify({ pid: 999_999, acquiredAt: Date.now() - 120_000 })}\n`,
+        {
+          encoding: "utf8",
+          mode: 0o600,
+        },
+      );
+      writeFileSync(
+        trustedBrowsersReclaimGuardPath,
+        `${JSON.stringify({ pid: 999_999, acquiredAt: Date.now() - 120_000 })}\n`,
+        {
+          encoding: "utf8",
+          mode: 0o600,
+        },
+      );
+
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toEqual({
+        token: "browser-token",
+      });
+
+      expect(existsSync(trustedBrowsersLockPath)).toBe(false);
+      expect(existsSync(trustedBrowsersReclaimGuardPath)).toBe(false);
+      expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
+        { token: "browser-token" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not reclaim an old trusted browser store lock whose owner PID is still alive", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
     const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");

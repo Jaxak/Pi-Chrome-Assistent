@@ -332,17 +332,19 @@ function getTrustedBrowserStoreLockQuarantinePath(lockPath: string): string {
   return `${lockPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.stale`;
 }
 
-function tryAcquireTrustedBrowserStoreReclaimGuard(lockPath: string): (() => void) | undefined {
-  const reclaimGuardPath = `${lockPath}.reclaim`;
+function tryAcquireTrustedBrowserStoreLockFile(
+  lockPath: string,
+  label: string,
+): (() => void) | undefined {
   let fd: number | undefined;
 
   try {
     fd = openTrustedBrowserStoreFile(
-      reclaimGuardPath,
+      lockPath,
       fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | getNoFollowFlag(),
       0o600,
     );
-    writeTrustedBrowserStoreLockMetadata(fd, "trusted browser store reclaim guard");
+    writeTrustedBrowserStoreLockMetadata(fd, label);
 
     return () => {
       if (fd === undefined) {
@@ -354,7 +356,7 @@ function tryAcquireTrustedBrowserStoreReclaimGuard(lockPath: string): (() => voi
       closeSync(acquiredFd);
 
       try {
-        unlinkSync(reclaimGuardPath);
+        unlinkSync(lockPath);
       } catch (error) {
         const nodeError = toNodeError(error);
 
@@ -368,7 +370,7 @@ function tryAcquireTrustedBrowserStoreReclaimGuard(lockPath: string): (() => voi
       closeSync(fd);
 
       try {
-        unlinkSync(reclaimGuardPath);
+        unlinkSync(lockPath);
       } catch (unlinkError) {
         const unlinkNodeError = toNodeError(unlinkError);
 
@@ -388,6 +390,73 @@ function tryAcquireTrustedBrowserStoreReclaimGuard(lockPath: string): (() => voi
   }
 }
 
+function tryReclaimStaleTrustedBrowserStoreLockFile(lockPath: string): boolean {
+  let lockState: ReturnType<typeof readTrustedBrowserStoreLockMetadata>;
+
+  try {
+    lockState = readTrustedBrowserStoreLockMetadata(lockPath);
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ENOENT") {
+      return true;
+    }
+
+    throw error;
+  }
+
+  if (!isTrustedBrowserStoreLockStale(lockState)) {
+    return false;
+  }
+
+  const quarantinePath = getTrustedBrowserStoreLockQuarantinePath(lockPath);
+
+  try {
+    renameSync(lockPath, quarantinePath);
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ENOENT") {
+      return true;
+    }
+
+    throw error;
+  }
+
+  try {
+    unlinkSync(quarantinePath);
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  return true;
+}
+
+function tryAcquireTrustedBrowserStoreReclaimGuard(lockPath: string): (() => void) | undefined {
+  const reclaimGuardPath = `${lockPath}.reclaim`;
+  const releaseReclaimGuard = tryAcquireTrustedBrowserStoreLockFile(
+    reclaimGuardPath,
+    "trusted browser store reclaim guard",
+  );
+
+  if (releaseReclaimGuard !== undefined) {
+    return releaseReclaimGuard;
+  }
+
+  if (!tryReclaimStaleTrustedBrowserStoreLockFile(reclaimGuardPath)) {
+    return undefined;
+  }
+
+  return tryAcquireTrustedBrowserStoreLockFile(
+    reclaimGuardPath,
+    "trusted browser store reclaim guard",
+  );
+}
+
 function tryReclaimTrustedBrowserStoreLock(lockPath: string): void {
   const releaseReclaimGuard = tryAcquireTrustedBrowserStoreReclaimGuard(lockPath);
 
@@ -396,47 +465,7 @@ function tryReclaimTrustedBrowserStoreLock(lockPath: string): void {
   }
 
   try {
-    let lockState: ReturnType<typeof readTrustedBrowserStoreLockMetadata>;
-
-    try {
-      lockState = readTrustedBrowserStoreLockMetadata(lockPath);
-    } catch (error) {
-      const nodeError = toNodeError(error);
-
-      if (nodeError.code === "ENOENT") {
-        return;
-      }
-
-      throw error;
-    }
-
-    if (!isTrustedBrowserStoreLockStale(lockState)) {
-      return;
-    }
-
-    const quarantinePath = getTrustedBrowserStoreLockQuarantinePath(lockPath);
-
-    try {
-      renameSync(lockPath, quarantinePath);
-    } catch (error) {
-      const nodeError = toNodeError(error);
-
-      if (nodeError.code === "ENOENT") {
-        return;
-      }
-
-      throw error;
-    }
-
-    try {
-      unlinkSync(quarantinePath);
-    } catch (error) {
-      const nodeError = toNodeError(error);
-
-      if (nodeError.code !== "ENOENT") {
-        throw error;
-      }
-    }
+    tryReclaimStaleTrustedBrowserStoreLockFile(lockPath);
   } finally {
     releaseReclaimGuard();
   }
@@ -447,58 +476,13 @@ async function acquireTrustedBrowserStoreLock(trustedBrowsersPath: string): Prom
   const lockPath = `${trustedBrowsersPath}.lock`;
 
   for (let attempt = 0; attempt < TRUSTED_BROWSER_STORE_LOCK_MAX_ATTEMPTS; attempt += 1) {
-    let fd: number | undefined;
+    const releaseLock = tryAcquireTrustedBrowserStoreLockFile(lockPath, "trusted browser store lock");
 
-    try {
-      fd = openTrustedBrowserStoreFile(
-        lockPath,
-        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | getNoFollowFlag(),
-        0o600,
-      );
-      writeTrustedBrowserStoreLockMetadata(fd);
-
-      return () => {
-        if (fd === undefined) {
-          return;
-        }
-
-        const acquiredFd = fd;
-        fd = undefined;
-        closeSync(acquiredFd);
-
-        try {
-          unlinkSync(lockPath);
-        } catch (error) {
-          const nodeError = toNodeError(error);
-
-          if (nodeError.code !== "ENOENT") {
-            throw error;
-          }
-        }
-      };
-    } catch (error) {
-      if (fd !== undefined) {
-        closeSync(fd);
-
-        try {
-          unlinkSync(lockPath);
-        } catch (unlinkError) {
-          const unlinkNodeError = toNodeError(unlinkError);
-
-          if (unlinkNodeError.code !== "ENOENT") {
-            throw unlinkError;
-          }
-        }
-      }
-
-      const nodeError = toNodeError(error);
-
-      if (nodeError.code !== "EEXIST") {
-        throw error;
-      }
-
-      tryReclaimTrustedBrowserStoreLock(lockPath);
+    if (releaseLock !== undefined) {
+      return releaseLock;
     }
+
+    tryReclaimTrustedBrowserStoreLock(lockPath);
 
     await delay(TRUSTED_BROWSER_STORE_LOCK_RETRY_DELAY_MS);
   }

@@ -659,6 +659,85 @@ describe("trustedBrowserStore", () => {
     }
   });
 
+  it("hardens an existing trusted browser directory via a secure descriptor", async () => {
+    const trustedBrowsersPath = "/virtual/trusted-browsers/trusted-browsers.json";
+    const trustedBrowsersDirectory = "/virtual/trusted-browsers";
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const directoryStats = {
+      isDirectory: () => true,
+      isSymbolicLink: () => false,
+    } as ReturnType<typeof statSync>;
+    const openSync = vi.fn((path: Parameters<typeof actualFs.openSync>[0], flags: number | string, mode?: number) => {
+      if (path === trustedBrowsersDirectory) {
+        return 456;
+      }
+
+      if (path === trustedBrowsersPath) {
+        const error = new Error("missing") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+
+      return mode === undefined ? actualFs.openSync(path, flags) : actualFs.openSync(path, flags, mode);
+    });
+    const chmodSync = vi.fn((path: Parameters<typeof actualFs.chmodSync>[0], mode: Parameters<typeof actualFs.chmodSync>[1]) => {
+      if (path === trustedBrowsersDirectory && mode === 0o700) {
+        throw new Error("path-based directory chmod must not be used");
+      }
+
+      return actualFs.chmodSync(path, mode);
+    });
+    const fchmodSync = vi.fn((fd: number, mode: Parameters<typeof actualFs.fchmodSync>[1]) => {
+      expect(fd).toBe(456);
+      expect(mode).toBe(0o700);
+    });
+    const closeSync = vi.fn((fd: number) => {
+      expect(fd).toBe(456);
+    });
+
+    vi.doMock("node:fs", () => ({
+      ...actualFs,
+      constants: {
+        ...actualFs.constants,
+        O_DIRECTORY: actualFs.constants.O_DIRECTORY ?? 0x10000,
+        O_NOFOLLOW: actualFs.constants.O_NOFOLLOW ?? 0x20000,
+      },
+      lstatSync: vi.fn((path: Parameters<typeof actualFs.lstatSync>[0]) => {
+        if (path === "/virtual" || path === trustedBrowsersDirectory) {
+          return directoryStats;
+        }
+
+        return actualFs.lstatSync(path);
+      }),
+      mkdirSync: vi.fn(),
+      chmodSync,
+      openSync,
+      fstatSync: vi.fn((fd: number) => {
+        if (fd === 456) {
+          return directoryStats;
+        }
+
+        return actualFs.fstatSync(fd);
+      }),
+      fchmodSync,
+      closeSync,
+    }));
+
+    const { isTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    await expect(isTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toBe(false);
+    expect(openSync).toHaveBeenCalledWith(trustedBrowsersDirectory, expect.any(Number));
+    expect(chmodSync).not.toHaveBeenCalledWith(trustedBrowsersDirectory, 0o700);
+    expect(fchmodSync).toHaveBeenCalledWith(456, 0o700);
+    expect(closeSync).toHaveBeenCalledWith(456);
+
+    const [openedPath, flags] = openSync.mock.calls[0];
+    expect(openedPath).toBe(trustedBrowsersDirectory);
+    expect(typeof flags).toBe("number");
+    expect((flags as number) & (actualFs.constants.O_DIRECTORY ?? 0x10000)).not.toBe(0);
+    expect((flags as number) & (actualFs.constants.O_NOFOLLOW ?? 0x20000)).not.toBe(0);
+  });
+
   it("tightens a pre-existing trusted browser directory to 0700", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
     const trustedBrowsersDirectory = join(tempDir, "nested");

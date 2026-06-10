@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  chmodSync,
   closeSync,
   constants as fsConstants,
   fchmodSync,
@@ -33,6 +32,58 @@ interface TrustedBrowserStoreLockHandle {
   release(): void;
 }
 
+function getTrustedBrowsersDirectoryOpenFlags(): number {
+  const noFollowFlag = getNoFollowFlag();
+
+  if (typeof fsConstants.O_DIRECTORY !== "number") {
+    throw new Error("Secure trusted browser directory hardening requires fs.constants.O_DIRECTORY support");
+  }
+
+  return fsConstants.O_RDONLY | noFollowFlag | fsConstants.O_DIRECTORY;
+}
+
+function openTrustedBrowsersDirectoryForHardening(trustedBrowsersDirectory: string): number {
+  try {
+    return openSync(trustedBrowsersDirectory, getTrustedBrowsersDirectoryOpenFlags());
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ELOOP") {
+      throw new Error(`Trusted browser directory must not be a symlink: ${trustedBrowsersDirectory}`);
+    }
+
+    if (nodeError.code === "ENOTDIR") {
+      throw new Error(`Trusted browser directory must be a directory: ${trustedBrowsersDirectory}`);
+    }
+
+    throw error;
+  }
+}
+
+function hardenTrustedBrowsersDirectoryPermissions(trustedBrowsersDirectory: string): void {
+  let fd: number | undefined;
+
+  try {
+    fd = openTrustedBrowsersDirectoryForHardening(trustedBrowsersDirectory);
+
+    if (!fstatSync(fd).isDirectory()) {
+      throw new Error(`Trusted browser directory must be a directory: ${trustedBrowsersDirectory}`);
+    }
+
+    try {
+      fchmodSync(fd, 0o700);
+    } catch (error) {
+      const nodeError = toNodeError(error);
+      const reason = nodeError.message.length > 0 ? nodeError.message : "Unknown error";
+      throw new Error(`Failed to secure trusted browser directory permissions at ${trustedBrowsersDirectory}: ${reason}`);
+    }
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
+  }
+}
+
 function ensureTrustedBrowsersDirectory(trustedBrowsersPath: string): void {
   const trustedBrowsersDirectory = dirname(trustedBrowsersPath);
   validateDirectoryPathChain(trustedBrowsersDirectory, "Trusted browser directory");
@@ -41,14 +92,7 @@ function ensureTrustedBrowsersDirectory(trustedBrowsersPath: string): void {
     mode: 0o700,
   });
   validateDirectoryPathChain(trustedBrowsersDirectory, "Trusted browser directory");
-
-  try {
-    chmodSync(trustedBrowsersDirectory, 0o700);
-  } catch (error) {
-    const nodeError = toNodeError(error);
-    const reason = nodeError.message.length > 0 ? nodeError.message : "Unknown error";
-    throw new Error(`Failed to secure trusted browser directory permissions at ${trustedBrowsersDirectory}: ${reason}`);
-  }
+  hardenTrustedBrowsersDirectoryPermissions(trustedBrowsersDirectory);
 }
 
 function getNoFollowFlag(): number {

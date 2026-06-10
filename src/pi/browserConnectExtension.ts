@@ -539,17 +539,17 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   pi.registerCommand("chrome-assistent-auth", {
     description: "Добавить токен доверенного браузера Chrome Assistent",
     handler: async (_args, ctx) => {
-      const token = await ctx.ui.input(
-        "Токен браузера",
-        "Вставьте токен из вкладки «Авторизация»",
-      );
-
-      if (!token?.trim()) {
-        ctx.ui.notify("Токен браузера не указан", "warning");
-        return;
-      }
-
       try {
+        const token = await ctx.ui.input(
+          "Токен браузера",
+          "Вставьте токен из вкладки «Авторизация»",
+        );
+
+        if (!token?.trim()) {
+          ctx.ui.notify("Токен браузера не указан", "warning");
+          return;
+        }
+
         await addTrustedBrowserToken(getTrustedBrowsersPath(), token.trim());
       } catch (error) {
         const errorMessage = toErrorMessage(error);

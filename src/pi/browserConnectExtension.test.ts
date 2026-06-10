@@ -593,6 +593,73 @@ describe("browserConnectExtension", () => {
     }
   });
 
+  it("shows a user-facing error when browser token prompt fails", async () => {
+    const tempHome = mkdtempSync(join(tmpdir(), "browser-connect-home-"));
+    const originalHome = process.env.HOME;
+    const addTrustedBrowserToken = vi.fn();
+    const logger = createMemoryLogger();
+
+    process.env.HOME = tempHome;
+
+    vi.doMock("./trustedBrowserStore", () => ({
+      addTrustedBrowserToken,
+    }));
+    vi.doMock("./logging", () => ({
+      createFileLogger: vi.fn(() => logger),
+    }));
+
+    try {
+      const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
+      let authHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const pi = {
+        registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
+          if (name === "chrome-assistent-auth") {
+            authHandler = options.handler;
+          }
+        }),
+        on: vi.fn(),
+        getSessionName: vi.fn(() => "session"),
+        sendUserMessage: vi.fn(),
+      } as unknown as ExtensionAPI;
+      const input = vi.fn(async () => {
+        throw new Error("окно ввода недоступно");
+      });
+      const notify = vi.fn();
+      const ctx = {
+        ui: {
+          input,
+          notify,
+        },
+      };
+
+      browserConnectExtension(pi);
+
+      expect(authHandler).toBeDefined();
+      await expect(authHandler?.("", ctx)).rejects.toThrow("окно ввода недоступно");
+
+      expect(addTrustedBrowserToken).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith(
+        "Не удалось сохранить токен браузера: окно ввода недоступно",
+        "error",
+      );
+      expect(logger.entries).toContainEqual(expect.objectContaining({
+        level: "error",
+        message: "browser_connect.auth.failed",
+        details: expect.objectContaining({
+          error: "окно ввода недоступно",
+        }),
+      }));
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it("shows a user-facing error when browser token storage fails", async () => {
     const tempHome = mkdtempSync(join(tmpdir(), "browser-connect-home-"));
     const originalHome = process.env.HOME;

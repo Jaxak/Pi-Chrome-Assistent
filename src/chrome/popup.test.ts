@@ -730,6 +730,25 @@ describe("popup interactions", () => {
     expect(refs.diagnosticsOutput.textContent).toContain("Для отправки настройте browserToken в chrome.storage.local.");
   });
 
+  it("shows browser auth guidance when the browser token is present but not authorized in Pi", async () => {
+    const { refs } = await setupPopup({
+      listTargetsResponse: {
+        ok: false,
+        error: "Браузер не авторизован в Pi",
+        targets: [],
+        selectedTargetId: undefined,
+        tokenConfigured: true,
+      },
+      diagnostics: [],
+    });
+
+    expect(refs.statusText.textContent).toBe(
+      "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.",
+    );
+    expect(refs.targetContainer.textContent).toContain("Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.");
+    expect(refs.diagnosticsOutput.textContent).toContain("Браузер не авторизован в Pi");
+  });
+
   it("lifts the disabled state when broker token becomes configured and target selection is valid", async () => {
     const target = createTarget();
     const responses = [

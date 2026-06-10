@@ -2,6 +2,8 @@ export const SEND_SELECTION_SUCCESS_TOAST_MESSAGE = "Отправлено в Pi"
 export const GENERAL_FAILURE_TOAST_PREFIX = "Не удалось отправить в Pi";
 export const MISSING_TARGET_TOAST_MESSAGE = "Выбранный терминал Pi недоступен. Выберите другой.";
 export const BROKER_UNAVAILABLE_TOAST_MESSAGE = "Pi не подключён. Выполните /chrome-assistent-connect в терминале.";
+export const MISSING_BROWSER_TOKEN_TOAST_MESSAGE = "Для отправки настройте browserToken в chrome.storage.local.";
+export const BROWSER_AUTH_REQUIRED_TOAST_MESSAGE = "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.";
 
 const FALLBACK_GENERIC_REASON = "без подробностей";
 const USELESS_ERROR_PATTERNS = [
@@ -15,9 +17,15 @@ const MISSING_TARGET_ERROR_PATTERNS = [
   /selected target.*(missing|not found|unavailable|invalid)/i,
   /target.*(not found|unavailable|missing|inactive)/i,
 ];
-const BROKER_UNAVAILABLE_ERROR_PATTERNS = [
+const MISSING_BROWSER_TOKEN_ERROR_PATTERNS = [
   /no browser token configured/i,
   /no broker token configured/i,
+];
+const BROWSER_AUTH_REQUIRED_ERROR_PATTERNS = [
+  /браузер не авторизован в pi/i,
+  /browser is not authorized/i,
+];
+const BROKER_UNAVAILABLE_ERROR_PATTERNS = [
   /unable to connect to broker/i,
   /broker connection timed out/i,
   /broker closed before request started/i,
@@ -99,6 +107,14 @@ export function formatSendSelectionErrorToastMessage(error: unknown): string {
 
   if (hasPattern(rawMessage, MISSING_TARGET_ERROR_PATTERNS)) {
     return MISSING_TARGET_TOAST_MESSAGE;
+  }
+
+  if (hasPattern(rawMessage, MISSING_BROWSER_TOKEN_ERROR_PATTERNS)) {
+    return MISSING_BROWSER_TOKEN_TOAST_MESSAGE;
+  }
+
+  if (hasPattern(rawMessage, BROWSER_AUTH_REQUIRED_ERROR_PATTERNS)) {
+    return BROWSER_AUTH_REQUIRED_TOAST_MESSAGE;
   }
 
   if (hasPattern(rawMessage, BROKER_UNAVAILABLE_ERROR_PATTERNS)) {

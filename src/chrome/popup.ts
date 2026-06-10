@@ -31,7 +31,7 @@ const SELECTED_TARGET_STORAGE_KEY = "selectedTargetId";
 const BROKER_UNAVAILABLE_GUIDANCE = "Pi не подключён. Выполните /chrome-assistent-connect в терминале.";
 const NO_TARGETS_GUIDANCE = "Нет активных целей. Выполните /chrome-assistent-connect в нужной сессии Pi.";
 const SELECT_TARGET_PROMPT = "Выберите цель Pi, затем нажмите «Отправить в Pi».";
-const TOKEN_REQUIRED_GUIDANCE = "Для отправки настройте brokerToken в chrome.storage.local.";
+const TOKEN_REQUIRED_GUIDANCE = "Для отправки настройте browserToken в chrome.storage.local.";
 const START_PICKER_PROMPT = "Выберите элемент на странице, чтобы отправить его в Pi.";
 const START_PICKER_BUTTON_LABEL = "Запустить DOM picker на активной вкладке";
 const NO_TARGET_BUTTON_LABEL = "Выберите цель Pi, чтобы включить кнопку «Отправить в Pi»";
@@ -244,7 +244,7 @@ export function formatSummary(response: ListTargetsResponse, diagnostics: Diagno
   return [
     `Доступно целей: ${targetCount}`,
     `Выбранная цель: ${hasSelectedTarget ? selectedTargetId : "нет"}`,
-    `brokerToken настроен: ${response.tokenConfigured ? "да" : "нет"}`,
+    `browserToken настроен: ${response.tokenConfigured ? "да" : "нет"}`,
     `Отправка доступна: ${sendEnabled ? "да" : "нет"}`,
     formatLastErrorSummary(diagnostics),
   ].join("\n");

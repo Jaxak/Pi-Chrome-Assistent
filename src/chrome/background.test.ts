@@ -228,6 +228,59 @@ describe("background", () => {
     ]);
   });
 
+  it("surfaces client.hello auth failures from the broker", async () => {
+    const storage = new FakeStorageAdapter({
+      [BROWSER_TOKEN_STORAGE_KEY]: "browser-token-1",
+      selectedTargetId: "target-1",
+    });
+    const socket = new FakeWebSocket();
+    const listener = createBackgroundMessageListener({
+      storage,
+      webSocketFactory: () => socket,
+      openTimeoutMs: 100,
+      responseTimeoutMs: 100,
+    });
+
+    const responsePromise = invokeMessageListener(listener, { type: "listTargets" });
+
+    await waitFor(() => (socket.eventListeners.get("open")?.size ?? 0) > 0);
+    socket.emitOpen();
+    await waitFor(() => socket.sent.length === 2);
+
+    const helloEnvelope = readSentEnvelope<{ token?: string }>(socket, 0);
+    expect(helloEnvelope).toMatchObject({
+      version: PROTOCOL_VERSION,
+      type: "client.hello",
+      payload: {
+        token: "browser-token-1",
+      },
+    });
+
+    socket.emitMessage(
+      JSON.stringify({
+        version: PROTOCOL_VERSION,
+        type: "client.error",
+        requestId: helloEnvelope.requestId,
+        payload: { error: "Браузер не авторизован в Pi" },
+      }),
+    );
+    await flushAsyncWork();
+
+    await expect(responsePromise).resolves.toEqual({
+      ok: false,
+      error: "Браузер не авторизован в Pi",
+      targets: [],
+      selectedTargetId: "target-1",
+      tokenConfigured: true,
+    });
+    await expect(readDiagnostics(storage)).resolves.toEqual([
+      expect.objectContaining({
+        phase: "listTargets",
+        message: "Браузер не авторизован в Pi",
+      }),
+    ]);
+  });
+
   it("uses the authenticated broker path for sendSelection", async () => {
     const storage = new FakeStorageAdapter({
       [BROWSER_TOKEN_STORAGE_KEY]: "browser-token-1",

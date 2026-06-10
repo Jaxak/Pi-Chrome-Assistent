@@ -401,7 +401,7 @@ describe("popup formatting", () => {
     ).toBe([
       "Доступно целей: 0",
       "Выбранная цель: target-1",
-      "brokerToken настроен: да",
+      "browserToken настроен: да",
       "Отправка доступна: нет",
       "Последняя ошибка: нет",
     ].join("\n"));
@@ -713,7 +713,7 @@ describe("popup interactions", () => {
     expect(refs.targetContainer.children).toHaveLength(1);
     expect(findTargetOption(refs.targetContainer, target.targetId)?.getAttribute("aria-selected")).toBe("true");
     expect(refs.sendButton.disabled).toBe(true);
-    expect(refs.sendButton.title).toBe("Для отправки настройте brokerToken в chrome.storage.local.");
+    expect(refs.sendButton.title).toBe("Для отправки настройте browserToken в chrome.storage.local.");
   });
 
   it("shows an explicit token-required message instead of letting the user proceed", async () => {
@@ -726,8 +726,8 @@ describe("popup interactions", () => {
       },
     });
 
-    expect(refs.statusText.textContent).toContain("Для отправки настройте brokerToken в chrome.storage.local.");
-    expect(refs.diagnosticsOutput.textContent).toContain("Для отправки настройте brokerToken в chrome.storage.local.");
+    expect(refs.statusText.textContent).toContain("Для отправки настройте browserToken в chrome.storage.local.");
+    expect(refs.diagnosticsOutput.textContent).toContain("Для отправки настройте browserToken в chrome.storage.local.");
   });
 
   it("lifts the disabled state when broker token becomes configured and target selection is valid", async () => {
@@ -946,12 +946,12 @@ describe("popup russian ui copy", () => {
     expect(formatSummary({ ok: true, targets: [target], selectedTargetId: target.targetId, tokenConfigured: false }, [])).toBe([
       "Доступно целей: 1",
       `Выбранная цель: ${target.targetId}`,
-      "brokerToken настроен: нет",
+      "browserToken настроен: нет",
       "Отправка доступна: нет",
       "Последняя ошибка: нет",
     ].join("\n"));
     expect(formatDiagnostics([])).toBe("Недавних диагностических сообщений нет.");
-    expect(refs.statusText.textContent).toContain("Для отправки настройте brokerToken в chrome.storage.local.");
+    expect(refs.statusText.textContent).toContain("Для отправки настройте browserToken в chrome.storage.local.");
     expect(refs.diagnosticsOutput.textContent).toContain("Недавних диагностических сообщений нет.");
 
     refs.diagnosticsButton.click();
@@ -963,8 +963,8 @@ describe("popup russian ui copy", () => {
     refs.sendButton.click();
     await flushAsyncWork();
 
-    expect(refs.statusText.textContent).toBe("Для отправки настройте brokerToken в chrome.storage.local.");
-    expect(refs.diagnosticsOutput.textContent).toContain("Для отправки настройте brokerToken в chrome.storage.local.");
+    expect(refs.statusText.textContent).toBe("Для отправки настройте browserToken в chrome.storage.local.");
+    expect(refs.diagnosticsOutput.textContent).toContain("Для отправки настройте browserToken в chrome.storage.local.");
   });
 
   it("shows disabled button titles and picker guidance in Russian", async () => {

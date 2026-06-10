@@ -1,9 +1,15 @@
 import {
-  BROWSER_TOKEN_STORAGE_KEY,
   DEFAULT_BROKER_HOST,
   DEFAULT_BROKER_PORT,
   PROTOCOL_VERSION,
 } from "../shared/constants";
+import {
+  BROWSER_TOKEN_STORAGE_KEY,
+  clearBrowserToken,
+  ensureBrowserToken,
+  getBrowserAuthState,
+  regenerateBrowserToken,
+} from "./browserToken";
 import {
   createRequestId,
   parseProtocolEnvelope,
@@ -524,6 +530,71 @@ export function createBackgroundMessageListener(
           sendResponse({ ok: true });
         } catch (error) {
           sendResponse({ ok: false, error: getErrorMessage(error) });
+        }
+      })();
+
+      return true;
+    }
+
+    if (requestMessage.type === "getBrowserAuthState") {
+      void (async () => {
+        try {
+          const browserToken = await ensureBrowserToken(backgroundStorage);
+          sendResponse({
+            ok: true,
+            browserToken,
+            tokenConfigured: true,
+          });
+        } catch (error) {
+          const errorMessage = await recordDiagnostic(backgroundStorage, now, "getBrowserAuthState", error);
+          sendResponse({
+            ok: false,
+            error: errorMessage,
+            tokenConfigured: false,
+          });
+        }
+      })();
+
+      return true;
+    }
+
+    if (requestMessage.type === "regenerateBrowserToken") {
+      void (async () => {
+        try {
+          const browserToken = await regenerateBrowserToken(backgroundStorage);
+          sendResponse({
+            ok: true,
+            browserToken,
+            tokenConfigured: true,
+          });
+        } catch (error) {
+          const errorMessage = await recordDiagnostic(backgroundStorage, now, "regenerateBrowserToken", error);
+          sendResponse({
+            ok: false,
+            error: errorMessage,
+            tokenConfigured: false,
+          });
+        }
+      })();
+
+      return true;
+    }
+
+    if (requestMessage.type === "clearBrowserToken") {
+      void (async () => {
+        try {
+          await clearBrowserToken(backgroundStorage);
+          sendResponse({
+            ok: true,
+            ...(await getBrowserAuthState(backgroundStorage)),
+          });
+        } catch (error) {
+          const errorMessage = await recordDiagnostic(backgroundStorage, now, "clearBrowserToken", error);
+          sendResponse({
+            ok: false,
+            error: errorMessage,
+            tokenConfigured: false,
+          });
         }
       })();
 

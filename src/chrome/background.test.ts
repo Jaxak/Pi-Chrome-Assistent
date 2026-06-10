@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StorageAdapter, DiagnosticEntry } from "./diagnostics";
 import { createBackgroundMessageListener, brokerRequest } from "./background";
-import { BROWSER_TOKEN_STORAGE_KEY, PROTOCOL_VERSION } from "../shared/constants";
+import { BROWSER_TOKEN_STORAGE_KEY } from "./browserToken";
+import { PROTOCOL_VERSION } from "../shared/constants";
 import type { TargetMetadata } from "../shared/protocol";
 
 class FakeStorageAdapter implements StorageAdapter {
@@ -145,6 +146,53 @@ describe("background", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("returns browser auth state and creates a token when missing", async () => {
+    const storage = new FakeStorageAdapter();
+    const listener = createBackgroundMessageListener({ storage });
+
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue("11111111-1111-4111-8111-111111111111");
+
+    await expect(invokeMessageListener(listener, { type: "getBrowserAuthState" })).resolves.toEqual({
+      ok: true,
+      browserToken: "11111111-1111-4111-8111-111111111111",
+      tokenConfigured: true,
+    });
+    await expect(storage.get(BROWSER_TOKEN_STORAGE_KEY)).resolves.toBe(
+      "11111111-1111-4111-8111-111111111111",
+    );
+  });
+
+  it("regenerates the browser token via the background message handler", async () => {
+    const storage = new FakeStorageAdapter({
+      [BROWSER_TOKEN_STORAGE_KEY]: "11111111-1111-4111-8111-111111111111",
+    });
+    const listener = createBackgroundMessageListener({ storage });
+
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue("22222222-2222-4222-8222-222222222222");
+
+    await expect(invokeMessageListener(listener, { type: "regenerateBrowserToken" })).resolves.toEqual({
+      ok: true,
+      browserToken: "22222222-2222-4222-8222-222222222222",
+      tokenConfigured: true,
+    });
+    await expect(storage.get(BROWSER_TOKEN_STORAGE_KEY)).resolves.toBe(
+      "22222222-2222-4222-8222-222222222222",
+    );
+  });
+
+  it("clears the browser token via the background message handler", async () => {
+    const storage = new FakeStorageAdapter({
+      [BROWSER_TOKEN_STORAGE_KEY]: "11111111-1111-4111-8111-111111111111",
+    });
+    const listener = createBackgroundMessageListener({ storage });
+
+    await expect(invokeMessageListener(listener, { type: "clearBrowserToken" })).resolves.toEqual({
+      ok: true,
+      tokenConfigured: false,
+    });
+    await expect(storage.get(BROWSER_TOKEN_STORAGE_KEY)).resolves.toBeUndefined();
   });
 
   it("lists broker targets from the background message handler after broker auth", async () => {

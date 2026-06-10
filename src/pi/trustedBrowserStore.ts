@@ -222,6 +222,7 @@ function writeTrustedBrowserRecords(
 const TRUSTED_BROWSER_STORE_LOCK_RETRY_DELAY_MS = 10;
 const TRUSTED_BROWSER_STORE_LOCK_MAX_ATTEMPTS = 200;
 const TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS = 60_000;
+const TRUSTED_BROWSER_STORE_LOCK_MAX_LIVE_PID_TRUST_MS = 15 * 60_000;
 
 function writeTrustedBrowserStoreLockMetadata(
   fd: number,
@@ -317,14 +318,20 @@ function getTrustedBrowserStoreLockAgeMs(
 function isTrustedBrowserStoreLockStale(
   lockState: ReturnType<typeof readTrustedBrowserStoreLockMetadata>,
 ): boolean {
+  const lockAgeMs = getTrustedBrowserStoreLockAgeMs(lockState);
+
   if (lockState.metadata === undefined) {
-    return getTrustedBrowserStoreLockAgeMs(lockState) >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS;
+    return lockAgeMs >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS;
+  }
+
+  if (lockAgeMs >= TRUSTED_BROWSER_STORE_LOCK_MAX_LIVE_PID_TRUST_MS) {
+    return true;
   }
 
   try {
     return !isProcessAlive(lockState.metadata.pid);
   } catch {
-    return getTrustedBrowserStoreLockAgeMs(lockState) >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS;
+    return lockAgeMs >= TRUSTED_BROWSER_STORE_LOCK_STALE_TTL_MS;
   }
 }
 

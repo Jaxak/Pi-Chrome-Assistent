@@ -434,6 +434,40 @@ describe("trustedBrowserStore", () => {
     }
   });
 
+  it("reclaims a very old trusted browser store lock even when its PID is still alive", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const trustedBrowsersLockPath = `${trustedBrowsersPath}.lock`;
+    const trustedBrowsersReclaimGuardPath = `${trustedBrowsersLockPath}.reclaim`;
+    const { addTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      const veryOldAcquiredAt = Date.now() - 86_400_000;
+      const oldLivePidMetadata = `${JSON.stringify({ pid: process.pid, acquiredAt: veryOldAcquiredAt })}\n`;
+
+      writeFileSync(trustedBrowsersLockPath, oldLivePidMetadata, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      writeFileSync(trustedBrowsersReclaimGuardPath, oldLivePidMetadata, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toEqual({
+        token: "browser-token",
+      });
+
+      expect(existsSync(trustedBrowsersLockPath)).toBe(false);
+      expect(existsSync(trustedBrowsersReclaimGuardPath)).toBe(false);
+      expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
+        { token: "browser-token" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not let concurrent stale-lock reclaim attempts delete a fresh lock", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
     const trustedBrowsersDirectory = join(tempDir, "trusted-browsers");

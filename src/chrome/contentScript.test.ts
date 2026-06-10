@@ -17,6 +17,13 @@ type RuntimeMessageListener = (
   sendResponse: (response?: unknown) => void,
 ) => boolean | void;
 
+declare global {
+  interface Window {
+    __PI_CONTENT_SCRIPT_PLACEHOLDER_LISTENER_REGISTERED__?: boolean;
+    __PI_DOM_PICKER_SESSION__?: unknown;
+  }
+}
+
 const selectionPayload = {
   url: "https://example.com/article",
   title: "Example article",
@@ -34,8 +41,8 @@ describe("contentScript", () => {
   afterEach(() => {
     document.documentElement.innerHTML = "";
     delete (globalThis as Record<string, unknown>).chrome;
-    delete (window as Record<string, unknown>).__PI_CONTENT_SCRIPT_PLACEHOLDER_LISTENER_REGISTERED__;
-    delete (window as Record<string, unknown>).__PI_DOM_PICKER_SESSION__;
+    delete window.__PI_CONTENT_SCRIPT_PLACEHOLDER_LISTENER_REGISTERED__;
+    delete window.__PI_DOM_PICKER_SESSION__;
     vi.resetModules();
     vi.restoreAllMocks();
   });

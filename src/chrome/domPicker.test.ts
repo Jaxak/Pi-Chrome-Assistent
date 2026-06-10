@@ -57,6 +57,43 @@ describe("getSelectionCandidates", () => {
     expect(result.candidates[result.recommendedIndex]?.id).toBe("card");
     expect(findLogicalSelectionElement(start as Element)).toBe(document.querySelector("#card"));
   });
+
+  it("prefers a table cell or row over the whole table wrapper", () => {
+    document.body.innerHTML = `
+      <div id="table-shell">
+        <table>
+          <tbody>
+            <tr id="row">
+              <td id="cell"><span id="start">Критичный статус</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    const start = document.querySelector("#start");
+
+    expect(start).not.toBeNull();
+    expect(findLogicalSelectionElement(start as Element).id).toBe("cell");
+  });
+
+  it("does not escalate to a giant dashboard wrapper when a card exists", () => {
+    document.body.innerHTML = `
+      <div id="dashboard">
+        <div id="column">
+          <section id="card">
+            <h2>Платёж</h2>
+            <p id="start">Просрочен на 3 дня</p>
+          </section>
+        </div>
+      </div>
+    `;
+
+    const start = document.querySelector("#start");
+
+    expect(start).not.toBeNull();
+    expect(findLogicalSelectionElement(start as Element).id).toBe("card");
+  });
 });
 
 describe("findLogicalSelectionElement", () => {

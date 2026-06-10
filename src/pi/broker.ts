@@ -256,6 +256,17 @@ export async function startBrokerServer(
   let staleCleanupTimer: ReturnType<typeof setInterval> | undefined;
   let isClosing = false;
 
+  const verifyBrowserToken = async (token: string): Promise<boolean> => {
+    try {
+      return await options.isBrowserTokenTrusted(token);
+    } catch (error) {
+      options.logger.warn("broker.client.browser_token_check_failed", {
+        error: toErrorMessage(error),
+      });
+      return false;
+    }
+  };
+
   const pruneSettledDeliveryTombstones = (now = Date.now()) => {
     for (const [requestId, tombstone] of settledDeliveryTombstones.entries()) {
       if (now - tombstone.settledAt < SETTLED_DELIVERY_TOMBSTONE_TTL_MS) {
@@ -416,7 +427,7 @@ export async function startBrokerServer(
           const parsedPayload = parseClientHelloPayload(payload);
 
           const authenticationPromise = (async () => {
-            if (!parsedPayload.ok || !await options.isBrowserTokenTrusted(parsedPayload.token)) {
+            if (!parsedPayload.ok || !await verifyBrowserToken(parsedPayload.token)) {
               sendClientError(socket, envelope.requestId, BROWSER_NOT_AUTHORIZED_ERROR);
               socket.close();
               return false;
@@ -485,7 +496,7 @@ export async function startBrokerServer(
             }
           }
 
-          if (!await options.isBrowserTokenTrusted(parsedPayload.token)) {
+          if (!await verifyBrowserToken(parsedPayload.token)) {
             sendClientError(socket, envelope.requestId, BROWSER_NOT_AUTHORIZED_ERROR);
             socket.close();
             return;

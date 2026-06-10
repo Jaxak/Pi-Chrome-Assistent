@@ -424,6 +424,128 @@ describe("startBrokerServer", () => {
     }
   });
 
+  it("fails closed when browser trust check throws during client.hello", async () => {
+    const logger = createMemoryLogger();
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async () => {
+        throw new Error("trusted browser store unavailable");
+      },
+      logger,
+    });
+
+    const clientSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(clientSocket);
+      authenticateClient(clientSocket, "hello-trust-check-throws");
+
+      await expect(waitForProtocolMessage<{ error: string }>(clientSocket, "client.error")).resolves.toEqual({
+        version: PROTOCOL_VERSION,
+        type: "client.error",
+        requestId: "hello-trust-check-throws",
+        payload: {
+          error: browserNotAuthorizedError,
+        },
+      });
+      await once(clientSocket, "close");
+      expect(logger.entries).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "broker.client.browser_token_check_failed",
+          details: expect.objectContaining({
+            error: "trusted browser store unavailable",
+          }),
+        }),
+      );
+    } finally {
+      await Promise.allSettled([closeSocket(clientSocket), broker.close()]);
+    }
+  });
+
+  it("fails closed when browser trust check throws during client.sendSelection", async () => {
+    const logger = createMemoryLogger();
+    let callCount = 0;
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => {
+        callCount += 1;
+        if (callCount === 1) {
+          return token === browserToken;
+        }
+
+        throw new Error("trusted browser store unavailable");
+      },
+      logger,
+    });
+
+    const targetSocket = createSocket(broker.port);
+    const clientSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(targetSocket);
+      sendEnvelope(targetSocket, {
+        version: PROTOCOL_VERSION,
+        type: "target.register",
+        requestId: "register-trust-throws-send-selection",
+        payload: {
+          token: targetToken,
+          target,
+        },
+      });
+
+      await expect(waitForProtocolMessage(targetSocket, "target.registered")).resolves.toEqual({
+        version: PROTOCOL_VERSION,
+        type: "target.registered",
+        requestId: "register-trust-throws-send-selection",
+      });
+
+      await waitForOpen(clientSocket);
+      authenticateClient(clientSocket, "hello-trust-throws-send-selection");
+      await listTargets(clientSocket, "list-trust-throws-send-selection");
+
+      sendEnvelope(clientSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.sendSelection",
+        requestId: "send-trust-throws-send-selection",
+        payload: {
+          token: browserToken,
+          targetId: target.targetId,
+          selection: selectionPayload,
+        },
+      });
+
+      await expect(waitForProtocolMessage<{ error: string }>(clientSocket, "client.error")).resolves.toEqual({
+        version: PROTOCOL_VERSION,
+        type: "client.error",
+        requestId: "send-trust-throws-send-selection",
+        payload: {
+          error: browserNotAuthorizedError,
+        },
+      });
+      await once(clientSocket, "close");
+      expect(logger.entries).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "broker.client.browser_token_check_failed",
+          details: expect.objectContaining({
+            error: "trusted browser store unavailable",
+          }),
+        }),
+      );
+    } finally {
+      await Promise.allSettled([
+        closeSocket(clientSocket),
+        closeSocket(targetSocket),
+        broker.close(),
+      ]);
+    }
+  });
+
   it("delivers a client selection to the target and returns the result", async () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",

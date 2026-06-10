@@ -68,6 +68,7 @@ const delayAfterReadMs = Number(process.env.DELAY_AFTER_READ_MS ?? "0");
 const delayDuringWriteMs = Number(process.env.DELAY_DURING_WRITE_MS ?? "0");
 const reclaimMarkerPath = process.env.RECLAIM_MARKER_PATH;
 const reclaimRemoveDelayMs = Number(process.env.RECLAIM_REMOVE_DELAY_MS ?? "0");
+const lockAcquiredAtOffsetMs = Number(process.env.LOCK_ACQUIRED_AT_OFFSET_MS ?? "0");
 const storeDirectoryPath = path.dirname(storePath);
 const lockPath = storePath + ".lock";
 let delayedRead = false;
@@ -75,6 +76,7 @@ let delayedWrite = false;
 let delayedReclaim = false;
 let trackedStoreFd;
 let trackedWriteFd;
+let trackedLockFd;
 
 function sleep(milliseconds) {
   if (milliseconds <= 0) {
@@ -94,6 +96,10 @@ fs.openSync = function patchedOpenSync(openPath, ...args) {
 
   if (trackedStoreFd === undefined && resolvedPath === storePath) {
     trackedStoreFd = fd;
+  }
+
+  if (trackedLockFd === undefined && resolvedPath === lockPath) {
+    trackedLockFd = fd;
   }
 
   if (
@@ -127,6 +133,16 @@ fs.readFileSync = function patchedReadFileSync(readPath, ...args) {
 
 const originalWriteFileSync = fs.writeFileSync.bind(fs);
 fs.writeFileSync = function patchedWriteFileSync(writePath, data, ...args) {
+  if (
+    lockAcquiredAtOffsetMs !== 0
+    && writePath === trackedLockFd
+    && typeof data === "string"
+  ) {
+    const parsedMetadata = JSON.parse(data.trim());
+    parsedMetadata.acquiredAt += lockAcquiredAtOffsetMs;
+    return originalWriteFileSync(writePath, JSON.stringify(parsedMetadata) + "\\n", ...args);
+  }
+
   if (
     !delayedWrite
     && delayDuringWriteMs > 0
@@ -217,6 +233,7 @@ async function runAddTrustedBrowserTokenInChildProcess(options: {
   delayDuringWriteMs?: number;
   reclaimMarkerPath?: string;
   reclaimRemoveDelayMs?: number;
+  lockAcquiredAtOffsetMs?: number;
 }): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [options.workerPath], {
@@ -224,6 +241,7 @@ async function runAddTrustedBrowserTokenInChildProcess(options: {
         ...process.env,
         DELAY_AFTER_READ_MS: String(options.delayAfterReadMs ?? 0),
         DELAY_DURING_WRITE_MS: String(options.delayDuringWriteMs ?? 0),
+        LOCK_ACQUIRED_AT_OFFSET_MS: String(options.lockAcquiredAtOffsetMs ?? 0),
         MODULE_URL: options.moduleUrl,
         READ_MARKER_PATH: options.readMarkerPath ?? "",
         RECLAIM_MARKER_PATH: options.reclaimMarkerPath ?? "",
@@ -462,6 +480,58 @@ describe("trustedBrowserStore", () => {
       expect(existsSync(trustedBrowsersReclaimGuardPath)).toBe(false);
       expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
         { token: "browser-token" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let a resumed reclaimed owner overwrite state or remove the fresh lock", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersDirectory = join(tempDir, "trusted-browsers");
+    const trustedBrowsersPath = join(trustedBrowsersDirectory, "trusted-browsers.json");
+    const trustedBrowsersLockPath = `${trustedBrowsersPath}.lock`;
+    const firstReadMarkerPath = join(tempDir, "first-read.marker");
+    const secondReadMarkerPath = join(tempDir, "second-read.marker");
+    const { moduleUrl, workerPath } = createTrustedBrowserStoreWorkerFixture(tempDir);
+
+    try {
+      mkdirSync(trustedBrowsersDirectory, { recursive: true, mode: 0o700 });
+      writeFileSync(trustedBrowsersPath, "[]\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+
+      const firstAddPromise = runAddTrustedBrowserTokenInChildProcess({
+        workerPath,
+        moduleUrl,
+        trustedBrowsersPath,
+        token: "browser-token-a",
+        readMarkerPath: firstReadMarkerPath,
+        delayAfterReadMs: 1_000,
+        lockAcquiredAtOffsetMs: -86_400_000,
+      });
+
+      await waitForFile(firstReadMarkerPath);
+
+      const secondAddPromise = runAddTrustedBrowserTokenInChildProcess({
+        workerPath,
+        moduleUrl,
+        trustedBrowsersPath,
+        token: "browser-token-b",
+        readMarkerPath: secondReadMarkerPath,
+        delayAfterReadMs: 2_000,
+      });
+
+      await waitForFile(secondReadMarkerPath);
+
+      await expect(firstAddPromise).rejects.toThrow(/lock ownership was lost/i);
+      expect(existsSync(trustedBrowsersLockPath)).toBe(true);
+
+      await expect(secondAddPromise).resolves.toBeUndefined();
+      expect(existsSync(trustedBrowsersLockPath)).toBe(false);
+      expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
+        { token: "browser-token-b" },
       ]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

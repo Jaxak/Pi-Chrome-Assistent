@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -23,6 +24,12 @@ export interface TrustedBrowserRecord {
 interface TrustedBrowserStoreLockMetadata {
   pid: number;
   acquiredAt: number;
+  lockId?: string;
+}
+
+interface TrustedBrowserStoreLockHandle {
+  assertOwnership(): void;
+  release(): void;
 }
 
 function ensureTrustedBrowsersDirectory(trustedBrowsersPath: string): void {
@@ -170,6 +177,7 @@ function validateTrustedBrowserStoreTargetForWrite(trustedBrowsersPath: string):
 function writeTrustedBrowserRecordsAtomically(
   trustedBrowsersPath: string,
   records: TrustedBrowserRecord[],
+  assertCanCommit?: () => void,
 ): void {
   ensureTrustedBrowsersDirectory(trustedBrowsersPath);
   validateDirectoryPathChain(dirname(trustedBrowsersPath), "Trusted browser directory");
@@ -192,6 +200,7 @@ function writeTrustedBrowserRecordsAtomically(
     enforceTrustedBrowsersFilePermissions(tempFd, tempPath);
     closeSync(tempFd);
     tempFd = undefined;
+    assertCanCommit?.();
     renameSync(tempPath, trustedBrowsersPath);
   } catch (error) {
     if (tempFd !== undefined) {
@@ -215,8 +224,9 @@ function writeTrustedBrowserRecordsAtomically(
 function writeTrustedBrowserRecords(
   trustedBrowsersPath: string,
   records: TrustedBrowserRecord[],
+  assertCanCommit?: () => void,
 ): void {
-  writeTrustedBrowserRecordsAtomically(trustedBrowsersPath, records);
+  writeTrustedBrowserRecordsAtomically(trustedBrowsersPath, records, assertCanCommit);
 }
 
 const TRUSTED_BROWSER_STORE_LOCK_RETRY_DELAY_MS = 10;
@@ -226,10 +236,11 @@ const TRUSTED_BROWSER_STORE_LOCK_MAX_LIVE_PID_TRUST_MS = 15 * 60_000;
 
 function writeTrustedBrowserStoreLockMetadata(
   fd: number,
+  lockId: string,
   label = "trusted browser store lock",
 ): void {
   validateTrustedBrowserStoreFile(fd, label);
-  writeFileSync(fd, `${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`, {
+  writeFileSync(fd, `${JSON.stringify({ pid: process.pid, acquiredAt: Date.now(), lockId })}\n`, {
     encoding: "utf8",
   });
   enforceTrustedBrowsersFilePermissions(fd, label);
@@ -270,6 +281,10 @@ function readTrustedBrowserStoreLockMetadata(lockPath: string): {
       || (parsedContent as { pid: number }).pid <= 0
       || typeof (parsedContent as { acquiredAt?: unknown }).acquiredAt !== "number"
       || !Number.isFinite((parsedContent as { acquiredAt: number }).acquiredAt)
+      || (
+        typeof (parsedContent as { lockId?: unknown }).lockId !== "undefined"
+        && typeof (parsedContent as { lockId?: unknown }).lockId !== "string"
+      )
     ) {
       return { fileStats };
     }
@@ -279,6 +294,7 @@ function readTrustedBrowserStoreLockMetadata(lockPath: string): {
       metadata: {
         pid: (parsedContent as { pid: number }).pid,
         acquiredAt: (parsedContent as { acquiredAt: number }).acquiredAt,
+        lockId: (parsedContent as { lockId?: string }).lockId,
       },
     };
   } finally {
@@ -339,11 +355,32 @@ function getTrustedBrowserStoreLockQuarantinePath(lockPath: string): string {
   return `${lockPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.stale`;
 }
 
+function isTrustedBrowserStoreLockOwnedBy(lockPath: string, lockId: string): boolean {
+  try {
+    return readTrustedBrowserStoreLockMetadata(lockPath).metadata?.lockId === lockId;
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ENOENT") {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+function assertTrustedBrowserStoreLockOwnership(lockPath: string, lockId: string): void {
+  if (!isTrustedBrowserStoreLockOwnedBy(lockPath, lockId)) {
+    throw new Error(`Trusted browser store lock ownership was lost: ${lockPath}`);
+  }
+}
+
 function tryAcquireTrustedBrowserStoreLockFile(
   lockPath: string,
   label: string,
-): (() => void) | undefined {
+): TrustedBrowserStoreLockHandle | undefined {
   let fd: number | undefined;
+  const lockId = randomUUID();
 
   try {
     fd = openTrustedBrowserStoreFile(
@@ -351,26 +388,35 @@ function tryAcquireTrustedBrowserStoreLockFile(
       fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | getNoFollowFlag(),
       0o600,
     );
-    writeTrustedBrowserStoreLockMetadata(fd, label);
+    writeTrustedBrowserStoreLockMetadata(fd, lockId, label);
 
-    return () => {
-      if (fd === undefined) {
-        return;
-      }
-
-      const acquiredFd = fd;
-      fd = undefined;
-      closeSync(acquiredFd);
-
-      try {
-        unlinkSync(lockPath);
-      } catch (error) {
-        const nodeError = toNodeError(error);
-
-        if (nodeError.code !== "ENOENT") {
-          throw error;
+    return {
+      assertOwnership() {
+        assertTrustedBrowserStoreLockOwnership(lockPath, lockId);
+      },
+      release() {
+        if (fd === undefined) {
+          return;
         }
-      }
+
+        const acquiredFd = fd;
+        fd = undefined;
+        closeSync(acquiredFd);
+
+        if (!isTrustedBrowserStoreLockOwnedBy(lockPath, lockId)) {
+          return;
+        }
+
+        try {
+          unlinkSync(lockPath);
+        } catch (error) {
+          const nodeError = toNodeError(error);
+
+          if (nodeError.code !== "ENOENT") {
+            throw error;
+          }
+        }
+      },
     };
   } catch (error) {
     if (fd !== undefined) {
@@ -443,7 +489,7 @@ function tryReclaimStaleTrustedBrowserStoreLockFile(lockPath: string): boolean {
   return true;
 }
 
-function tryAcquireTrustedBrowserStoreReclaimGuard(lockPath: string): (() => void) | undefined {
+function tryAcquireTrustedBrowserStoreReclaimGuard(lockPath: string): TrustedBrowserStoreLockHandle | undefined {
   const reclaimGuardPath = `${lockPath}.reclaim`;
   const releaseReclaimGuard = tryAcquireTrustedBrowserStoreLockFile(
     reclaimGuardPath,
@@ -465,20 +511,20 @@ function tryAcquireTrustedBrowserStoreReclaimGuard(lockPath: string): (() => voi
 }
 
 function tryReclaimTrustedBrowserStoreLock(lockPath: string): void {
-  const releaseReclaimGuard = tryAcquireTrustedBrowserStoreReclaimGuard(lockPath);
+  const reclaimGuard = tryAcquireTrustedBrowserStoreReclaimGuard(lockPath);
 
-  if (releaseReclaimGuard === undefined) {
+  if (reclaimGuard === undefined) {
     return;
   }
 
   try {
     tryReclaimStaleTrustedBrowserStoreLockFile(lockPath);
   } finally {
-    releaseReclaimGuard();
+    reclaimGuard.release();
   }
 }
 
-async function acquireTrustedBrowserStoreLock(trustedBrowsersPath: string): Promise<() => void> {
+async function acquireTrustedBrowserStoreLock(trustedBrowsersPath: string): Promise<TrustedBrowserStoreLockHandle> {
   ensureTrustedBrowsersDirectory(trustedBrowsersPath);
   const lockPath = `${trustedBrowsersPath}.lock`;
 
@@ -501,22 +547,26 @@ export async function addTrustedBrowserToken(
   trustedBrowsersPath: string,
   token: string,
 ): Promise<TrustedBrowserRecord> {
-  const releaseLock = await acquireTrustedBrowserStoreLock(trustedBrowsersPath);
+  const lock = await acquireTrustedBrowserStoreLock(trustedBrowsersPath);
 
   try {
     const records = readTrustedBrowserRecords(trustedBrowsersPath);
     const existingRecord = records.find((record) => record.token === token);
 
     if (existingRecord) {
-      writeTrustedBrowserRecords(trustedBrowsersPath, records);
+      writeTrustedBrowserRecords(trustedBrowsersPath, records, () => lock.assertOwnership());
       return existingRecord;
     }
 
     const storedRecord = { token };
-    writeTrustedBrowserRecords(trustedBrowsersPath, [...records, storedRecord]);
+    writeTrustedBrowserRecords(
+      trustedBrowsersPath,
+      [...records, storedRecord],
+      () => lock.assertOwnership(),
+    );
     return storedRecord;
   } finally {
-    releaseLock();
+    lock.release();
   }
 }
 

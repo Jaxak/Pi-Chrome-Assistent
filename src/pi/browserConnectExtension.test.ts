@@ -8,9 +8,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_BROKER_HOST, DEFAULT_BROKER_PORT } from "../shared/constants";
-import type { ConnectedTargetClient } from "./targetClient";
-
+import {
+  getChromeAssistentLogPath,
+  getGlobalBrokerTokenPath,
+} from "./chromeAssistentPaths";
 import { createMemoryLogger } from "./logging";
+import type { ConnectedTargetClient } from "./targetClient";
 
 async function importBrowserConnectExtensionModule() {
   return import("./browserConnectExtension");
@@ -22,6 +25,7 @@ afterEach(() => {
   vi.doUnmock("node:crypto");
   vi.doUnmock("node:fs");
   vi.doUnmock("./broker");
+  vi.doUnmock("./logging");
   vi.doUnmock("./targetClient");
 });
 
@@ -38,6 +42,39 @@ describe("readOrCreateSharedToken", () => {
       expect(statSync(tokenFilePath).mode & 0o777).toBe(0o600);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the global Chrome Assistent broker token path instead of the cwd-local .pi directory", async () => {
+    const tempHome = mkdtempSync(join(tmpdir(), "browser-connect-home-"));
+    const tempCwd = mkdtempSync(join(tmpdir(), "browser-connect-cwd-"));
+    const originalHome = process.env.HOME;
+    const originalCwd = process.cwd();
+
+    process.env.HOME = tempHome;
+    process.chdir(tempCwd);
+
+    try {
+      const { readOrCreateSharedToken } = await importBrowserConnectExtensionModule();
+      const token = readOrCreateSharedToken();
+      const globalTokenPath = getGlobalBrokerTokenPath(tempHome);
+      const legacyTokenPath = join(tempCwd, ".pi", "browser-connect.token");
+
+      expect(token).toHaveLength(36);
+      expect(statSync(globalTokenPath).mode & 0o777).toBe(0o600);
+      expect(fs.existsSync(globalTokenPath)).toBe(true);
+      expect(fs.existsSync(legacyTokenPath)).toBe(false);
+    } finally {
+      process.chdir(originalCwd);
+
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      rmSync(tempHome, { recursive: true, force: true });
+      rmSync(tempCwd, { recursive: true, force: true });
     }
   });
 
@@ -349,6 +386,52 @@ describe("readOrCreateSharedToken", () => {
 });
 
 describe("browserConnectExtension", () => {
+  it("writes logs under the global Chrome Assistent runtime area instead of the cwd-local .pi directory", async () => {
+    const tempHome = mkdtempSync(join(tmpdir(), "browser-connect-home-"));
+    const tempCwd = mkdtempSync(join(tmpdir(), "browser-connect-cwd-"));
+    const originalHome = process.env.HOME;
+    const originalCwd = process.cwd();
+    const createFileLogger = vi.fn(() => createMemoryLogger());
+
+    vi.doMock("./logging", async () => {
+      const actual = await vi.importActual<typeof import("./logging")>("./logging");
+
+      return {
+        ...actual,
+        createFileLogger,
+      };
+    });
+
+    process.env.HOME = tempHome;
+    process.chdir(tempCwd);
+
+    try {
+      const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
+      const pi = {
+        registerCommand: vi.fn(),
+        on: vi.fn(),
+        getSessionName: vi.fn(() => "session"),
+        sendUserMessage: vi.fn(),
+      } as unknown as ExtensionAPI;
+
+      browserConnectExtension(pi);
+
+      expect(createFileLogger).toHaveBeenCalledWith(getChromeAssistentLogPath(tempHome));
+      expect(createFileLogger).not.toHaveBeenCalledWith(join(tempCwd, ".pi", "browser-connect.log"));
+    } finally {
+      process.chdir(originalCwd);
+
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      rmSync(tempHome, { recursive: true, force: true });
+      rmSync(tempCwd, { recursive: true, force: true });
+    }
+  });
+
   it("registers only the chrome-assistent-connect command", async () => {
     const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
     const registerCommand = vi.fn();

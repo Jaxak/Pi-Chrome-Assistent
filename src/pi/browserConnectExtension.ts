@@ -11,12 +11,16 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_BROKER_HOST, DEFAULT_BROKER_PORT } from "../shared/constants";
 import { startBrokerServer, type BrowserConnectBrokerServer } from "./broker";
+import {
+  getChromeAssistentLogPath,
+  getGlobalBrokerTokenPath,
+} from "./chromeAssistentPaths";
 import { createFileLogger, type BrowserConnectLogger } from "./logging";
 import {
   buildTargetMetadata,
@@ -28,8 +32,6 @@ import {
 
 const STATUS_KEY = "chrome-assistent-connect";
 const PUBLIC_COMMAND_NAME = "/chrome-assistent-connect";
-const TOKEN_FILE_PATH = join(process.cwd(), ".pi", "browser-connect.token");
-const LOG_FILE_PATH = join(process.cwd(), ".pi", "browser-connect.log");
 
 function normalizeAlias(args: string): string | undefined {
   const alias = args.trim();
@@ -159,7 +161,7 @@ function createTokenFile(tokenFilePath: string, token: string): void {
   }
 }
 
-export function readOrCreateSharedToken(tokenFilePath = TOKEN_FILE_PATH): string {
+export function readOrCreateSharedToken(tokenFilePath = getGlobalBrokerTokenPath()): string {
   ensureTokenDirectoryPermissions(tokenFilePath);
 
   try {
@@ -322,7 +324,7 @@ export async function startOwnedBrokerIfNeeded(options: {
 }
 
 export default function browserConnectExtension(pi: ExtensionAPI): void {
-  const logger: BrowserConnectLogger = createFileLogger(LOG_FILE_PATH);
+  const logger: BrowserConnectLogger = createFileLogger(getChromeAssistentLogPath());
   const targetId = randomUUID();
   let sharedToken: string | undefined;
   let activeTargetConnection: ConnectedTargetClient | undefined;

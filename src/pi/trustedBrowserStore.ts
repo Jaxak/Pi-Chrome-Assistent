@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   closeSync,
   constants as fsConstants,
   fchmodSync,
@@ -7,9 +8,11 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { toNodeError, validateDirectoryPathChain } from "./secureFilesystem";
 
@@ -25,6 +28,14 @@ function ensureTrustedBrowsersDirectory(trustedBrowsersPath: string): void {
     mode: 0o700,
   });
   validateDirectoryPathChain(trustedBrowsersDirectory, "Trusted browser directory");
+
+  try {
+    chmodSync(trustedBrowsersDirectory, 0o700);
+  } catch (error) {
+    const nodeError = toNodeError(error);
+    const reason = nodeError.message.length > 0 ? nodeError.message : "Unknown error";
+    throw new Error(`Failed to secure trusted browser directory permissions at ${trustedBrowsersDirectory}: ${reason}`);
+  }
 }
 
 function getNoFollowFlag(): number {
@@ -201,21 +212,81 @@ function writeTrustedBrowserRecords(
   }
 }
 
+const TRUSTED_BROWSER_STORE_LOCK_RETRY_DELAY_MS = 10;
+const TRUSTED_BROWSER_STORE_LOCK_MAX_ATTEMPTS = 200;
+
+async function acquireTrustedBrowserStoreLock(trustedBrowsersPath: string): Promise<() => void> {
+  ensureTrustedBrowsersDirectory(trustedBrowsersPath);
+  const lockPath = `${trustedBrowsersPath}.lock`;
+
+  for (let attempt = 0; attempt < TRUSTED_BROWSER_STORE_LOCK_MAX_ATTEMPTS; attempt += 1) {
+    let fd: number | undefined;
+
+    try {
+      fd = openTrustedBrowserStoreFile(
+        lockPath,
+        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | getNoFollowFlag(),
+        0o600,
+      );
+
+      return () => {
+        if (fd === undefined) {
+          return;
+        }
+
+        const acquiredFd = fd;
+        fd = undefined;
+        closeSync(acquiredFd);
+
+        try {
+          unlinkSync(lockPath);
+        } catch (error) {
+          const nodeError = toNodeError(error);
+
+          if (nodeError.code !== "ENOENT") {
+            throw error;
+          }
+        }
+      };
+    } catch (error) {
+      if (fd !== undefined) {
+        closeSync(fd);
+      }
+
+      const nodeError = toNodeError(error);
+
+      if (nodeError.code !== "EEXIST") {
+        throw error;
+      }
+    }
+
+    await delay(TRUSTED_BROWSER_STORE_LOCK_RETRY_DELAY_MS);
+  }
+
+  throw new Error(`Timed out waiting for trusted browser store lock: ${lockPath}`);
+}
+
 export async function addTrustedBrowserToken(
   trustedBrowsersPath: string,
   token: string,
 ): Promise<TrustedBrowserRecord> {
-  const records = readTrustedBrowserRecords(trustedBrowsersPath);
-  const existingRecord = records.find((record) => record.token === token);
+  const releaseLock = await acquireTrustedBrowserStoreLock(trustedBrowsersPath);
 
-  if (existingRecord) {
-    writeTrustedBrowserRecords(trustedBrowsersPath, records);
-    return existingRecord;
+  try {
+    const records = readTrustedBrowserRecords(trustedBrowsersPath);
+    const existingRecord = records.find((record) => record.token === token);
+
+    if (existingRecord) {
+      writeTrustedBrowserRecords(trustedBrowsersPath, records);
+      return existingRecord;
+    }
+
+    const storedRecord = { token };
+    writeTrustedBrowserRecords(trustedBrowsersPath, [...records, storedRecord]);
+    return storedRecord;
+  } finally {
+    releaseLock();
   }
-
-  const storedRecord = { token };
-  writeTrustedBrowserRecords(trustedBrowsersPath, [...records, storedRecord]);
-  return storedRecord;
 }
 
 export async function isTrustedBrowserToken(

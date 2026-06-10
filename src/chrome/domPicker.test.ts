@@ -8,11 +8,56 @@ import {
   buildSelectionPayload,
   createCssSelector,
   findLogicalSelectionElement,
+  getSelectionCandidates,
 } from "./domPicker";
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
+
+describe("getSelectionCandidates", () => {
+  it("returns ordered selection candidates from smaller to larger blocks", () => {
+    document.body.innerHTML = `
+      <section id="shell">
+        <article id="card">
+          <h3>Заголовок карточки</h3>
+          <p id="start">Осмысленный текст внутри карточки.</p>
+        </article>
+      </section>
+    `;
+
+    const start = document.querySelector("#start");
+
+    expect(start).not.toBeNull();
+
+    const result = getSelectionCandidates(start as Element);
+
+    expect(result.candidates.map((element) => element.id)).toEqual(["start", "card", "shell"]);
+    expect(result.recommendedIndex).toBe(1);
+  });
+
+  it("prefers a compact text block over a large layout wrapper", () => {
+    document.body.innerHTML = `
+      <div id="app">
+        <div id="layout">
+          <div id="card">
+            <div class="title">Сводка</div>
+            <div id="start">Нужный локальный текстовый блок для отправки.</div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const start = document.querySelector("#start");
+
+    expect(start).not.toBeNull();
+
+    const result = getSelectionCandidates(start as Element);
+
+    expect(result.candidates[result.recommendedIndex]?.id).toBe("card");
+    expect(findLogicalSelectionElement(start as Element)).toBe(document.querySelector("#card"));
+  });
+});
 
 describe("findLogicalSelectionElement", () => {
   it("prefers pre/code blocks for code-heavy content", () => {

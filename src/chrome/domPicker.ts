@@ -43,6 +43,13 @@ const MEANINGFUL_ARIA_ROLE_SCORES: Record<string, number> = {
   log: 70,
 };
 
+const MAX_SELECTION_CANDIDATE_DEPTH = 8;
+
+export type SelectionCandidates = {
+  candidates: Element[];
+  recommendedIndex: number;
+};
+
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -114,6 +121,56 @@ function getRectScore(element: Element): number {
   return 22;
 }
 
+function getTextDensityScore(element: Element, textLength: number): number {
+  const childCount = element.children.length;
+
+  if (textLength === 0) {
+    return childCount > 0 ? -24 : 0;
+  }
+
+  if (childCount === 0) {
+    return textLength >= 20 ? 14 : 6;
+  }
+
+  const density = textLength / Math.max(1, childCount);
+
+  if (density >= 28) {
+    return 26;
+  }
+
+  if (density >= 16) {
+    return 14;
+  }
+
+  if (density >= 8) {
+    return 4;
+  }
+
+  return -10;
+}
+
+function getWrapperPenalty(element: Element, textLength: number): number {
+  if (textLength === 0) {
+    return 0;
+  }
+
+  const childCount = element.children.length;
+
+  if (childCount === 1 && textLength >= 20) {
+    return -20;
+  }
+
+  if (childCount >= 10) {
+    return -16;
+  }
+
+  if (childCount >= 5) {
+    return -8;
+  }
+
+  return 0;
+}
+
 function scoreElement(element: Element): number {
   const tagName = element.tagName.toLowerCase();
   const text = getElementText(element);
@@ -137,28 +194,72 @@ function scoreElement(element: Element): number {
     score -= 8;
   }
 
+  score += getTextDensityScore(element, textLength);
+  score += getWrapperPenalty(element, textLength);
   score += getRectScore(element);
 
   return score;
 }
 
-export function findLogicalSelectionElement(start: Element): Element {
+function shouldIncludeSelectionCandidate(element: Element): boolean {
+  const tagName = element.tagName.toLowerCase();
+  return tagName !== "body" && tagName !== "html";
+}
+
+function collectCandidateChain(start: Element): Element[] {
+  const candidates: Element[] = [];
   let current: Element | null = start;
-  let bestElement = start;
-  let bestScore = Number.NEGATIVE_INFINITY;
+  let depth = 0;
 
-  while (current) {
-    const score = scoreElement(current);
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestElement = current;
+  while (current && depth < MAX_SELECTION_CANDIDATE_DEPTH) {
+    if (shouldIncludeSelectionCandidate(current)) {
+      candidates.push(current);
     }
 
     current = current.parentElement;
+    depth += 1;
   }
 
-  return bestElement;
+  return candidates;
+}
+
+function dedupeCandidates(candidates: Element[]): Element[] {
+  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
+}
+
+function chooseRecommendedCandidateIndex(candidates: Element[]): number {
+  if (candidates.length === 0) {
+    return 0;
+  }
+
+  let bestIndex = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const [index, candidate] of candidates.entries()) {
+    const score = scoreElement(candidate);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+
+  return bestIndex;
+}
+
+export function getSelectionCandidates(start: Element): SelectionCandidates {
+  const candidates = dedupeCandidates(collectCandidateChain(start));
+  const recommendedIndex = chooseRecommendedCandidateIndex(candidates);
+
+  return {
+    candidates: candidates.length > 0 ? candidates : [start],
+    recommendedIndex: candidates.length > 0 ? recommendedIndex : 0,
+  };
+}
+
+export function findLogicalSelectionElement(start: Element): Element {
+  const { candidates, recommendedIndex } = getSelectionCandidates(start);
+  return candidates[recommendedIndex] ?? start;
 }
 
 function escapeIdentifier(value: string): string {

@@ -192,8 +192,6 @@ function startDomPicker(targetId: string): void {
     const found = findSiblingInDomOrder(currentSelection, siblings.elements, direction);
     if (!found) return false;
 
-    currentCandidates[currentIndex] = found;
-
     // Rebuild candidate chain so narrow/widen works from the new element
     const newCandidates = getSelectionCandidates(found);
     currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [found];

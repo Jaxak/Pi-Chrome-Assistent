@@ -297,6 +297,19 @@ function startDomPicker(targetId: string): void {
       event.stopPropagation();
       cleanup();
     }
+
+    // ArrowUp / ArrowDown for sibling navigation
+    if (state === 'selected' && !modalOpen) {
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        tryNavigateToSibling('up');
+      } else if (event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopPropagation();
+        tryNavigateToSibling('down');
+      }
+    }
   };
 
   document.addEventListener("mousemove", handleMouseMove, true);

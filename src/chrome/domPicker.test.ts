@@ -8,6 +8,7 @@ import {
   buildSelectionPayload,
   createCssSelector,
   findLogicalSelectionElement,
+  findSiblingElements,
   getSelectionCandidates,
 } from "./domPicker";
 
@@ -219,5 +220,107 @@ describe("buildSelectionPayload", () => {
     expect(new TextEncoder().encode(payload.selectedHtml).length).toBeLessThanOrEqual(MAX_SELECTED_HTML_BYTES);
     expect(payload.selectedText).toContain(`[truncated: original ${new TextEncoder().encode(rawText).length} bytes, limit ${MAX_SELECTED_TEXT_BYTES} bytes]`);
     expect(payload.selectedHtml).toContain(`[truncated: original ${new TextEncoder().encode(rawHtml).length} bytes, limit ${MAX_SELECTED_HTML_BYTES} bytes]`);
+  });
+});
+
+describe("findSiblingElements", () => {
+  it("returns visible siblings in DOM order with previous first", () => {
+    document.body.innerHTML = `
+      <div id="container">
+        <div id="s1">First</div>
+        <div id="s2">Second</div>
+        <div id="target">Target</div>
+        <div id="s3">Fourth</div>
+        <div id="s4">Fifth</div>
+      </div>
+    `;
+    const target = document.querySelector("#target")!;
+    const result = findSiblingElements(target);
+    expect(result.elements.map(e => e.id)).toEqual(["s2", "s1", "s3", "s4"]);
+    expect(result.currentIndex).toBe(0); // first previous sibling
+  });
+
+  it("returns empty array when no siblings exist", () => {
+    document.body.innerHTML = `
+      <div id="only">Only child</div>
+    `;
+    const target = document.querySelector("#only")!;
+    const result = findSiblingElements(target);
+    expect(result.elements).toEqual([]);
+    expect(result.currentIndex).toBe(-1);
+  });
+
+  it("skips hidden elements (display:none or zero dimensions)", () => {
+    document.body.innerHTML = `
+      <div>
+        <div id="visible1">Visible</div>
+        <div id="hidden" style="display:none">Hidden</div>
+        <div id="target">Target</div>
+        <div id="visible2">Also visible</div>
+      </div>
+    `;
+    const target = document.querySelector("#target")!;
+    const result = findSiblingElements(target);
+    expect(result.elements.map(e => e.id)).toEqual(["visible1", "visible2"]);
+    expect(result.elements.every(e => e.id !== "hidden")).toBe(true);
+  });
+
+  it("skips elements with visibility:hidden", () => {
+    document.body.innerHTML = `
+      <div>
+        <div id="visible1">Visible</div>
+        <div id="hidden" style="visibility:hidden">Hidden by visibility</div>
+        <div id="target">Target</div>
+        <div id="visible2">Also visible</div>
+      </div>
+    `;
+    const target = document.querySelector("#target")!;
+    const result = findSiblingElements(target);
+    expect(result.elements.map(e => e.id)).toEqual(["visible1", "visible2"]);
+    expect(result.elements.every(e => e.id !== "hidden")).toBe(true);
+  });
+
+  it("skips elements with opacity:0", () => {
+    document.body.innerHTML = `
+      <div>
+        <div id="visible1">Visible</div>
+        <div id="hidden" style="opacity:0">Hidden by opacity</div>
+        <div id="target">Target</div>
+        <div id="visible2">Also visible</div>
+      </div>
+    `;
+    const target = document.querySelector("#target")!;
+    const result = findSiblingElements(target);
+    expect(result.elements.map(e => e.id)).toEqual(["visible1", "visible2"]);
+    expect(result.elements.every(e => e.id !== "hidden")).toBe(true);
+  });
+
+  it("prefers previous sibling as initial selection when going up", () => {
+    document.body.innerHTML = `
+      <div>
+        <div id="prev">Previous</div>
+        <div id="target">Target</div>
+        <div id="next">Next</div>
+      </div>
+    `;
+    const target = document.querySelector("#target")!;
+    const result = findSiblingElements(target);
+    // First element should be the previous sibling (for "up" direction)
+    expect(result.elements[0]?.id).toBe("prev");
+  });
+
+  it("orders siblings: previous first (closest to farthest), then next (closest to farthest)", () => {
+    document.body.innerHTML = `
+      <div>
+        <div id="a">A</div>
+        <div id="b">B</div>
+        <div id="target">Target</div>
+        <div id="c">C</div>
+        <div id="d">D</div>
+      </div>
+    `;
+    const target = document.querySelector("#target")!;
+    const result = findSiblingElements(target);
+    expect(result.elements.map(e => e.id)).toEqual(["b", "a", "c", "d"]);
   });
 });

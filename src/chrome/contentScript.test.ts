@@ -93,6 +93,7 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -195,6 +196,7 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload,
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast }));
 
@@ -293,6 +295,7 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -382,6 +385,7 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -471,6 +475,7 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -563,6 +568,7 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 

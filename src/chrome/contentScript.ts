@@ -1,4 +1,4 @@
-import { buildSelectionPayload, getSelectionCandidates } from "./domPicker";
+import { buildSelectionPayload, findSiblingElements, getSelectionCandidates } from "./domPicker";
 import {
   formatSendSelectionErrorToastMessage,
   SEND_SELECTION_SUCCESS_TOAST_MESSAGE,
@@ -142,10 +142,60 @@ function startDomPicker(targetId: string): void {
       cleanup();
     },
     onUp: () => {
-      // Up navigation will be implemented in a follow-up task
+      if (state !== 'selected' || !isActive || modalOpen) return;
+
+      const currentSelection = getCurrentSelection();
+      if (!currentSelection) return;
+
+      const parent = currentSelection.parentElement;
+      if (!parent) return;
+
+      const siblings = findSiblingElements(currentSelection);
+      if (siblings.elements.length === 0) return;
+
+      const allChildren = Array.from(parent.children);
+      const currentDomIndex = allChildren.indexOf(currentSelection);
+
+      let foundPrev: Element | null = null;
+      for (let i = currentDomIndex - 1; i >= 0; i--) {
+        if (siblings.elements.includes(allChildren[i])) {
+          foundPrev = allChildren[i];
+          break;
+        }
+      }
+
+      if (!foundPrev) return;
+
+      currentCandidates[currentIndex] = foundPrev;
+      updateCurrentSelection();
     },
     onDown: () => {
-      // Down navigation will be implemented in a follow-up task
+      if (state !== 'selected' || !isActive || modalOpen) return;
+
+      const currentSelection = getCurrentSelection();
+      if (!currentSelection) return;
+
+      const parent = currentSelection.parentElement;
+      if (!parent) return;
+
+      const siblings = findSiblingElements(currentSelection);
+      if (siblings.elements.length === 0) return;
+
+      const allChildren = Array.from(parent.children);
+      const currentDomIndex = allChildren.indexOf(currentSelection);
+
+      let foundNext: Element | null = null;
+      for (let i = currentDomIndex + 1; i < allChildren.length; i++) {
+        if (siblings.elements.includes(allChildren[i])) {
+          foundNext = allChildren[i];
+          break;
+        }
+      }
+
+      if (!foundNext) return;
+
+      currentCandidates[currentIndex] = foundNext;
+      updateCurrentSelection();
     },
   });
 
@@ -162,11 +212,37 @@ function startDomPicker(targetId: string): void {
     }
 
     overlay.update(currentSelection, state === 'selected');
+
+    // Compute sibling navigation state
+    const siblings = findSiblingElements(currentSelection);
+    const parent = currentSelection.parentElement;
+    let canGoUp = false;
+    let canGoDown = false;
+
+    if (parent && siblings.elements.length > 0) {
+      const allChildren = Array.from(parent.children);
+      const currentDomIndex = allChildren.indexOf(currentSelection);
+
+      for (let i = currentDomIndex - 1; i >= 0; i--) {
+        if (siblings.elements.includes(allChildren[i])) {
+          canGoUp = true;
+          break;
+        }
+      }
+
+      for (let i = currentDomIndex + 1; i < allChildren.length; i++) {
+        if (siblings.elements.includes(allChildren[i])) {
+          canGoDown = true;
+          break;
+        }
+      }
+    }
+
     overlay.setNavigationState({
       canNarrow: currentIndex > 0,
       canWiden: currentIndex < currentCandidates.length - 1,
-      canGoUp: false,
-      canGoDown: false,
+      canGoUp,
+      canGoDown,
     });
   }
 

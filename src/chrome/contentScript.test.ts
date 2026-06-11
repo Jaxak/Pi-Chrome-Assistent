@@ -47,7 +47,7 @@ describe("contentScript", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses the recommended candidate first and widens selection on overlay request", async () => {
+  it("uses the recommended candidate first and widens to parent on overlay request", async () => {
     let overlayCallbacks:
       | {
         onNarrow(): void;
@@ -62,15 +62,15 @@ describe("contentScript", () => {
     const messageListeners: RuntimeMessageListener[] = [];
 
     document.body.innerHTML = `
-      <div id="small">Small</div>
-      <article id="medium">Medium</article>
-      <section id="large">Large</section>
-      <div id="start">Start</div>
+      <section id="outer">
+        <article id="inner">
+          <div id="start">Start</div>
+        </article>
+      </section>
     `;
 
-    const smallEl = document.querySelector("#small") as Element;
-    const mediumEl = document.querySelector("#medium") as Element;
-    const largeEl = document.querySelector("#large") as Element;
+    const innerEl = document.querySelector("#inner") as Element;
+    const outerEl = document.querySelector("#outer") as Element;
 
     vi.doMock("./selectionOverlay", () => ({
       createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
@@ -87,12 +87,17 @@ describe("contentScript", () => {
       isPickerUiElement: () => false,
     }));
     vi.doMock("./domPicker", () => ({
-      getSelectionCandidates: vi.fn(() => ({
-        candidates: [smallEl, mediumEl, largeEl],
-        recommendedIndex: 1,
-      })),
+      getSelectionCandidates: vi.fn((el: Element) => {
+        if (el.id === "outer") return { candidates: [outerEl], recommendedIndex: 0 };
+        return { candidates: [innerEl, outerEl], recommendedIndex: 0 };
+      }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn((el: Element) => {
+        if (el.id === "inner") return outerEl;
+        return null;
+      }),
       findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
@@ -120,16 +125,16 @@ describe("contentScript", () => {
     const hoveredElement = document.querySelector("#start");
     hoveredElement?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
 
-    expect(update).toHaveBeenCalledWith(mediumEl, false);
-    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: true, canWiden: true, canGoUp: false, canGoDown: false });
+    expect(update).toHaveBeenCalledWith(innerEl, false);
+    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: false, canWiden: true, canGoUp: false, canGoDown: false });
 
     // Click to enter selected mode
     hoveredElement?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
     overlayCallbacks?.onWiden();
 
-    expect(update).toHaveBeenLastCalledWith(largeEl, true);
-    expect(setNavigationState).toHaveBeenLastCalledWith({ canNarrow: true, canWiden: false, canGoUp: false, canGoDown: false });
+    expect(update).toHaveBeenLastCalledWith(outerEl, true);
+    expect(setNavigationState).toHaveBeenLastCalledWith({ canNarrow: false, canWiden: false, canGoUp: false, canGoDown: false });
   });
 
   it("sends payload for the current candidate after confirm", async () => {
@@ -165,15 +170,15 @@ describe("contentScript", () => {
     const messageListeners: RuntimeMessageListener[] = [];
 
     document.body.innerHTML = `
-      <div id="small">Small</div>
-      <article id="medium">Medium</article>
-      <section id="large">Large</section>
-      <div id="start">Start</div>
+      <section id="outer">
+        <article id="inner">
+          <div id="start">Start</div>
+        </article>
+      </section>
     `;
 
-    const smallEl = document.querySelector("#small") as Element;
-    const mediumEl = document.querySelector("#medium") as Element;
-    const largeEl = document.querySelector("#large") as Element;
+    const innerEl = document.querySelector("#inner") as Element;
+    const outerEl = document.querySelector("#outer") as Element;
 
     vi.doMock("./selectionOverlay", () => ({
       createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
@@ -190,12 +195,17 @@ describe("contentScript", () => {
       isPickerUiElement: () => false,
     }));
     vi.doMock("./domPicker", () => ({
-      getSelectionCandidates: vi.fn(() => ({
-        candidates: [smallEl, mediumEl, largeEl],
-        recommendedIndex: 1,
-      })),
+      getSelectionCandidates: vi.fn((el: Element) => {
+        if (el.id === "outer") return { candidates: [outerEl], recommendedIndex: 0 };
+        return { candidates: [innerEl, outerEl], recommendedIndex: 0 };
+      }),
       buildSelectionPayload,
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn((el: Element) => {
+        if (el.id === "inner") return outerEl;
+        return null;
+      }),
       findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast }));
@@ -226,6 +236,7 @@ describe("contentScript", () => {
     // Click to enter selected mode so onWiden works
     hoveredElement?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
+    // Widen to parent first
     overlayCallbacks?.onWiden();
     overlayCallbacks?.onConfirm();
 
@@ -235,15 +246,15 @@ describe("contentScript", () => {
     onSubmit?.("Explain this");
     await flushAsyncWork();
 
-    expect(buildSelectionPayload).toHaveBeenCalledWith(largeEl, "Explain this");
+    expect(buildSelectionPayload).toHaveBeenCalledWith(outerEl, "Explain this");
     expect(runtimeSendMessage).toHaveBeenCalledWith({
       type: "sendSelection",
       targetId: "target-123",
       selection: selectionPayload,
     });
     expect(showToast).toHaveBeenCalledWith("Отправлено в Pi", "success");
-    expect(update).toHaveBeenCalledWith(mediumEl, false);
-    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: true, canWiden: true, canGoUp: false, canGoDown: false });
+    expect(update).toHaveBeenCalledWith(innerEl, false);
+    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: false, canWiden: true, canGoUp: false, canGoDown: false });
   });
 
   it("click fixes selection and shows the panel", async () => {
@@ -295,6 +306,8 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
@@ -385,6 +398,8 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
@@ -475,6 +490,8 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
@@ -519,7 +536,7 @@ describe("contentScript", () => {
     expect(update).toHaveBeenCalledTimes(1);
   });
 
-  it("narrow and widen work after selection", async () => {
+  it("narrow goes to child and widen goes to parent after selection", async () => {
     let overlayCallbacks: {
       onNarrow(): void;
       onWiden(): void;
@@ -537,15 +554,17 @@ describe("contentScript", () => {
     const messageListeners: RuntimeMessageListener[] = [];
 
     document.body.innerHTML = `
-      <div id="small">Small</div>
-      <article id="medium">Medium</article>
-      <section id="large">Large</section>
+      <section id="grandParent">
+        <article id="parent">
+          <div id="child">Child content</div>
+        </article>
+      </section>
       <div id="start">Start</div>
     `;
 
-    const smallEl = document.querySelector("#small") as Element;
-    const mediumEl = document.querySelector("#medium") as Element;
-    const largeEl = document.querySelector("#large") as Element;
+    const childEl = document.querySelector("#child") as Element;
+    const parentEl = document.querySelector("#parent") as Element;
+    const grandParentEl = document.querySelector("#grandParent") as Element;
 
     vi.doMock("./selectionOverlay", () => ({
       createSelectionOverlay: (callbacks: typeof overlayCallbacks) => {
@@ -562,12 +581,22 @@ describe("contentScript", () => {
       isPickerUiElement: () => false,
     }));
     vi.doMock("./domPicker", () => ({
-      getSelectionCandidates: vi.fn(() => ({
-        candidates: [smallEl, mediumEl, largeEl],
-        recommendedIndex: 1,
-      })),
+      getSelectionCandidates: vi.fn((el: Element) => {
+        if (el.id === "child") return { candidates: [childEl, parentEl, grandParentEl], recommendedIndex: 0 };
+        if (el.id === "start") return { candidates: [parentEl, grandParentEl], recommendedIndex: 0 };
+        return { candidates: [el], recommendedIndex: 0 };
+      }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn((el: Element) => {
+        if (el.id === "parent") return childEl;
+        return null;
+      }),
+      getParentElement: vi.fn((el: Element) => {
+        if (el.id === "parent") return grandParentEl;
+        if (el.id === "child") return parentEl;
+        return null;
+      }),
       findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
@@ -600,19 +629,19 @@ describe("contentScript", () => {
     startEl?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     update.mockClear();
 
-    // narrow: mediumEl (index 1) -> smallEl (index 0)
+    // narrow: parentEl -> childEl (best visible child)
     overlayCallbacks?.onNarrow();
-    expect(update).toHaveBeenCalledWith(smallEl, true);
+    expect(update).toHaveBeenCalledWith(childEl, true);
     update.mockClear();
 
-    // widen: smallEl (index 0) -> mediumEl (index 1)
+    // widen: childEl -> parentEl (parent element)
     overlayCallbacks?.onWiden();
-    expect(update).toHaveBeenCalledWith(mediumEl, true);
+    expect(update).toHaveBeenCalledWith(parentEl, true);
     update.mockClear();
 
-    // widen: mediumEl (index 1) -> largeEl (index 2)
+    // widen: parentEl -> grandParentEl (parent element)
     overlayCallbacks?.onWiden();
-    expect(update).toHaveBeenCalledWith(largeEl, true);
+    expect(update).toHaveBeenCalledWith(grandParentEl, true);
   });
 
   it("onDown navigates to next visible sibling", async () => {
@@ -674,6 +703,8 @@ describe("contentScript", () => {
       }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn((el: Element) => {
         switch (el.id) {
           case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
@@ -797,6 +828,8 @@ describe("contentScript", () => {
       }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn((el: Element) => {
         switch (el.id) {
           case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
@@ -911,6 +944,8 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn((el: Element) => {
         switch (el.id) {
           case "sib-a": return { elements: [sibB], currentIndex: 0 };
@@ -1011,6 +1046,8 @@ describe("contentScript", () => {
       }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn((el: Element) => {
         switch (el.id) {
           case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
@@ -1114,6 +1151,8 @@ describe("contentScript", () => {
       }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn((el: Element) => {
         switch (el.id) {
           case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
@@ -1210,6 +1249,8 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn((el: Element) => {
         switch (el.id) {
           case "sib-a": return { elements: [sibB, sibC], currentIndex: 0 };
@@ -1308,6 +1349,8 @@ describe("contentScript", () => {
       }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
       findSiblingElements: vi.fn((el: Element) => {
         switch (el.id) {
           case "sib-a": return { elements: [sibB, sibC], currentIndex: 0 };

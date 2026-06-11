@@ -416,6 +416,36 @@ function isElementVisible(element: Element): boolean {
   return true;
 }
 
+export function findBestVisibleChild(target: Element): Element | null {
+  const children = Array.from(target.children).filter((el) => isElementVisible(el));
+
+  if (children.length === 0) {
+    return null;
+  }
+
+  // Pick the visible child with the highest score (prefer compact, text-rich children)
+  let bestChild = children[0];
+  let bestScore = scoreElement(children[0]);
+
+  for (let i = 1; i < children.length; i++) {
+    const score = scoreElement(children[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestChild = children[i];
+    }
+  }
+
+  return bestChild;
+}
+
+export function getParentElement(target: Element): Element | null {
+  const parent = target.parentElement;
+  if (!parent || parent.tagName.toLowerCase() === "html" || parent.tagName.toLowerCase() === "body") {
+    return null;
+  }
+  return parent;
+}
+
 export function findSiblingElements(target: Element): SiblingNavigation {
   const parent = target.parentElement;
   if (!parent) {

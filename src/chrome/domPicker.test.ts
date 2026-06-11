@@ -7,9 +7,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildSelectionPayload,
   createCssSelector,
+  findBestVisibleChild,
   findLogicalSelectionElement,
-  findSiblingElements,
+  getParentElement,
   getSelectionCandidates,
+  findSiblingElements,
 } from "./domPicker";
 
 function normalizeWhitespace(value: string): string {
@@ -322,5 +324,78 @@ describe("findSiblingElements", () => {
     const target = document.querySelector("#target")!;
     const result = findSiblingElements(target);
     expect(result.elements.map(e => e.id)).toEqual(["b", "a", "c", "d"]);
+  });
+});
+
+describe("findBestVisibleChild", () => {
+  it("returns the best-scoring visible child", () => {
+    document.body.innerHTML = `
+      <div id="parent">
+        <span id="small">x</span>
+        <p id="best">This paragraph has enough text to score highest among children.</p>
+        <div id="empty"></div>
+      </div>
+    `;
+    const parent = document.querySelector("#parent")!;
+    const result = findBestVisibleChild(parent);
+    expect(result?.id).toBe("best");
+  });
+
+  it("returns null when there are no visible children", () => {
+    document.body.innerHTML = `
+      <div id="parent">
+        <div id="hidden" style="display:none">Hidden</div>
+      </div>
+    `;
+    const parent = document.querySelector("#parent")!;
+    expect(findBestVisibleChild(parent)).toBeNull();
+  });
+
+  it("returns null when element has no children", () => {
+    document.body.innerHTML = `
+      <div id="leaf">Leaf</div>
+    `;
+    const leaf = document.querySelector("#leaf")!;
+    expect(findBestVisibleChild(leaf)).toBeNull();
+  });
+
+  it("skips hidden children and picks among visible ones", () => {
+    document.body.innerHTML = `
+      <div id="parent">
+        <div id="hidden" style="display:none">Hidden</div>
+        <p id="visible">Visible content here.</p>
+      </div>
+    `;
+    const parent = document.querySelector("#parent")!;
+    const result = findBestVisibleChild(parent);
+    expect(result?.id).toBe("visible");
+  });
+});
+
+describe("getParentElement", () => {
+  it("returns the parent element", () => {
+    document.body.innerHTML = `
+      <section id="outer">
+        <div id="inner">Content</div>
+      </section>
+    `;
+    const inner = document.querySelector("#inner")!;
+    expect(getParentElement(inner)?.id).toBe("outer");
+  });
+
+  it("returns null when parent is body", () => {
+    document.body.innerHTML = `
+      <div id="direct">Content</div>
+    `;
+    const direct = document.querySelector("#direct")!;
+    expect(getParentElement(direct)).toBeNull();
+  });
+
+  it("returns null when parent is html", () => {
+    document.documentElement.innerHTML = `
+      <div id="only">Only</div>
+    `;
+    const only = document.querySelector("#only")!;
+    expect(getParentElement(only)).toBeNull();
   });
 });

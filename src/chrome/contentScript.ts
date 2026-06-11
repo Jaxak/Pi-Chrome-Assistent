@@ -1,4 +1,10 @@
-import { buildSelectionPayload, findSiblingElements, getSelectionCandidates } from "./domPicker";
+import {
+  buildSelectionPayload,
+  findBestVisibleChild,
+  findSiblingElements,
+  getParentElement,
+  getSelectionCandidates,
+} from "./domPicker";
 import {
   formatSendSelectionErrorToastMessage,
   SEND_SELECTION_SUCCESS_TOAST_MESSAGE,
@@ -65,11 +71,24 @@ function startDomPicker(targetId: string): void {
 
   const overlay = createSelectionOverlay({
     onNarrow: () => {
-      if (state !== 'selected' || !isActive || modalOpen || currentIndex <= 0) {
+      if (state !== 'selected' || !isActive || modalOpen) {
         return;
       }
 
-      currentIndex -= 1;
+      const currentSelection = getCurrentSelection();
+      if (!currentSelection) return;
+
+      const child = findBestVisibleChild(currentSelection);
+      if (!child) return;
+
+      // Rebuild candidate chain from the child so parent/child nav continues working
+      const newCandidates = getSelectionCandidates(child);
+      currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [child];
+      currentIndex = Math.min(
+        Math.max(newCandidates.recommendedIndex, 0),
+        currentCandidates.length - 1,
+      );
+
       updateCurrentSelection();
     },
     onChange: () => {
@@ -80,11 +99,24 @@ function startDomPicker(targetId: string): void {
       if (current) overlay.update(current, false);
     },
     onWiden: () => {
-      if (state !== 'selected' || !isActive || modalOpen || currentIndex >= currentCandidates.length - 1) {
+      if (state !== 'selected' || !isActive || modalOpen) {
         return;
       }
 
-      currentIndex += 1;
+      const currentSelection = getCurrentSelection();
+      if (!currentSelection) return;
+
+      const parent = getParentElement(currentSelection);
+      if (!parent) return;
+
+      // Rebuild candidate chain from the parent so parent/child nav continues working
+      const newCandidates = getSelectionCandidates(parent);
+      currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [parent];
+      currentIndex = Math.min(
+        Math.max(newCandidates.recommendedIndex, 0),
+        currentCandidates.length - 1,
+      );
+
       updateCurrentSelection();
     },
     onConfirm: () => {
@@ -230,8 +262,8 @@ function startDomPicker(targetId: string): void {
     const { canGoUp, canGoDown } = getSiblingNavigationState(currentSelection);
 
     overlay.setNavigationState({
-      canNarrow: currentIndex > 0,
-      canWiden: currentIndex < currentCandidates.length - 1,
+      canNarrow: findBestVisibleChild(currentSelection) !== null,
+      canWiden: getParentElement(currentSelection) !== null,
       canGoUp,
       canGoDown,
     });

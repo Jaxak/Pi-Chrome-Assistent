@@ -59,12 +59,13 @@ function startDomPicker(targetId: string): void {
 
   let isActive = true;
   let modalOpen = false;
+  let state: 'hover' | 'selected' = 'hover';
   let currentCandidates: Element[] = [];
   let currentIndex = 0;
 
   const overlay = createSelectionOverlay({
     onNarrow: () => {
-      if (!isActive || modalOpen || currentIndex <= 0) {
+      if (state !== 'selected' || !isActive || modalOpen || currentIndex <= 0) {
         return;
       }
 
@@ -72,10 +73,14 @@ function startDomPicker(targetId: string): void {
       updateCurrentSelection();
     },
     onChange: () => {
-      // TODO: return to hover mode
+      if (!isActive) return;
+      state = 'hover';
+      overlay.hidePanel();
+      const current = getCurrentSelection();
+      if (current) overlay.update(current, false);
     },
     onWiden: () => {
-      if (!isActive || modalOpen || currentIndex >= currentCandidates.length - 1) {
+      if (state !== 'selected' || !isActive || modalOpen || currentIndex >= currentCandidates.length - 1) {
         return;
       }
 
@@ -150,7 +155,7 @@ function startDomPicker(targetId: string): void {
       return;
     }
 
-    overlay.update(currentSelection);
+    overlay.update(currentSelection, state === 'selected');
     overlay.setNavigationState({
       canNarrow: currentIndex > 0,
       canWiden: currentIndex < currentCandidates.length - 1,
@@ -172,6 +177,7 @@ function startDomPicker(targetId: string): void {
     isActive = false;
     modalOpen = false;
     document.removeEventListener("mousemove", handleMouseMove, true);
+    document.removeEventListener("click", handleClick, true);
     document.removeEventListener("keydown", handleKeyDown, true);
     overlay.cleanup();
 
@@ -181,7 +187,7 @@ function startDomPicker(targetId: string): void {
   };
 
   const handleMouseMove = (event: MouseEvent) => {
-    if (!isActive || modalOpen) {
+    if (state !== 'hover' || !isActive || modalOpen) {
       return;
     }
 
@@ -194,6 +200,16 @@ function startDomPicker(targetId: string): void {
     }
 
     applyCandidates(hovered);
+  };
+
+  const handleClick = (event: MouseEvent) => {
+    if (state !== 'hover' || !isActive || modalOpen) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target || isPickerUiElement(target)) return;
+
+    state = 'selected';
+    applyCandidates(target);
+    overlay.showPanel();
   };
 
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -209,6 +225,7 @@ function startDomPicker(targetId: string): void {
   };
 
   document.addEventListener("mousemove", handleMouseMove, true);
+  document.addEventListener("click", handleClick, true);
   document.addEventListener("keydown", handleKeyDown, true);
   pickerWindow[PICKER_SESSION_KEY] = {
     cleanup,

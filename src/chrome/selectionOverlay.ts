@@ -8,7 +8,9 @@ export type CommentModalControls = {
 };
 
 export type SelectionOverlayControls = {
-  update(target: Element): void;
+  update(target: Element, selected?: boolean): void;
+  showPanel(): void;
+  hidePanel(): void;
   setNavigationState(state: { canNarrow: boolean; canWiden: boolean }): void;
   showCommentModal(options: {
     onSubmit(comment: string): void;
@@ -36,7 +38,7 @@ function applyOverlayStyles(
   container.style.zIndex = Z_INDEX;
 
   box.style.position = "fixed";
-  box.style.border = "2px solid #6f7f3a";
+  box.style.border = "1px solid #6f7f3a";
   box.style.borderRadius = "8px";
   box.style.background = "rgba(111, 127, 58, 0.18)";
   box.style.boxShadow = "0 0 0 1px rgba(111, 127, 58, 0.28), 0 12px 30px rgba(78, 87, 39, 0.18)";
@@ -46,7 +48,7 @@ function applyOverlayStyles(
   panel.style.position = "fixed";
   panel.style.top = "16px";
   panel.style.right = "16px";
-  panel.style.display = "grid";
+  panel.style.display = "none";
   panel.style.gap = "10px";
   panel.style.width = "min(320px, calc(100vw - 32px))";
   panel.style.padding = "12px";
@@ -57,6 +59,7 @@ function applyOverlayStyles(
   panel.style.boxShadow = "0 20px 48px rgba(78, 87, 39, 0.18)";
   panel.style.pointerEvents = "auto";
   panel.style.font = "13px/1.45 Inter, system-ui, sans-serif";
+  panel.dataset.testid = "picker-panel";
 
   label.style.margin = "0";
   label.style.font = "700 14px/1.2 Inter, system-ui, sans-serif";
@@ -104,6 +107,7 @@ function createModalRoot(): HTMLDivElement {
 export function createSelectionOverlay(callbacks: {
   onNarrow(): void;
   onWiden(): void;
+  onChange(): void;
   onConfirm(): void;
   onCancel(): void;
 }): SelectionOverlayControls {
@@ -115,6 +119,7 @@ export function createSelectionOverlay(callbacks: {
   const actions = document.createElement("div");
   const narrowButton = document.createElement("button");
   const widenButton = document.createElement("button");
+  const changeButton = document.createElement("button");
   const confirmButton = document.createElement("button");
   const cancelButton = document.createElement("button");
   let modalRoot: HTMLDivElement | null = null;
@@ -123,7 +128,7 @@ export function createSelectionOverlay(callbacks: {
   applyOverlayStyles(container, highlightBox, panel, title, description);
 
   actions.style.display = "grid";
-  actions.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+  actions.style.gridTemplateColumns = "repeat(4, minmax(0, 1fr))";
   actions.style.gap = "8px";
   actions.setAttribute(UI_ATTRIBUTE, "true");
 
@@ -137,6 +142,11 @@ export function createSelectionOverlay(callbacks: {
   widenButton.addEventListener("click", callbacks.onWiden);
   applyControlButtonStyles(widenButton, "secondary");
 
+  changeButton.dataset.testid = "picker-change";
+  changeButton.textContent = "Изменить";
+  changeButton.addEventListener("click", callbacks.onChange);
+  applyControlButtonStyles(changeButton, "secondary");
+
   confirmButton.textContent = "Отправить в Pi";
   confirmButton.addEventListener("click", callbacks.onConfirm);
   applyControlButtonStyles(confirmButton, "primary");
@@ -145,15 +155,22 @@ export function createSelectionOverlay(callbacks: {
   cancelButton.addEventListener("click", callbacks.onCancel);
   applyControlButtonStyles(cancelButton, "secondary");
 
-  actions.append(narrowButton, widenButton, confirmButton, cancelButton);
-  panel.append(title, description, actions);
+  actions.append(narrowButton, widenButton, changeButton, confirmButton);
+  panel.append(title, description, actions, cancelButton);
   container.append(highlightBox, panel);
   getOverlayHost().append(container);
 
   return {
-    update(target) {
+    update(target, selected) {
       const rect = target.getBoundingClientRect();
       setBoxFromRect(highlightBox, rect);
+      highlightBox.style.borderWidth = selected ? "2px" : "1px";
+    },
+    showPanel() {
+      panel.style.display = "grid";
+    },
+    hidePanel() {
+      panel.style.display = "none";
     },
     setNavigationState(state) {
       narrowButton.disabled = !state.canNarrow;

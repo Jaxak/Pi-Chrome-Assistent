@@ -13,6 +13,7 @@ describe("createSelectionOverlay", () => {
     const overlay = createSelectionOverlay({
       onNarrow: vi.fn(),
       onWiden: vi.fn(),
+      onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
     });
@@ -22,7 +23,6 @@ describe("createSelectionOverlay", () => {
     expect(root).not.toBeNull();
     expect(highlightBox).not.toBeNull();
     expect(highlightBox).toBeInstanceOf(HTMLDivElement);
-    expect((highlightBox as HTMLDivElement).style.border).toBe("2px solid rgb(111, 127, 58)");
     expect((highlightBox as HTMLDivElement).style.background).toBe("rgba(111, 127, 58, 0.18)");
     expect((highlightBox as HTMLDivElement).style.boxShadow).toContain("rgba(111, 127, 58, 0.28)");
 
@@ -33,6 +33,7 @@ describe("createSelectionOverlay", () => {
     const overlay = createSelectionOverlay({
       onNarrow: vi.fn(),
       onWiden: vi.fn(),
+      onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
     });
@@ -50,6 +51,7 @@ describe("createSelectionOverlay", () => {
     const overlay = createSelectionOverlay({
       onNarrow: vi.fn(),
       onWiden: vi.fn(),
+      onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
     });
@@ -84,10 +86,99 @@ describe("createSelectionOverlay", () => {
     overlay.cleanup();
   });
 
+  it("hides the panel by default", () => {
+    const overlay = createSelectionOverlay({
+      onNarrow: vi.fn(),
+      onWiden: vi.fn(),
+      onChange: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
+    expect(panel?.style.display).toBe("none");
+    overlay.cleanup();
+  });
+
+  it("shows the panel when showPanel is called", () => {
+    const overlay = createSelectionOverlay({
+      onNarrow: vi.fn(),
+      onWiden: vi.fn(),
+      onChange: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    overlay.showPanel();
+    const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
+    expect(panel?.style.display).not.toBe("none");
+    overlay.cleanup();
+  });
+
+  it("hides the panel when hidePanel is called", () => {
+    const overlay = createSelectionOverlay({
+      onNarrow: vi.fn(),
+      onWiden: vi.fn(),
+      onChange: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    overlay.showPanel();
+    overlay.hidePanel();
+    const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
+    expect(panel?.style.display).toBe("none");
+    overlay.cleanup();
+  });
+
+  it("renders the change button", () => {
+    const overlay = createSelectionOverlay({
+      onNarrow: vi.fn(),
+      onWiden: vi.fn(),
+      onChange: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    expect(document.body.textContent).toContain("Изменить");
+    const changeBtn = document.querySelector('[data-testid="picker-change"]');
+    expect(changeBtn).toBeInstanceOf(HTMLButtonElement);
+    overlay.cleanup();
+  });
+
+  it("renders 4 buttons in a grid", () => {
+    const overlay = createSelectionOverlay({
+      onNarrow: vi.fn(),
+      onWiden: vi.fn(),
+      onChange: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
+    const actions = panel?.querySelector("div[style*='grid-template-columns']") as HTMLDivElement | null;
+    expect(actions?.style.gridTemplateColumns).toContain("4");
+    overlay.cleanup();
+  });
+
+  it("uses 1px border by default and 2px when selected", () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    const overlay = createSelectionOverlay({
+      onNarrow: vi.fn(),
+      onWiden: vi.fn(),
+      onChange: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    overlay.update(div);
+    const highlightBox = document.querySelector("#pi-dom-picker-overlay-root")?.firstElementChild as HTMLDivElement;
+    expect(highlightBox.style.borderWidth).toBe("1px");
+    overlay.update(div, true);
+    expect(highlightBox.style.borderWidth).toBe("2px");
+    overlay.cleanup();
+  });
+
   it("disables the narrow button at the smallest candidate", () => {
     const overlay = createSelectionOverlay({
       onNarrow: vi.fn(),
       onWiden: vi.fn(),
+      onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
     });

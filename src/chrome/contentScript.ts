@@ -71,6 +71,9 @@ function startDomPicker(targetId: string): void {
       currentIndex -= 1;
       updateCurrentSelection();
     },
+    onChange: () => {
+      // TODO: return to hover mode
+    },
     onWiden: () => {
       if (!isActive || modalOpen || currentIndex >= currentCandidates.length - 1) {
         return;

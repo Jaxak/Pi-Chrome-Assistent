@@ -2,7 +2,17 @@
   "name": "pi-chrome-assistent",
   "version": "0.1.0",
   "private": true,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "chrome-extension"
+  ],
   "type": "module",
+  "pi": {
+    "extensions": [
+      "./src/pi/browserConnectExtension.ts"
+    ]
+  },
   "engines": {
     "node": ">=24.0.0"
   },
@@ -14,15 +24,18 @@
     "build:chrome": "node scripts/build-chrome.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.78.1",
-    "typebox": "1.2.1",
     "ws": "8.21.0"
   },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.78.1",
     "@types/chrome": "0.1.42",
     "@types/node": "24.12.4",
     "@types/ws": "8.18.1",
     "jsdom": "^29.1.1",
+    "typebox": "1.2.1",
     "typescript": "5.9.3",
     "vite": "8.0.16",
     "vitest": "4.1.8"

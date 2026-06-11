@@ -40,7 +40,5 @@ coverage/
 # TypeScript
 *.tsbuildinfo
 
-# Pi local state (keep .pi/extensions/ source trackable)
-.pi/*
-!.pi/extensions/
-!.pi/extensions/**
+# Pi local state
+.pi/

@@ -16,5 +16,5 @@
       "@chrome/*": ["src/chrome/*"]
     }
   },
-  "include": ["src", ".pi/extensions", "vitest.config.ts", "scripts"]
+  "include": ["src", "vitest.config.ts", "scripts"]
 }

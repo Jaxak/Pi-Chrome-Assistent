@@ -2,11 +2,13 @@
 
 ## [Unreleased]
 ### Added
+- Пакет теперь объявляет Pi-manifest в `package.json`, поэтому `pi install git:https://github.com/Jaxak/Pi-Chrome-Assistent.git` сразу делает доступными команды `/chrome-assistent-auth` и `/chrome-assistent-connect`.
 - Popup расширения теперь разделён на вкладки `Асистент | Сессии | Авторизация`.
 - Добавлено управление жизненным циклом browser token прямо в расширении: показ, копирование, перевыпуск и удаление.
 - Добавлена команда `/chrome-assistent-auth` для авторизации браузера в Pi.
 
 ### Changed
+- Убран project-local shim `.pi/extensions/browser-connect/index.ts`: точкой входа Pi-расширения теперь является manifest пакета.
 - Публичная команда подключения переименована в `/chrome-assistent-connect`.
 - Runtime-state Pi перенесён в `~/.pi/chrome-assistent/`.
 - Browser trust теперь отделён от внутренней регистрации Pi-целей: браузер использует собственный browser token, а Pi — внутренний target token.

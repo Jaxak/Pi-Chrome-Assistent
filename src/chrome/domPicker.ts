@@ -5,7 +5,7 @@ import { truncateUtf8 } from "../shared/truncation";
 const HIGH_PRIORITY_TAG_SCORES: Record<string, number> = {
   pre: 160,
   code: 150,
-  table: 145,
+  table: 90,
   blockquote: 140,
 };
 
@@ -22,6 +22,12 @@ const SEMANTIC_TAG_SCORES: Record<string, number> = {
   ul: 35,
   ol: 35,
   li: 20,
+};
+
+const WEB_APP_CONTAINER_SCORES: Record<string, number> = {
+  td: 110,
+  th: 105,
+  tr: 50,
 };
 
 const INLINE_TAG_PENALTIES: Record<string, number> = {
@@ -41,6 +47,13 @@ const MEANINGFUL_ARIA_ROLE_SCORES: Record<string, number> = {
   table: 145,
   code: 150,
   log: 70,
+};
+
+const MAX_SELECTION_CANDIDATE_DEPTH = 8;
+
+export type SelectionCandidates = {
+  candidates: Element[];
+  recommendedIndex: number;
 };
 
 function normalizeWhitespace(value: string): string {
@@ -82,6 +95,45 @@ function getMeaningfulRoleScore(element: Element): number {
     .reduce((maxScore, role) => Math.max(maxScore, MEANINGFUL_ARIA_ROLE_SCORES[role.toLowerCase()] ?? 0), 0);
 }
 
+function getViewportCoveragePenalty(element: Element): number {
+  if (typeof element.getBoundingClientRect !== "function") {
+    return 0;
+  }
+
+  const rect = element.getBoundingClientRect();
+  const width = Number.isFinite(rect.width) ? rect.width : 0;
+  const height = Number.isFinite(rect.height) ? rect.height : 0;
+  const area = width * height;
+
+  if (area <= 0) {
+    return 0;
+  }
+
+  const viewportWidth = typeof window !== "undefined" && window.innerWidth > 0 ? window.innerWidth : undefined;
+  const viewportHeight = typeof window !== "undefined" && window.innerHeight > 0 ? window.innerHeight : undefined;
+
+  if (!viewportWidth || !viewportHeight) {
+    return 0;
+  }
+
+  const viewportArea = viewportWidth * viewportHeight;
+  const coverage = area / viewportArea;
+
+  if (coverage > 0.92) {
+    return -80;
+  }
+
+  if (coverage > 0.75) {
+    return -44;
+  }
+
+  if (coverage > 0.5) {
+    return -24;
+  }
+
+  return 0;
+}
+
 function getRectScore(element: Element): number {
   if (typeof element.getBoundingClientRect !== "function") {
     return 0;
@@ -100,18 +152,71 @@ function getRectScore(element: Element): number {
     return -35;
   }
 
-  const viewportWidth = typeof window !== "undefined" && window.innerWidth > 0 ? window.innerWidth : undefined;
-  const viewportHeight = typeof window !== "undefined" && window.innerHeight > 0 ? window.innerHeight : undefined;
+  return 22 + getViewportCoveragePenalty(element);
+}
 
-  if (viewportWidth && viewportHeight) {
-    const viewportArea = viewportWidth * viewportHeight;
+function getTextDensityScore(element: Element, textLength: number): number {
+  const childCount = element.children.length;
 
-    if (area > viewportArea * 0.92) {
-      return -30;
-    }
+  if (textLength === 0) {
+    return childCount > 0 ? -24 : 0;
   }
 
-  return 22;
+  if (childCount === 0) {
+    return textLength >= 20 ? 14 : 6;
+  }
+
+  const density = textLength / Math.max(1, childCount);
+
+  if (density >= 28) {
+    return 26;
+  }
+
+  if (density >= 16) {
+    return 14;
+  }
+
+  if (density >= 8) {
+    return 4;
+  }
+
+  return -10;
+}
+
+function getWrapperPenalty(element: Element, textLength: number): number {
+  if (textLength === 0) {
+    return 0;
+  }
+
+  const childCount = element.children.length;
+
+  if (childCount === 1 && textLength >= 20) {
+    return -20;
+  }
+
+  if (childCount >= 10) {
+    return -16;
+  }
+
+  if (childCount >= 5) {
+    return -8;
+  }
+
+  return 0;
+}
+
+function getContainerComplexityPenalty(element: Element): number {
+  const childCount = element.children.length;
+
+  if (childCount > 12) {
+    return -30;
+  }
+
+  if (childCount > 6) {
+    return -12;
+  }
+
+  return 0;
 }
 
 function scoreElement(element: Element): number {
@@ -122,6 +227,7 @@ function scoreElement(element: Element): number {
   let score = getTextLengthScore(textLength);
   score += HIGH_PRIORITY_TAG_SCORES[tagName] ?? 0;
   score += SEMANTIC_TAG_SCORES[tagName] ?? 0;
+  score += WEB_APP_CONTAINER_SCORES[tagName] ?? 0;
   score += INLINE_TAG_PENALTIES[tagName] ?? 0;
   score += getMeaningfulRoleScore(element);
 
@@ -137,28 +243,73 @@ function scoreElement(element: Element): number {
     score -= 8;
   }
 
+  score += getTextDensityScore(element, textLength);
+  score += getWrapperPenalty(element, textLength);
+  score += getContainerComplexityPenalty(element);
   score += getRectScore(element);
 
   return score;
 }
 
-export function findLogicalSelectionElement(start: Element): Element {
+function shouldIncludeSelectionCandidate(element: Element): boolean {
+  const tagName = element.tagName.toLowerCase();
+  return tagName !== "body" && tagName !== "html";
+}
+
+function collectCandidateChain(start: Element): Element[] {
+  const candidates: Element[] = [];
   let current: Element | null = start;
-  let bestElement = start;
-  let bestScore = Number.NEGATIVE_INFINITY;
+  let depth = 0;
 
-  while (current) {
-    const score = scoreElement(current);
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestElement = current;
+  while (current && depth < MAX_SELECTION_CANDIDATE_DEPTH) {
+    if (shouldIncludeSelectionCandidate(current)) {
+      candidates.push(current);
     }
 
     current = current.parentElement;
+    depth += 1;
   }
 
-  return bestElement;
+  return candidates;
+}
+
+function dedupeCandidates(candidates: Element[]): Element[] {
+  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
+}
+
+function chooseRecommendedCandidateIndex(candidates: Element[]): number {
+  if (candidates.length === 0) {
+    return 0;
+  }
+
+  let bestIndex = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const [index, candidate] of candidates.entries()) {
+    const score = scoreElement(candidate);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+
+  return bestIndex;
+}
+
+export function getSelectionCandidates(start: Element): SelectionCandidates {
+  const candidates = dedupeCandidates(collectCandidateChain(start));
+  const recommendedIndex = chooseRecommendedCandidateIndex(candidates);
+
+  return {
+    candidates: candidates.length > 0 ? candidates : [start],
+    recommendedIndex: candidates.length > 0 ? recommendedIndex : 0,
+  };
+}
+
+export function findLogicalSelectionElement(start: Element): Element {
+  const { candidates, recommendedIndex } = getSelectionCandidates(start);
+  return candidates[recommendedIndex] ?? start;
 }
 
 function escapeIdentifier(value: string): string {

@@ -8,7 +8,10 @@ export type CommentModalControls = {
 };
 
 export type SelectionOverlayControls = {
-  update(target: Element): void;
+  update(target: Element, selected?: boolean): void;
+  showPanel(): void;
+  hidePanel(): void;
+  setNavigationState(state: { canNarrow: boolean; canWiden: boolean }): void;
   showCommentModal(options: {
     onSubmit(comment: string): void;
     onCancel(): void;
@@ -16,7 +19,17 @@ export type SelectionOverlayControls = {
   cleanup(): void;
 };
 
-function applyOverlayStyles(container: HTMLDivElement, box: HTMLDivElement, label: HTMLDivElement): void {
+function getOverlayHost(): HTMLElement {
+  return document.body ?? document.documentElement;
+}
+
+function applyOverlayStyles(
+  container: HTMLDivElement,
+  box: HTMLDivElement,
+  panel: HTMLDivElement,
+  label: HTMLHeadingElement,
+  description: HTMLParagraphElement,
+): void {
   container.id = OVERLAY_ROOT_ID;
   container.setAttribute(UI_ATTRIBUTE, "true");
   container.style.position = "fixed";
@@ -25,23 +38,49 @@ function applyOverlayStyles(container: HTMLDivElement, box: HTMLDivElement, labe
   container.style.zIndex = Z_INDEX;
 
   box.style.position = "fixed";
-  box.style.border = "2px solid #22c55e";
+  box.style.border = "1px solid #6f7f3a";
   box.style.borderRadius = "8px";
-  box.style.background = "rgba(34, 197, 94, 0.16)";
-  box.style.boxShadow = "0 0 0 1px rgba(34, 197, 94, 0.28), 0 12px 30px rgba(6, 78, 59, 0.18)";
+  box.style.background = "rgba(111, 127, 58, 0.18)";
+  box.style.boxShadow = "0 0 0 1px rgba(111, 127, 58, 0.28), 0 12px 30px rgba(78, 87, 39, 0.18)";
   box.style.pointerEvents = "none";
 
-  label.style.position = "fixed";
-  label.style.top = "16px";
-  label.style.right = "16px";
-  label.style.maxWidth = "320px";
-  label.style.padding = "10px 12px";
-  label.style.borderRadius = "999px";
-  label.style.background = "rgba(15, 23, 42, 0.92)";
-  label.style.color = "#f8fafc";
-  label.style.font = "600 12px/1.4 Inter, system-ui, sans-serif";
-  label.style.letterSpacing = "0.01em";
-  label.textContent = "Pi picker active • hover to preview • click to send • Esc to cancel";
+  panel.setAttribute(UI_ATTRIBUTE, "true");
+  panel.style.position = "fixed";
+  panel.style.top = "16px";
+  panel.style.right = "16px";
+  panel.style.display = "none";
+  panel.style.gap = "10px";
+  panel.style.width = "min(320px, calc(100vw - 32px))";
+  panel.style.padding = "12px";
+  panel.style.borderRadius = "14px";
+  panel.style.border = "1px solid #c4cca8";
+  panel.style.background = "rgba(248, 250, 240, 0.96)";
+  panel.style.color = "#2f361c";
+  panel.style.boxShadow = "0 20px 48px rgba(78, 87, 39, 0.18)";
+  panel.style.pointerEvents = "auto";
+  panel.style.font = "13px/1.45 Inter, system-ui, sans-serif";
+  panel.dataset.testid = "picker-panel";
+
+  label.style.margin = "0";
+  label.style.font = "700 14px/1.2 Inter, system-ui, sans-serif";
+  label.textContent = "Выбор блока";
+
+  description.style.margin = "0";
+  description.style.color = "#5e6740";
+  description.textContent = "Наведите курсор, при необходимости уточните уровень блока и отправьте фрагмент в Pi.";
+}
+
+function applyControlButtonStyles(button: HTMLButtonElement, variant: "primary" | "secondary"): void {
+  button.type = "button";
+  button.style.border = variant === "primary" ? "1px solid #6f7f3a" : "1px solid #c4cca8";
+  button.style.borderRadius = "10px";
+  button.style.padding = "9px 12px";
+  button.style.font = "600 13px/1.2 Inter, system-ui, sans-serif";
+  button.style.cursor = "pointer";
+  button.style.pointerEvents = "auto";
+  button.style.background = variant === "primary" ? "#6f7f3a" : "#eef2de";
+  button.style.color = variant === "primary" ? "#f8faf0" : "#3a4123";
+  button.style.boxShadow = variant === "primary" ? "0 8px 18px rgba(78, 87, 39, 0.18)" : "none";
 }
 
 function setBoxFromRect(box: HTMLDivElement, rect: DOMRect): void {
@@ -60,26 +99,117 @@ function createModalRoot(): HTMLDivElement {
   root.style.display = "grid";
   root.style.placeItems = "center";
   root.style.padding = "16px";
-  root.style.background = "rgba(15, 23, 42, 0.35)";
+  root.style.background = "rgba(67, 78, 34, 0.18)";
   root.style.zIndex = "2147483647";
   return root;
 }
 
-export function createSelectionOverlay(): SelectionOverlayControls {
+export function createSelectionOverlay(callbacks: {
+  onNarrow(): void;
+  onWiden(): void;
+  onChange(): void;
+  onConfirm(): void;
+  onCancel(): void;
+}): SelectionOverlayControls {
   const container = document.createElement("div");
   const highlightBox = document.createElement("div");
-  const label = document.createElement("div");
+  const panel = document.createElement("div");
+  const title = document.createElement("h2");
+  const description = document.createElement("p");
+  const actions = document.createElement("div");
+  const narrowButton = document.createElement("button");
+  const widenButton = document.createElement("button");
+  const changeButton = document.createElement("button");
+  const confirmButton = document.createElement("button");
+  const cancelButton = document.createElement("button");
   let modalRoot: HTMLDivElement | null = null;
   let modalCleanup: (() => void) | undefined;
 
-  applyOverlayStyles(container, highlightBox, label);
-  container.append(highlightBox, label);
-  document.documentElement.append(container);
+  applyOverlayStyles(container, highlightBox, panel, title, description);
+
+  actions.style.display = "grid";
+  actions.style.gridTemplateColumns = "repeat(2, 1fr)";
+  actions.style.gap = "8px";
+  actions.setAttribute(UI_ATTRIBUTE, "true");
+
+  // Row 1: Крупнее | Меньше
+  widenButton.dataset.testid = "picker-widen";
+  widenButton.textContent = "Крупнее";
+  widenButton.addEventListener("click", callbacks.onWiden);
+  applyControlButtonStyles(widenButton, "secondary");
+
+  narrowButton.dataset.testid = "picker-narrow";
+  narrowButton.textContent = "Меньше";
+  narrowButton.addEventListener("click", callbacks.onNarrow);
+  applyControlButtonStyles(narrowButton, "secondary");
+
+  // Row 2: Вверх | Вниз (функциональность добавим позже)
+  const upButton = document.createElement("button");
+  const downButton = document.createElement("button");
+  upButton.dataset.testid = "picker-up";
+  upButton.textContent = "Вверх";
+  upButton.disabled = true;
+  upButton.setAttribute("aria-disabled", "true");
+  upButton.title = "Переключиться на блок выше (скоро)";
+  applyControlButtonStyles(upButton, "secondary");
+  downButton.dataset.testid = "picker-down";
+  downButton.textContent = "Вниз";
+  downButton.disabled = true;
+  downButton.setAttribute("aria-disabled", "true");
+  downButton.title = "Переключиться на блок ниже (скоро)";
+  applyControlButtonStyles(downButton, "secondary");
+
+  // Row 3: Изменить | Отменить
+  changeButton.dataset.testid = "picker-change";
+  changeButton.textContent = "Изменить";
+  changeButton.addEventListener("click", callbacks.onChange);
+  applyControlButtonStyles(changeButton, "secondary");
+
+  cancelButton.textContent = "Отменить";
+  cancelButton.addEventListener("click", callbacks.onCancel);
+  applyControlButtonStyles(cancelButton, "secondary");
+
+  // Row 4: Разделитель
+  const divider = document.createElement("hr");
+  divider.style.border = "none";
+  divider.style.borderTop = "1px solid #c4cca8";
+  divider.style.margin = "4px 0";
+  divider.style.gridColumn = "1 / -1";
+
+  // Row 5: Pi (основная кнопка, на всю ширину)
+  confirmButton.textContent = "Pi";
+  confirmButton.addEventListener("click", callbacks.onConfirm);
+  applyControlButtonStyles(confirmButton, "primary");
+  confirmButton.style.gridColumn = "1 / -1";
+
+  actions.append(
+    widenButton, narrowButton,
+    upButton, downButton,
+    changeButton, cancelButton,
+    divider,
+    confirmButton,
+  );
+  panel.append(title, description, actions);
+  container.append(highlightBox, panel);
+  getOverlayHost().append(container);
 
   return {
-    update(target) {
+    update(target, selected) {
       const rect = target.getBoundingClientRect();
       setBoxFromRect(highlightBox, rect);
+      highlightBox.style.borderWidth = selected ? "2px" : "1px";
+    },
+    showPanel() {
+      panel.style.display = "grid";
+    },
+    hidePanel() {
+      panel.style.display = "none";
+    },
+    setNavigationState(state) {
+      narrowButton.disabled = !state.canNarrow;
+      widenButton.disabled = !state.canWiden;
+      narrowButton.setAttribute("aria-disabled", String(!state.canNarrow));
+      widenButton.setAttribute("aria-disabled", String(!state.canWiden));
     },
     showCommentModal(options) {
       modalCleanup?.();
@@ -98,53 +228,41 @@ export function createSelectionOverlay(): SelectionOverlayControls {
       panel.style.gap = "12px";
       panel.style.width = "min(420px, 100%)";
       panel.style.padding = "18px";
-      panel.style.border = "1px solid #2c3444";
+      panel.style.border = "1px solid #d1d8b6";
       panel.style.borderRadius = "14px";
-      panel.style.background = "#111827";
-      panel.style.color = "#f8fafc";
-      panel.style.boxShadow = "0 24px 60px rgba(2, 6, 23, 0.35)";
+      panel.style.background = "#faf9f2";
+      panel.style.color = "#2f361c";
+      panel.style.boxShadow = "0 24px 60px rgba(78, 87, 39, 0.18)";
       panel.style.font = "14px/1.45 Inter, system-ui, sans-serif";
 
-      heading.textContent = "Send element to Pi";
+      heading.textContent = "Отправить в Pi";
       heading.style.margin = "0";
       heading.style.font = "700 18px/1.2 Inter, system-ui, sans-serif";
 
-      description.textContent = "Add an optional comment for Pi before sending this page fragment.";
+      description.textContent = "Добавьте комментарий (необязательно)";
       description.style.margin = "0";
-      description.style.color = "#cbd5e1";
+      description.style.color = "#5e6740";
 
       textarea.rows = 5;
-      textarea.placeholder = "Optional comment";
+      textarea.placeholder = "Добавьте комментарий (необязательно)";
       textarea.style.width = "100%";
       textarea.style.boxSizing = "border-box";
       textarea.style.padding = "10px 12px";
-      textarea.style.border = "1px solid #334155";
+      textarea.style.border = "1px solid #c4cca8";
       textarea.style.borderRadius = "10px";
-      textarea.style.background = "#0f172a";
-      textarea.style.color = "#f8fafc";
+      textarea.style.background = "#fffffa";
+      textarea.style.color = "#2f361c";
       textarea.style.resize = "vertical";
 
       actions.style.display = "flex";
       actions.style.justifyContent = "flex-end";
       actions.style.gap = "8px";
 
-      cancelButton.type = "button";
-      cancelButton.textContent = "Cancel";
-      cancelButton.style.border = "0";
-      cancelButton.style.borderRadius = "10px";
-      cancelButton.style.padding = "10px 14px";
-      cancelButton.style.background = "#334155";
-      cancelButton.style.color = "#f8fafc";
-      cancelButton.style.cursor = "pointer";
+      cancelButton.textContent = "Отмена";
+      applyControlButtonStyles(cancelButton, "secondary");
 
-      sendButton.type = "button";
-      sendButton.textContent = "Send";
-      sendButton.style.border = "0";
-      sendButton.style.borderRadius = "10px";
-      sendButton.style.padding = "10px 14px";
-      sendButton.style.background = "#5a7cff";
-      sendButton.style.color = "#ffffff";
-      sendButton.style.cursor = "pointer";
+      sendButton.textContent = "Отправить в Pi";
+      applyControlButtonStyles(sendButton, "primary");
 
       const close = () => {
         modalCleanup?.();
@@ -173,7 +291,7 @@ export function createSelectionOverlay(): SelectionOverlayControls {
       actions.append(cancelButton, sendButton);
       panel.append(heading, description, textarea, actions);
       modalRoot.append(panel);
-      document.documentElement.append(modalRoot);
+      getOverlayHost().append(modalRoot);
       textarea.focus();
 
       modalCleanup = () => {

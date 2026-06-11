@@ -120,7 +120,7 @@ describe("contentScript", () => {
     hoveredElement?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
 
     expect(update).toHaveBeenCalledWith(mediumEl, false);
-    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: true, canWiden: true });
+    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: true, canWiden: true, canGoUp: false, canGoDown: false });
 
     // Click to enter selected mode
     hoveredElement?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -128,7 +128,7 @@ describe("contentScript", () => {
     overlayCallbacks?.onWiden();
 
     expect(update).toHaveBeenLastCalledWith(largeEl, true);
-    expect(setNavigationState).toHaveBeenLastCalledWith({ canNarrow: true, canWiden: false });
+    expect(setNavigationState).toHaveBeenLastCalledWith({ canNarrow: true, canWiden: false, canGoUp: false, canGoDown: false });
   });
 
   it("sends payload for the current candidate after confirm", async () => {
@@ -241,7 +241,7 @@ describe("contentScript", () => {
     });
     expect(showToast).toHaveBeenCalledWith("Отправлено в Pi", "success");
     expect(update).toHaveBeenCalledWith(mediumEl, false);
-    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: true, canWiden: true });
+    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: true, canWiden: true, canGoUp: false, canGoDown: false });
   });
 
   it("click fixes selection and shows the panel", async () => {

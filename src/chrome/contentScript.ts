@@ -141,6 +141,12 @@ function startDomPicker(targetId: string): void {
     onCancel: () => {
       cleanup();
     },
+    onUp: () => {
+      // Up navigation will be implemented in a follow-up task
+    },
+    onDown: () => {
+      // Down navigation will be implemented in a follow-up task
+    },
   });
 
   function getCurrentSelection(): Element | undefined {
@@ -151,7 +157,7 @@ function startDomPicker(targetId: string): void {
     const currentSelection = getCurrentSelection();
 
     if (!currentSelection) {
-      overlay.setNavigationState({ canNarrow: false, canWiden: false });
+      overlay.setNavigationState({ canNarrow: false, canWiden: false, canGoUp: false, canGoDown: false });
       return;
     }
 
@@ -159,6 +165,8 @@ function startDomPicker(targetId: string): void {
     overlay.setNavigationState({
       canNarrow: currentIndex > 0,
       canWiden: currentIndex < currentCandidates.length - 1,
+      canGoUp: false,
+      canGoDown: false,
     });
   }
 

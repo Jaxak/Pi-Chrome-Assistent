@@ -143,59 +143,11 @@ function startDomPicker(targetId: string): void {
     },
     onUp: () => {
       if (state !== 'selected' || !isActive || modalOpen) return;
-
-      const currentSelection = getCurrentSelection();
-      if (!currentSelection) return;
-
-      const parent = currentSelection.parentElement;
-      if (!parent) return;
-
-      const siblings = findSiblingElements(currentSelection);
-      if (siblings.elements.length === 0) return;
-
-      const allChildren = Array.from(parent.children);
-      const currentDomIndex = allChildren.indexOf(currentSelection);
-
-      let foundPrev: Element | null = null;
-      for (let i = currentDomIndex - 1; i >= 0; i--) {
-        if (siblings.elements.includes(allChildren[i])) {
-          foundPrev = allChildren[i];
-          break;
-        }
-      }
-
-      if (!foundPrev) return;
-
-      currentCandidates[currentIndex] = foundPrev;
-      updateCurrentSelection();
+      tryNavigateToSibling('up');
     },
     onDown: () => {
       if (state !== 'selected' || !isActive || modalOpen) return;
-
-      const currentSelection = getCurrentSelection();
-      if (!currentSelection) return;
-
-      const parent = currentSelection.parentElement;
-      if (!parent) return;
-
-      const siblings = findSiblingElements(currentSelection);
-      if (siblings.elements.length === 0) return;
-
-      const allChildren = Array.from(parent.children);
-      const currentDomIndex = allChildren.indexOf(currentSelection);
-
-      let foundNext: Element | null = null;
-      for (let i = currentDomIndex + 1; i < allChildren.length; i++) {
-        if (siblings.elements.includes(allChildren[i])) {
-          foundNext = allChildren[i];
-          break;
-        }
-      }
-
-      if (!foundNext) return;
-
-      currentCandidates[currentIndex] = foundNext;
-      updateCurrentSelection();
+      tryNavigateToSibling('down');
     },
   });
 
@@ -203,25 +155,53 @@ function startDomPicker(targetId: string): void {
     return currentCandidates[currentIndex];
   }
 
-  function updateCurrentSelection(): void {
+  function tryNavigateToSibling(direction: 'up' | 'down'): boolean {
     const currentSelection = getCurrentSelection();
+    if (!currentSelection) return false;
 
-    if (!currentSelection) {
-      overlay.setNavigationState({ canNarrow: false, canWiden: false, canGoUp: false, canGoDown: false });
-      return;
+    const parent = currentSelection.parentElement;
+    if (!parent) return false;
+
+    const siblings = findSiblingElements(currentSelection);
+    if (siblings.elements.length === 0) return false;
+
+    const allChildren = Array.from(parent.children);
+    const currentDomIndex = allChildren.indexOf(currentSelection);
+
+    let found: Element | null = null;
+
+    if (direction === 'up') {
+      for (let i = currentDomIndex - 1; i >= 0; i--) {
+        if (siblings.elements.includes(allChildren[i])) {
+          found = allChildren[i];
+          break;
+        }
+      }
+    } else {
+      for (let i = currentDomIndex + 1; i < allChildren.length; i++) {
+        if (siblings.elements.includes(allChildren[i])) {
+          found = allChildren[i];
+          break;
+        }
+      }
     }
 
-    overlay.update(currentSelection, state === 'selected');
+    if (!found) return false;
 
-    // Compute sibling navigation state
-    const siblings = findSiblingElements(currentSelection);
-    const parent = currentSelection.parentElement;
+    currentCandidates[currentIndex] = found;
+    updateCurrentSelection();
+    return true;
+  }
+
+  function getSiblingNavigationState(element: Element): { canGoUp: boolean; canGoDown: boolean } {
+    const siblings = findSiblingElements(element);
+    const parent = element.parentElement;
     let canGoUp = false;
     let canGoDown = false;
 
     if (parent && siblings.elements.length > 0) {
       const allChildren = Array.from(parent.children);
-      const currentDomIndex = allChildren.indexOf(currentSelection);
+      const currentDomIndex = allChildren.indexOf(element);
 
       for (let i = currentDomIndex - 1; i >= 0; i--) {
         if (siblings.elements.includes(allChildren[i])) {
@@ -237,6 +217,21 @@ function startDomPicker(targetId: string): void {
         }
       }
     }
+
+    return { canGoUp, canGoDown };
+  }
+
+  function updateCurrentSelection(): void {
+    const currentSelection = getCurrentSelection();
+
+    if (!currentSelection) {
+      overlay.setNavigationState({ canNarrow: false, canWiden: false, canGoUp: false, canGoDown: false });
+      return;
+    }
+
+    overlay.update(currentSelection, state === 'selected');
+
+    const { canGoUp, canGoDown } = getSiblingNavigationState(currentSelection);
 
     overlay.setNavigationState({
       canNarrow: currentIndex > 0,

@@ -663,16 +663,26 @@ describe("contentScript", () => {
       isPickerUiElement: () => false,
     }));
     vi.doMock("./domPicker", () => ({
-      getSelectionCandidates: vi.fn(() => ({
-        candidates: [sibB],
-        recommendedIndex: 0,
-      })),
+      getSelectionCandidates: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { candidates: [sibA], recommendedIndex: 0 };
+          case "sib-b": return { candidates: [sibB], recommendedIndex: 0 };
+          case "sib-c": return { candidates: [sibC], recommendedIndex: 0 };
+          case "sib-d": return { candidates: [sibD], recommendedIndex: 0 };
+          default: return { candidates: [el], recommendedIndex: 0 };
+        }
+      }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
-      findSiblingElements: vi.fn(() => ({
-        elements: [sibA, sibC, sibD],
-        currentIndex: 0,
-      })),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA, sibC, sibD], currentIndex: 0 };
+          case "sib-c": return { elements: [sibB, sibA, sibD], currentIndex: 0 };
+          case "sib-d": return { elements: [sibC, sibB, sibA], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -705,7 +715,7 @@ describe("contentScript", () => {
     update.mockClear();
     setNavigationState.mockClear();
 
-    // onDown: sibB -> sibC (next sibling)
+    // onDown: sibB -> sibC (next sibling in DOM order)
     overlayCallbacks?.onDown();
     expect(update).toHaveBeenCalledWith(sibC, true);
     expect(setNavigationState).toHaveBeenCalledWith({
@@ -776,16 +786,26 @@ describe("contentScript", () => {
       isPickerUiElement: () => false,
     }));
     vi.doMock("./domPicker", () => ({
-      getSelectionCandidates: vi.fn(() => ({
-        candidates: [sibC],
-        recommendedIndex: 0,
-      })),
+      getSelectionCandidates: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { candidates: [sibA], recommendedIndex: 0 };
+          case "sib-b": return { candidates: [sibB], recommendedIndex: 0 };
+          case "sib-c": return { candidates: [sibC], recommendedIndex: 0 };
+          case "sib-d": return { candidates: [sibD], recommendedIndex: 0 };
+          default: return { candidates: [el], recommendedIndex: 0 };
+        }
+      }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
-      findSiblingElements: vi.fn(() => ({
-        elements: [sibB, sibA, sibD],
-        currentIndex: 0,
-      })),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA, sibC, sibD], currentIndex: 0 };
+          case "sib-c": return { elements: [sibB, sibA, sibD], currentIndex: 0 };
+          case "sib-d": return { elements: [sibC, sibB, sibA], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -891,10 +911,13 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
-      findSiblingElements: vi.fn(() => ({
-        elements: [sibA],
-        currentIndex: 0,
-      })),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -975,17 +998,23 @@ describe("contentScript", () => {
       isPickerUiElement: () => false,
     }));
     vi.doMock("./domPicker", () => ({
-      getSelectionCandidates: vi.fn(() => ({
-        candidates: [sibA],
-        recommendedIndex: 0,
-      })),
+      getSelectionCandidates: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { candidates: [sibA], recommendedIndex: 0 };
+          case "sib-b": return { candidates: [sibB], recommendedIndex: 0 };
+          case "sib-c": return { candidates: [sibC], recommendedIndex: 0 };
+          default: return { candidates: [el], recommendedIndex: 0 };
+        }
+      }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
       findSiblingElements: vi.fn((el: Element) => {
-        if (el.id === "sib-a") {
-          return { elements: [sibB, sibC], currentIndex: 0 };
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB, sibC], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA, sibC], currentIndex: 0 };
+          case "sib-c": return { elements: [sibA, sibB], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
         }
-        return { elements: [sibA, sibC], currentIndex: 0 };
       }),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));

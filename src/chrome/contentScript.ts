@@ -155,67 +155,65 @@ function startDomPicker(targetId: string): void {
     return currentCandidates[currentIndex];
   }
 
-  function tryNavigateToSibling(direction: 'up' | 'down'): boolean {
-    const currentSelection = getCurrentSelection();
-    if (!currentSelection) return false;
-
+  function findSiblingInDomOrder(
+    currentSelection: Element,
+    siblings: Element[],
+    direction: "up" | "down",
+  ): Element | null {
     const parent = currentSelection.parentElement;
-    if (!parent) return false;
-
-    const siblings = findSiblingElements(currentSelection);
-    if (siblings.elements.length === 0) return false;
+    if (!parent) return null;
 
     const allChildren = Array.from(parent.children);
     const currentDomIndex = allChildren.indexOf(currentSelection);
 
-    let found: Element | null = null;
-
-    if (direction === 'up') {
+    if (direction === "up") {
       for (let i = currentDomIndex - 1; i >= 0; i--) {
-        if (siblings.elements.includes(allChildren[i])) {
-          found = allChildren[i];
-          break;
+        if (siblings.includes(allChildren[i])) {
+          return allChildren[i];
         }
       }
     } else {
       for (let i = currentDomIndex + 1; i < allChildren.length; i++) {
-        if (siblings.elements.includes(allChildren[i])) {
-          found = allChildren[i];
-          break;
+        if (siblings.includes(allChildren[i])) {
+          return allChildren[i];
         }
       }
     }
+    return null;
+  }
 
+  function tryNavigateToSibling(direction: "up" | "down"): boolean {
+    const currentSelection = getCurrentSelection();
+    if (!currentSelection) return false;
+
+    const siblings = findSiblingElements(currentSelection);
+    if (siblings.elements.length === 0) return false;
+
+    const found = findSiblingInDomOrder(currentSelection, siblings.elements, direction);
     if (!found) return false;
 
     currentCandidates[currentIndex] = found;
+
+    // Rebuild candidate chain so narrow/widen works from the new element
+    const newCandidates = getSelectionCandidates(found);
+    currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [found];
+    currentIndex = Math.min(
+      Math.max(newCandidates.recommendedIndex, 0),
+      currentCandidates.length - 1,
+    );
+
     updateCurrentSelection();
     return true;
   }
 
   function getSiblingNavigationState(element: Element): { canGoUp: boolean; canGoDown: boolean } {
     const siblings = findSiblingElements(element);
-    const parent = element.parentElement;
     let canGoUp = false;
     let canGoDown = false;
 
-    if (parent && siblings.elements.length > 0) {
-      const allChildren = Array.from(parent.children);
-      const currentDomIndex = allChildren.indexOf(element);
-
-      for (let i = currentDomIndex - 1; i >= 0; i--) {
-        if (siblings.elements.includes(allChildren[i])) {
-          canGoUp = true;
-          break;
-        }
-      }
-
-      for (let i = currentDomIndex + 1; i < allChildren.length; i++) {
-        if (siblings.elements.includes(allChildren[i])) {
-          canGoDown = true;
-          break;
-        }
-      }
+    if (siblings.elements.length > 0) {
+      canGoUp = findSiblingInDomOrder(element, siblings.elements, "up") !== null;
+      canGoDown = findSiblingInDomOrder(element, siblings.elements, "down") !== null;
     }
 
     return { canGoUp, canGoDown };

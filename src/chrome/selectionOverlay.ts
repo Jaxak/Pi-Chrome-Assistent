@@ -128,35 +128,68 @@ export function createSelectionOverlay(callbacks: {
   applyOverlayStyles(container, highlightBox, panel, title, description);
 
   actions.style.display = "grid";
-  actions.style.gridTemplateColumns = "repeat(4, minmax(0, 1fr))";
+  actions.style.gridTemplateColumns = "repeat(2, 1fr)";
   actions.style.gap = "8px";
   actions.setAttribute(UI_ATTRIBUTE, "true");
 
-  narrowButton.dataset.testid = "picker-narrow";
-  narrowButton.textContent = "Мельче";
-  narrowButton.addEventListener("click", callbacks.onNarrow);
-  applyControlButtonStyles(narrowButton, "secondary");
-
+  // Row 1: Крупнее | Меньше
   widenButton.dataset.testid = "picker-widen";
   widenButton.textContent = "Крупнее";
   widenButton.addEventListener("click", callbacks.onWiden);
   applyControlButtonStyles(widenButton, "secondary");
 
+  narrowButton.dataset.testid = "picker-narrow";
+  narrowButton.textContent = "Меньше";
+  narrowButton.addEventListener("click", callbacks.onNarrow);
+  applyControlButtonStyles(narrowButton, "secondary");
+
+  // Row 2: Вверх | Вниз (функциональность добавим позже)
+  const upButton = document.createElement("button");
+  const downButton = document.createElement("button");
+  upButton.dataset.testid = "picker-up";
+  upButton.textContent = "Вверх";
+  upButton.disabled = true;
+  upButton.setAttribute("aria-disabled", "true");
+  upButton.title = "Переключиться на блок выше (скоро)";
+  applyControlButtonStyles(upButton, "secondary");
+  downButton.dataset.testid = "picker-down";
+  downButton.textContent = "Вниз";
+  downButton.disabled = true;
+  downButton.setAttribute("aria-disabled", "true");
+  downButton.title = "Переключиться на блок ниже (скоро)";
+  applyControlButtonStyles(downButton, "secondary");
+
+  // Row 3: Изменить | Отменить
   changeButton.dataset.testid = "picker-change";
   changeButton.textContent = "Изменить";
   changeButton.addEventListener("click", callbacks.onChange);
   applyControlButtonStyles(changeButton, "secondary");
 
-  confirmButton.textContent = "Отправить в Pi";
-  confirmButton.addEventListener("click", callbacks.onConfirm);
-  applyControlButtonStyles(confirmButton, "primary");
-
-  cancelButton.textContent = "Отмена";
+  cancelButton.textContent = "Отменить";
   cancelButton.addEventListener("click", callbacks.onCancel);
   applyControlButtonStyles(cancelButton, "secondary");
 
-  actions.append(narrowButton, widenButton, changeButton, confirmButton);
-  panel.append(title, description, actions, cancelButton);
+  // Row 4: Разделитель
+  const divider = document.createElement("hr");
+  divider.style.border = "none";
+  divider.style.borderTop = "1px solid #c4cca8";
+  divider.style.margin = "4px 0";
+  divider.style.gridColumn = "1 / -1";
+
+  // Row 5: Pi (основная кнопка, на всю ширину)
+  confirmButton.textContent = "Pi";
+  confirmButton.addEventListener("click", callbacks.onConfirm);
+  applyControlButtonStyles(confirmButton, "primary");
+  confirmButton.style.gridColumn = "1 / -1";
+
+  actions.append(
+    widenButton, narrowButton,
+    upButton, downButton,
+    changeButton, cancelButton,
+    divider,
+    confirmButton,
+  );
+  panel.append(title, description, actions);
   container.append(highlightBox, panel);
   getOverlayHost().append(container);
 

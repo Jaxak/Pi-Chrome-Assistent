@@ -39,10 +39,13 @@ describe("createSelectionOverlay", () => {
     });
 
     expect(document.body.textContent).toContain("Выбор блока");
-    expect(document.body.textContent).toContain("Мельче");
+    expect(document.body.textContent).toContain("Меньше");
     expect(document.body.textContent).toContain("Крупнее");
-    expect(document.body.textContent).toContain("Отправить");
-    expect(document.body.textContent).toContain("Отмена");
+    expect(document.body.textContent).toContain("Вверх");
+    expect(document.body.textContent).toContain("Вниз");
+    expect(document.body.textContent).toContain("Изменить");
+    expect(document.body.textContent).toContain("Отменить");
+    expect(document.body.textContent).toContain("Pi");
 
     overlay.cleanup();
   });
@@ -142,7 +145,7 @@ describe("createSelectionOverlay", () => {
     overlay.cleanup();
   });
 
-  it("renders 4 buttons in a grid", () => {
+  it("renders buttons in a 2-column grid with divider and full-width confirm", () => {
     const overlay = createSelectionOverlay({
       onNarrow: vi.fn(),
       onWiden: vi.fn(),
@@ -152,7 +155,20 @@ describe("createSelectionOverlay", () => {
     });
     const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
     const actions = panel?.querySelector("div[style*='grid-template-columns']") as HTMLDivElement | null;
-    expect(actions?.style.gridTemplateColumns).toContain("4");
+    expect(actions?.style.gridTemplateColumns).toContain("2");
+
+    // Verify up/down buttons exist and are disabled
+    const upButton = document.querySelector('[data-testid="picker-up"]');
+    const downButton = document.querySelector('[data-testid="picker-down"]');
+    expect(upButton).toBeInstanceOf(HTMLButtonElement);
+    expect(downButton).toBeInstanceOf(HTMLButtonElement);
+    expect((upButton as HTMLButtonElement).disabled).toBe(true);
+    expect((downButton as HTMLButtonElement).disabled).toBe(true);
+
+    // Verify divider exists
+    const divider = actions?.querySelector("hr");
+    expect(divider).toBeInstanceOf(HTMLHRElement);
+
     overlay.cleanup();
   });
 

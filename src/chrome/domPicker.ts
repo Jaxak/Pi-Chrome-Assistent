@@ -56,6 +56,11 @@ export type SelectionCandidates = {
   recommendedIndex: number;
 };
 
+export type SiblingNavigation = {
+  elements: Element[];
+  currentIndex: number;
+};
+
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -390,5 +395,91 @@ export function buildSelectionPayload(element: Element, comment: string): Select
     selector: createCssSelector(element),
     ...(normalizedComment.length > 0 ? { comment: normalizedComment } : {}),
     capturedAt: Date.now(),
+  };
+}
+
+function isElementVisible(element: Element): boolean {
+  const style = window.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+    return false;
+  }
+  // In jsdom offsetWidth/offsetHeight are always 0 — only treat zero dimensions
+  // as hidden when the element actually has a computed display that implies size.
+  if (element instanceof HTMLElement && element.offsetWidth === 0 && element.offsetHeight === 0) {
+    // If display is an inline/block/etc. value (not "none"), the element is
+    // logically visible even though jsdom can't measure it.
+    if (style.display !== "") {
+      return true;
+    }
+    return false;
+  }
+  return true;
+}
+
+export function findBestVisibleChild(target: Element): Element | null {
+  const children = Array.from(target.children).filter((el) => isElementVisible(el));
+
+  if (children.length === 0) {
+    return null;
+  }
+
+  // Pick the visible child with the highest score (prefer compact, text-rich children)
+  let bestChild = children[0];
+  let bestScore = scoreElement(children[0]);
+
+  for (let i = 1; i < children.length; i++) {
+    const score = scoreElement(children[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestChild = children[i];
+    }
+  }
+
+  return bestChild;
+}
+
+export function getParentElement(target: Element): Element | null {
+  const parent = target.parentElement;
+  if (!parent || parent.tagName.toLowerCase() === "html" || parent.tagName.toLowerCase() === "body") {
+    return null;
+  }
+  return parent;
+}
+
+export function findSiblingElements(target: Element): SiblingNavigation {
+  const parent = target.parentElement;
+  if (!parent) {
+    return { elements: [], currentIndex: -1 };
+  }
+
+  const allSiblings = Array.from(parent.children);
+  const targetIndex = allSiblings.indexOf(target);
+  if (targetIndex === -1) {
+    return { elements: [], currentIndex: -1 };
+  }
+
+  // Filter to visible, non-target siblings
+  const visibleSiblings = allSiblings
+    .filter((el, i) => i !== targetIndex && el !== target && isElementVisible(el))
+    .map((el) => ({ element: el, domIndex: allSiblings.indexOf(el) }));
+
+  if (visibleSiblings.length === 0) {
+    return { elements: [], currentIndex: -1 };
+  }
+
+  // Separate previous and next siblings
+  const previous = visibleSiblings
+    .filter((s) => s.domIndex < targetIndex)
+    .sort((a, b) => b.domIndex - a.domIndex) // closest first
+    .map((s) => s.element);
+
+  const next = visibleSiblings
+    .filter((s) => s.domIndex > targetIndex)
+    .sort((a, b) => a.domIndex - b.domIndex) // closest first
+    .map((s) => s.element);
+
+  return {
+    elements: [...previous, ...next],
+    currentIndex: 0, // default to first previous sibling (closest)
   };
 }

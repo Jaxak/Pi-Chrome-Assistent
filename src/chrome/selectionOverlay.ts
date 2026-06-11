@@ -11,7 +11,7 @@ export type SelectionOverlayControls = {
   update(target: Element, selected?: boolean): void;
   showPanel(): void;
   hidePanel(): void;
-  setNavigationState(state: { canNarrow: boolean; canWiden: boolean }): void;
+  setNavigationState(state: { canNarrow: boolean; canWiden: boolean; canGoUp: boolean; canGoDown: boolean }): void;
   showCommentModal(options: {
     onSubmit(comment: string): void;
     onCancel(): void;
@@ -110,6 +110,8 @@ export function createSelectionOverlay(callbacks: {
   onChange(): void;
   onConfirm(): void;
   onCancel(): void;
+  onUp(): void;
+  onDown(): void;
 }): SelectionOverlayControls {
   const container = document.createElement("div");
   const highlightBox = document.createElement("div");
@@ -143,20 +145,22 @@ export function createSelectionOverlay(callbacks: {
   narrowButton.addEventListener("click", callbacks.onNarrow);
   applyControlButtonStyles(narrowButton, "secondary");
 
-  // Row 2: Вверх | Вниз (функциональность добавим позже)
+  // Row 2: Вверх | Вниз
   const upButton = document.createElement("button");
   const downButton = document.createElement("button");
   upButton.dataset.testid = "picker-up";
   upButton.textContent = "Вверх";
   upButton.disabled = true;
   upButton.setAttribute("aria-disabled", "true");
-  upButton.title = "Переключиться на блок выше (скоро)";
+  upButton.title = "Переключиться на предыдущий блок";
+  upButton.addEventListener("click", callbacks.onUp);
   applyControlButtonStyles(upButton, "secondary");
   downButton.dataset.testid = "picker-down";
   downButton.textContent = "Вниз";
   downButton.disabled = true;
   downButton.setAttribute("aria-disabled", "true");
-  downButton.title = "Переключиться на блок ниже (скоро)";
+  downButton.title = "Переключиться на следующий блок";
+  downButton.addEventListener("click", callbacks.onDown);
   applyControlButtonStyles(downButton, "secondary");
 
   // Row 3: Изменить | Отменить
@@ -208,8 +212,12 @@ export function createSelectionOverlay(callbacks: {
     setNavigationState(state) {
       narrowButton.disabled = !state.canNarrow;
       widenButton.disabled = !state.canWiden;
+      upButton.disabled = !state.canGoUp;
+      downButton.disabled = !state.canGoDown;
       narrowButton.setAttribute("aria-disabled", String(!state.canNarrow));
       widenButton.setAttribute("aria-disabled", String(!state.canWiden));
+      upButton.setAttribute("aria-disabled", String(!state.canGoUp));
+      downButton.setAttribute("aria-disabled", String(!state.canGoDown));
     },
     showCommentModal(options) {
       modalCleanup?.();

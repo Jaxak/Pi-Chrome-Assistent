@@ -47,7 +47,7 @@ describe("contentScript", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses the recommended candidate first and widens selection on overlay request", async () => {
+  it("uses the recommended candidate first and widens to parent on overlay request", async () => {
     let overlayCallbacks:
       | {
         onNarrow(): void;
@@ -62,15 +62,15 @@ describe("contentScript", () => {
     const messageListeners: RuntimeMessageListener[] = [];
 
     document.body.innerHTML = `
-      <div id="small">Small</div>
-      <article id="medium">Medium</article>
-      <section id="large">Large</section>
-      <div id="start">Start</div>
+      <section id="outer">
+        <article id="inner">
+          <div id="start">Start</div>
+        </article>
+      </section>
     `;
 
-    const smallEl = document.querySelector("#small") as Element;
-    const mediumEl = document.querySelector("#medium") as Element;
-    const largeEl = document.querySelector("#large") as Element;
+    const innerEl = document.querySelector("#inner") as Element;
+    const outerEl = document.querySelector("#outer") as Element;
 
     vi.doMock("./selectionOverlay", () => ({
       createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
@@ -87,12 +87,18 @@ describe("contentScript", () => {
       isPickerUiElement: () => false,
     }));
     vi.doMock("./domPicker", () => ({
-      getSelectionCandidates: vi.fn(() => ({
-        candidates: [smallEl, mediumEl, largeEl],
-        recommendedIndex: 1,
-      })),
+      getSelectionCandidates: vi.fn((el: Element) => {
+        if (el.id === "outer") return { candidates: [outerEl], recommendedIndex: 0 };
+        return { candidates: [innerEl, outerEl], recommendedIndex: 0 };
+      }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn((el: Element) => {
+        if (el.id === "inner") return outerEl;
+        return null;
+      }),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -119,16 +125,16 @@ describe("contentScript", () => {
     const hoveredElement = document.querySelector("#start");
     hoveredElement?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
 
-    expect(update).toHaveBeenCalledWith(mediumEl, false);
-    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: true, canWiden: true });
+    expect(update).toHaveBeenCalledWith(innerEl, false);
+    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: false, canWiden: true, canGoUp: false, canGoDown: false });
 
     // Click to enter selected mode
     hoveredElement?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
     overlayCallbacks?.onWiden();
 
-    expect(update).toHaveBeenLastCalledWith(largeEl, true);
-    expect(setNavigationState).toHaveBeenLastCalledWith({ canNarrow: true, canWiden: false });
+    expect(update).toHaveBeenLastCalledWith(outerEl, true);
+    expect(setNavigationState).toHaveBeenLastCalledWith({ canNarrow: false, canWiden: false, canGoUp: false, canGoDown: false });
   });
 
   it("sends payload for the current candidate after confirm", async () => {
@@ -164,15 +170,15 @@ describe("contentScript", () => {
     const messageListeners: RuntimeMessageListener[] = [];
 
     document.body.innerHTML = `
-      <div id="small">Small</div>
-      <article id="medium">Medium</article>
-      <section id="large">Large</section>
-      <div id="start">Start</div>
+      <section id="outer">
+        <article id="inner">
+          <div id="start">Start</div>
+        </article>
+      </section>
     `;
 
-    const smallEl = document.querySelector("#small") as Element;
-    const mediumEl = document.querySelector("#medium") as Element;
-    const largeEl = document.querySelector("#large") as Element;
+    const innerEl = document.querySelector("#inner") as Element;
+    const outerEl = document.querySelector("#outer") as Element;
 
     vi.doMock("./selectionOverlay", () => ({
       createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
@@ -189,12 +195,18 @@ describe("contentScript", () => {
       isPickerUiElement: () => false,
     }));
     vi.doMock("./domPicker", () => ({
-      getSelectionCandidates: vi.fn(() => ({
-        candidates: [smallEl, mediumEl, largeEl],
-        recommendedIndex: 1,
-      })),
+      getSelectionCandidates: vi.fn((el: Element) => {
+        if (el.id === "outer") return { candidates: [outerEl], recommendedIndex: 0 };
+        return { candidates: [innerEl, outerEl], recommendedIndex: 0 };
+      }),
       buildSelectionPayload,
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn((el: Element) => {
+        if (el.id === "inner") return outerEl;
+        return null;
+      }),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast }));
 
@@ -224,6 +236,7 @@ describe("contentScript", () => {
     // Click to enter selected mode so onWiden works
     hoveredElement?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
+    // Widen to parent first
     overlayCallbacks?.onWiden();
     overlayCallbacks?.onConfirm();
 
@@ -233,15 +246,15 @@ describe("contentScript", () => {
     onSubmit?.("Explain this");
     await flushAsyncWork();
 
-    expect(buildSelectionPayload).toHaveBeenCalledWith(largeEl, "Explain this");
+    expect(buildSelectionPayload).toHaveBeenCalledWith(outerEl, "Explain this");
     expect(runtimeSendMessage).toHaveBeenCalledWith({
       type: "sendSelection",
       targetId: "target-123",
       selection: selectionPayload,
     });
     expect(showToast).toHaveBeenCalledWith("Отправлено в Pi", "success");
-    expect(update).toHaveBeenCalledWith(mediumEl, false);
-    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: true, canWiden: true });
+    expect(update).toHaveBeenCalledWith(innerEl, false);
+    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: false, canWiden: true, canGoUp: false, canGoDown: false });
   });
 
   it("click fixes selection and shows the panel", async () => {
@@ -293,6 +306,9 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -382,6 +398,9 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -471,6 +490,9 @@ describe("contentScript", () => {
       })),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -514,7 +536,7 @@ describe("contentScript", () => {
     expect(update).toHaveBeenCalledTimes(1);
   });
 
-  it("narrow and widen work after selection", async () => {
+  it("narrow goes to child and widen goes to parent after selection", async () => {
     let overlayCallbacks: {
       onNarrow(): void;
       onWiden(): void;
@@ -532,15 +554,17 @@ describe("contentScript", () => {
     const messageListeners: RuntimeMessageListener[] = [];
 
     document.body.innerHTML = `
-      <div id="small">Small</div>
-      <article id="medium">Medium</article>
-      <section id="large">Large</section>
+      <section id="grandParent">
+        <article id="parent">
+          <div id="child">Child content</div>
+        </article>
+      </section>
       <div id="start">Start</div>
     `;
 
-    const smallEl = document.querySelector("#small") as Element;
-    const mediumEl = document.querySelector("#medium") as Element;
-    const largeEl = document.querySelector("#large") as Element;
+    const childEl = document.querySelector("#child") as Element;
+    const parentEl = document.querySelector("#parent") as Element;
+    const grandParentEl = document.querySelector("#grandParent") as Element;
 
     vi.doMock("./selectionOverlay", () => ({
       createSelectionOverlay: (callbacks: typeof overlayCallbacks) => {
@@ -557,12 +581,23 @@ describe("contentScript", () => {
       isPickerUiElement: () => false,
     }));
     vi.doMock("./domPicker", () => ({
-      getSelectionCandidates: vi.fn(() => ({
-        candidates: [smallEl, mediumEl, largeEl],
-        recommendedIndex: 1,
-      })),
+      getSelectionCandidates: vi.fn((el: Element) => {
+        if (el.id === "child") return { candidates: [childEl, parentEl, grandParentEl], recommendedIndex: 0 };
+        if (el.id === "start") return { candidates: [parentEl, grandParentEl], recommendedIndex: 0 };
+        return { candidates: [el], recommendedIndex: 0 };
+      }),
       buildSelectionPayload: vi.fn(() => selectionPayload),
       findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn((el: Element) => {
+        if (el.id === "parent") return childEl;
+        return null;
+      }),
+      getParentElement: vi.fn((el: Element) => {
+        if (el.id === "parent") return grandParentEl;
+        if (el.id === "child") return parentEl;
+        return null;
+      }),
+      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
     }));
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -594,18 +629,777 @@ describe("contentScript", () => {
     startEl?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     update.mockClear();
 
-    // narrow: mediumEl (index 1) -> smallEl (index 0)
+    // narrow: parentEl -> childEl (best visible child)
     overlayCallbacks?.onNarrow();
-    expect(update).toHaveBeenCalledWith(smallEl, true);
+    expect(update).toHaveBeenCalledWith(childEl, true);
     update.mockClear();
 
-    // widen: smallEl (index 0) -> mediumEl (index 1)
+    // widen: childEl -> parentEl (parent element)
     overlayCallbacks?.onWiden();
-    expect(update).toHaveBeenCalledWith(mediumEl, true);
+    expect(update).toHaveBeenCalledWith(parentEl, true);
     update.mockClear();
 
-    // widen: mediumEl (index 1) -> largeEl (index 2)
+    // widen: parentEl -> grandParentEl (parent element)
     overlayCallbacks?.onWiden();
-    expect(update).toHaveBeenCalledWith(largeEl, true);
+    expect(update).toHaveBeenCalledWith(grandParentEl, true);
+  });
+
+  it("onDown navigates to next visible sibling", async () => {
+    let overlayCallbacks: {
+      onNarrow(): void;
+      onWiden(): void;
+      onChange(): void;
+      onConfirm(): void;
+      onCancel(): void;
+      onUp(): void;
+      onDown(): void;
+    } | undefined;
+    const update = vi.fn();
+    const setNavigationState = vi.fn();
+    const showPanel = vi.fn();
+    const hidePanel = vi.fn();
+    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
+    const cleanup = vi.fn();
+    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
+    const messageListeners: RuntimeMessageListener[] = [];
+
+    document.body.innerHTML = `
+      <div id="container">
+        <div id="sib-a">A</div>
+        <div id="sib-b">B</div>
+        <div id="sib-c">C</div>
+        <div id="sib-d">D</div>
+      </div>
+    `;
+
+    const sibA = document.querySelector("#sib-a") as Element;
+    const sibB = document.querySelector("#sib-b") as Element;
+    const sibC = document.querySelector("#sib-c") as Element;
+    const sibD = document.querySelector("#sib-d") as Element;
+
+    vi.doMock("./selectionOverlay", () => ({
+      createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
+        overlayCallbacks = callbacks;
+        return {
+          update,
+          setNavigationState,
+          showPanel,
+          hidePanel,
+          showCommentModal,
+          cleanup,
+        };
+      },
+      isPickerUiElement: () => false,
+    }));
+    vi.doMock("./domPicker", () => ({
+      getSelectionCandidates: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { candidates: [sibA], recommendedIndex: 0 };
+          case "sib-b": return { candidates: [sibB], recommendedIndex: 0 };
+          case "sib-c": return { candidates: [sibC], recommendedIndex: 0 };
+          case "sib-d": return { candidates: [sibD], recommendedIndex: 0 };
+          default: return { candidates: [el], recommendedIndex: 0 };
+        }
+      }),
+      buildSelectionPayload: vi.fn(() => selectionPayload),
+      findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA, sibC, sibD], currentIndex: 0 };
+          case "sib-c": return { elements: [sibB, sibA, sibD], currentIndex: 0 };
+          case "sib-d": return { elements: [sibC, sibB, sibA], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
+    }));
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    (globalThis as Record<string, unknown>).chrome = {
+      runtime: {
+        onMessage: {
+          addListener: vi.fn((listener: RuntimeMessageListener) => {
+            messageListeners.push(listener);
+          }),
+        },
+        sendMessage: runtimeSendMessage,
+      },
+    };
+
+    await import("./contentScript");
+
+    const startResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "startDomPicker", targetId: "target-123" },
+      {} as chrome.runtime.MessageSender,
+      startResponse,
+    );
+
+    // mousemove to set up candidates — sibB is the candidate
+    const sibBEl = document.querySelector("#sib-b");
+    sibBEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+
+    // click to fix selection
+    sibBEl?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    update.mockClear();
+    setNavigationState.mockClear();
+
+    // onDown: sibB -> sibC (next sibling in DOM order)
+    overlayCallbacks?.onDown();
+    expect(update).toHaveBeenCalledWith(sibC, true);
+    expect(setNavigationState).toHaveBeenCalledWith({
+      canNarrow: false,
+      canWiden: false,
+      canGoUp: true,
+      canGoDown: true,
+    });
+    update.mockClear();
+    setNavigationState.mockClear();
+
+    // onDown again: sibC -> sibD
+    overlayCallbacks?.onDown();
+    expect(update).toHaveBeenCalledWith(sibD, true);
+    expect(setNavigationState).toHaveBeenCalledWith({
+      canNarrow: false,
+      canWiden: false,
+      canGoUp: true,
+      canGoDown: false,
+    });
+  });
+
+  it("onUp navigates to previous visible sibling", async () => {
+    let overlayCallbacks: {
+      onNarrow(): void;
+      onWiden(): void;
+      onChange(): void;
+      onConfirm(): void;
+      onCancel(): void;
+      onUp(): void;
+      onDown(): void;
+    } | undefined;
+    const update = vi.fn();
+    const setNavigationState = vi.fn();
+    const showPanel = vi.fn();
+    const hidePanel = vi.fn();
+    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
+    const cleanup = vi.fn();
+    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
+    const messageListeners: RuntimeMessageListener[] = [];
+
+    document.body.innerHTML = `
+      <div id="container">
+        <div id="sib-a">A</div>
+        <div id="sib-b">B</div>
+        <div id="sib-c">C</div>
+        <div id="sib-d">D</div>
+      </div>
+    `;
+
+    const sibA = document.querySelector("#sib-a") as Element;
+    const sibB = document.querySelector("#sib-b") as Element;
+    const sibC = document.querySelector("#sib-c") as Element;
+    const sibD = document.querySelector("#sib-d") as Element;
+
+    vi.doMock("./selectionOverlay", () => ({
+      createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
+        overlayCallbacks = callbacks;
+        return {
+          update,
+          setNavigationState,
+          showPanel,
+          hidePanel,
+          showCommentModal,
+          cleanup,
+        };
+      },
+      isPickerUiElement: () => false,
+    }));
+    vi.doMock("./domPicker", () => ({
+      getSelectionCandidates: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { candidates: [sibA], recommendedIndex: 0 };
+          case "sib-b": return { candidates: [sibB], recommendedIndex: 0 };
+          case "sib-c": return { candidates: [sibC], recommendedIndex: 0 };
+          case "sib-d": return { candidates: [sibD], recommendedIndex: 0 };
+          default: return { candidates: [el], recommendedIndex: 0 };
+        }
+      }),
+      buildSelectionPayload: vi.fn(() => selectionPayload),
+      findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA, sibC, sibD], currentIndex: 0 };
+          case "sib-c": return { elements: [sibB, sibA, sibD], currentIndex: 0 };
+          case "sib-d": return { elements: [sibC, sibB, sibA], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
+    }));
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    (globalThis as Record<string, unknown>).chrome = {
+      runtime: {
+        onMessage: {
+          addListener: vi.fn((listener: RuntimeMessageListener) => {
+            messageListeners.push(listener);
+          }),
+        },
+        sendMessage: runtimeSendMessage,
+      },
+    };
+
+    await import("./contentScript");
+
+    const startResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "startDomPicker", targetId: "target-123" },
+      {} as chrome.runtime.MessageSender,
+      startResponse,
+    );
+
+    // mousemove to set up candidates — sibC is the candidate
+    const sibCEl = document.querySelector("#sib-c");
+    sibCEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+
+    // click to fix selection
+    sibCEl?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    update.mockClear();
+    setNavigationState.mockClear();
+
+    // onUp: sibC -> sibB (previous sibling)
+    overlayCallbacks?.onUp();
+    expect(update).toHaveBeenCalledWith(sibB, true);
+    expect(setNavigationState).toHaveBeenCalledWith({
+      canNarrow: false,
+      canWiden: false,
+      canGoUp: true,
+      canGoDown: true,
+    });
+    update.mockClear();
+    setNavigationState.mockClear();
+
+    // onUp again: sibB -> sibA
+    overlayCallbacks?.onUp();
+    expect(update).toHaveBeenCalledWith(sibA, true);
+    expect(setNavigationState).toHaveBeenCalledWith({
+      canNarrow: false,
+      canWiden: false,
+      canGoUp: false,
+      canGoDown: true,
+    });
+  });
+
+  it("onUp/onDown do nothing in hover state", async () => {
+    let overlayCallbacks: {
+      onNarrow(): void;
+      onWiden(): void;
+      onChange(): void;
+      onConfirm(): void;
+      onCancel(): void;
+      onUp(): void;
+      onDown(): void;
+    } | undefined;
+    const update = vi.fn();
+    const setNavigationState = vi.fn();
+    const showPanel = vi.fn();
+    const hidePanel = vi.fn();
+    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
+    const cleanup = vi.fn();
+    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
+    const messageListeners: RuntimeMessageListener[] = [];
+
+    document.body.innerHTML = `
+      <div id="container">
+        <div id="sib-a">A</div>
+        <div id="sib-b">B</div>
+      </div>
+    `;
+
+    const sibA = document.querySelector("#sib-a") as Element;
+    const sibB = document.querySelector("#sib-b") as Element;
+
+    vi.doMock("./selectionOverlay", () => ({
+      createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
+        overlayCallbacks = callbacks;
+        return {
+          update,
+          setNavigationState,
+          showPanel,
+          hidePanel,
+          showCommentModal,
+          cleanup,
+        };
+      },
+      isPickerUiElement: () => false,
+    }));
+    vi.doMock("./domPicker", () => ({
+      getSelectionCandidates: vi.fn(() => ({
+        candidates: [sibB],
+        recommendedIndex: 0,
+      })),
+      buildSelectionPayload: vi.fn(() => selectionPayload),
+      findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
+    }));
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    (globalThis as Record<string, unknown>).chrome = {
+      runtime: {
+        onMessage: {
+          addListener: vi.fn((listener: RuntimeMessageListener) => {
+            messageListeners.push(listener);
+          }),
+        },
+        sendMessage: runtimeSendMessage,
+      },
+    };
+
+    await import("./contentScript");
+
+    const startResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "startDomPicker", targetId: "target-123" },
+      {} as chrome.runtime.MessageSender,
+      startResponse,
+    );
+
+    // mousemove to set up candidates (hover state)
+    const sibBEl = document.querySelector("#sib-b");
+    sibBEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+    update.mockClear();
+
+    // onUp/onDown should be no-ops in hover state
+    overlayCallbacks?.onUp();
+    overlayCallbacks?.onDown();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("ArrowUp triggers up sibling navigation in selected state", async () => {
+    let overlayCallbacks: {
+      onNarrow(): void;
+      onWiden(): void;
+      onChange(): void;
+      onConfirm(): void;
+      onCancel(): void;
+      onUp(): void;
+      onDown(): void;
+    } | undefined;
+    const update = vi.fn();
+    const setNavigationState = vi.fn();
+    const showPanel = vi.fn();
+    const hidePanel = vi.fn();
+    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
+    const cleanup = vi.fn();
+    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
+    const messageListeners: RuntimeMessageListener[] = [];
+
+    document.body.innerHTML = `
+      <div id="container">
+        <div id="sib-a">A</div>
+        <div id="sib-b">B</div>
+        <div id="sib-c">C</div>
+        <div id="sib-d">D</div>
+      </div>
+    `;
+
+    const sibA = document.querySelector("#sib-a") as Element;
+    const sibB = document.querySelector("#sib-b") as Element;
+    const sibC = document.querySelector("#sib-c") as Element;
+    const sibD = document.querySelector("#sib-d") as Element;
+
+    vi.doMock("./selectionOverlay", () => ({
+      createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
+        overlayCallbacks = callbacks;
+        return {
+          update,
+          setNavigationState,
+          showPanel,
+          hidePanel,
+          showCommentModal,
+          cleanup,
+        };
+      },
+      isPickerUiElement: () => false,
+    }));
+    vi.doMock("./domPicker", () => ({
+      getSelectionCandidates: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { candidates: [sibA], recommendedIndex: 0 };
+          case "sib-b": return { candidates: [sibB], recommendedIndex: 0 };
+          case "sib-c": return { candidates: [sibC], recommendedIndex: 0 };
+          case "sib-d": return { candidates: [sibD], recommendedIndex: 0 };
+          default: return { candidates: [el], recommendedIndex: 0 };
+        }
+      }),
+      buildSelectionPayload: vi.fn(() => selectionPayload),
+      findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA, sibC, sibD], currentIndex: 0 };
+          case "sib-c": return { elements: [sibB, sibA, sibD], currentIndex: 0 };
+          case "sib-d": return { elements: [sibC, sibB, sibA], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
+    }));
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    (globalThis as Record<string, unknown>).chrome = {
+      runtime: {
+        onMessage: {
+          addListener: vi.fn((listener: RuntimeMessageListener) => {
+            messageListeners.push(listener);
+          }),
+        },
+        sendMessage: runtimeSendMessage,
+      },
+    };
+
+    await import("./contentScript");
+
+    const startResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "startDomPicker", targetId: "target-123" },
+      {} as chrome.runtime.MessageSender,
+      startResponse,
+    );
+
+    // mousemove + click to enter selected state (on sibC)
+    const sibCEl = document.querySelector("#sib-c");
+    sibCEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+    sibCEl?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    update.mockClear();
+    setNavigationState.mockClear();
+
+    // ArrowUp: sibC -> sibB (previous sibling in DOM order)
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+    expect(update).toHaveBeenCalledWith(sibB, true);
+  });
+
+  it("ArrowDown triggers down sibling navigation in selected state", async () => {
+    let overlayCallbacks: {
+      onNarrow(): void;
+      onWiden(): void;
+      onChange(): void;
+      onConfirm(): void;
+      onCancel(): void;
+      onUp(): void;
+      onDown(): void;
+    } | undefined;
+    const update = vi.fn();
+    const setNavigationState = vi.fn();
+    const showPanel = vi.fn();
+    const hidePanel = vi.fn();
+    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
+    const cleanup = vi.fn();
+    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
+    const messageListeners: RuntimeMessageListener[] = [];
+
+    document.body.innerHTML = `
+      <div id="container">
+        <div id="sib-a">A</div>
+        <div id="sib-b">B</div>
+        <div id="sib-c">C</div>
+        <div id="sib-d">D</div>
+      </div>
+    `;
+
+    const sibA = document.querySelector("#sib-a") as Element;
+    const sibB = document.querySelector("#sib-b") as Element;
+    const sibC = document.querySelector("#sib-c") as Element;
+    const sibD = document.querySelector("#sib-d") as Element;
+
+    vi.doMock("./selectionOverlay", () => ({
+      createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
+        overlayCallbacks = callbacks;
+        return {
+          update,
+          setNavigationState,
+          showPanel,
+          hidePanel,
+          showCommentModal,
+          cleanup,
+        };
+      },
+      isPickerUiElement: () => false,
+    }));
+    vi.doMock("./domPicker", () => ({
+      getSelectionCandidates: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { candidates: [sibA], recommendedIndex: 0 };
+          case "sib-b": return { candidates: [sibB], recommendedIndex: 0 };
+          case "sib-c": return { candidates: [sibC], recommendedIndex: 0 };
+          case "sib-d": return { candidates: [sibD], recommendedIndex: 0 };
+          default: return { candidates: [el], recommendedIndex: 0 };
+        }
+      }),
+      buildSelectionPayload: vi.fn(() => selectionPayload),
+      findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB, sibC, sibD], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA, sibC, sibD], currentIndex: 0 };
+          case "sib-c": return { elements: [sibB, sibA, sibD], currentIndex: 0 };
+          case "sib-d": return { elements: [sibC, sibB, sibA], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
+    }));
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    (globalThis as Record<string, unknown>).chrome = {
+      runtime: {
+        onMessage: {
+          addListener: vi.fn((listener: RuntimeMessageListener) => {
+            messageListeners.push(listener);
+          }),
+        },
+        sendMessage: runtimeSendMessage,
+      },
+    };
+
+    await import("./contentScript");
+
+    const startResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "startDomPicker", targetId: "target-123" },
+      {} as chrome.runtime.MessageSender,
+      startResponse,
+    );
+
+    // mousemove + click to enter selected state (on sibB)
+    const sibBEl = document.querySelector("#sib-b");
+    sibBEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+    sibBEl?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    update.mockClear();
+    setNavigationState.mockClear();
+
+    // ArrowDown: sibB -> sibC (next sibling in DOM order)
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(update).toHaveBeenCalledWith(sibC, true);
+  });
+
+  it("ArrowUp/ArrowDown do nothing in hover state", async () => {
+    let overlayCallbacks: {
+      onNarrow(): void;
+      onWiden(): void;
+      onChange(): void;
+      onConfirm(): void;
+      onCancel(): void;
+      onUp(): void;
+      onDown(): void;
+    } | undefined;
+    const update = vi.fn();
+    const setNavigationState = vi.fn();
+    const showPanel = vi.fn();
+    const hidePanel = vi.fn();
+    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
+    const cleanup = vi.fn();
+    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
+    const messageListeners: RuntimeMessageListener[] = [];
+
+    document.body.innerHTML = `
+      <div id="container">
+        <div id="sib-a">A</div>
+        <div id="sib-b">B</div>
+        <div id="sib-c">C</div>
+      </div>
+    `;
+
+    const sibA = document.querySelector("#sib-a") as Element;
+    const sibB = document.querySelector("#sib-b") as Element;
+    const sibC = document.querySelector("#sib-c") as Element;
+
+    vi.doMock("./selectionOverlay", () => ({
+      createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
+        overlayCallbacks = callbacks;
+        return {
+          update,
+          setNavigationState,
+          showPanel,
+          hidePanel,
+          showCommentModal,
+          cleanup,
+        };
+      },
+      isPickerUiElement: () => false,
+    }));
+    vi.doMock("./domPicker", () => ({
+      getSelectionCandidates: vi.fn(() => ({
+        candidates: [sibB],
+        recommendedIndex: 0,
+      })),
+      buildSelectionPayload: vi.fn(() => selectionPayload),
+      findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB, sibC], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA, sibC], currentIndex: 0 };
+          case "sib-c": return { elements: [sibA, sibB], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
+    }));
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    (globalThis as Record<string, unknown>).chrome = {
+      runtime: {
+        onMessage: {
+          addListener: vi.fn((listener: RuntimeMessageListener) => {
+            messageListeners.push(listener);
+          }),
+        },
+        sendMessage: runtimeSendMessage,
+      },
+    };
+
+    await import("./contentScript");
+
+    const startResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "startDomPicker", targetId: "target-123" },
+      {} as chrome.runtime.MessageSender,
+      startResponse,
+    );
+
+    // mousemove to set up candidates — still in hover state (no click)
+    const sibBEl = document.querySelector("#sib-b");
+    sibBEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+    update.mockClear();
+
+    // ArrowUp/ArrowDown should be no-ops in hover state
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("canGoUp/canGoDown are correct for first and last siblings", async () => {
+    let overlayCallbacks: {
+      onNarrow(): void;
+      onWiden(): void;
+      onChange(): void;
+      onConfirm(): void;
+      onCancel(): void;
+      onUp(): void;
+      onDown(): void;
+    } | undefined;
+    const update = vi.fn();
+    const setNavigationState = vi.fn();
+    const showPanel = vi.fn();
+    const hidePanel = vi.fn();
+    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
+    const cleanup = vi.fn();
+    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
+    const messageListeners: RuntimeMessageListener[] = [];
+
+    document.body.innerHTML = `
+      <div id="container">
+        <div id="sib-a">A</div>
+        <div id="sib-b">B</div>
+        <div id="sib-c">C</div>
+      </div>
+    `;
+
+    const sibA = document.querySelector("#sib-a") as Element;
+    const sibB = document.querySelector("#sib-b") as Element;
+    const sibC = document.querySelector("#sib-c") as Element;
+
+    vi.doMock("./selectionOverlay", () => ({
+      createSelectionOverlay: (callbacks: NonNullable<typeof overlayCallbacks>) => {
+        overlayCallbacks = callbacks;
+        return {
+          update,
+          setNavigationState,
+          showPanel,
+          hidePanel,
+          showCommentModal,
+          cleanup,
+        };
+      },
+      isPickerUiElement: () => false,
+    }));
+    vi.doMock("./domPicker", () => ({
+      getSelectionCandidates: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { candidates: [sibA], recommendedIndex: 0 };
+          case "sib-b": return { candidates: [sibB], recommendedIndex: 0 };
+          case "sib-c": return { candidates: [sibC], recommendedIndex: 0 };
+          default: return { candidates: [el], recommendedIndex: 0 };
+        }
+      }),
+      buildSelectionPayload: vi.fn(() => selectionPayload),
+      findLogicalSelectionElement: vi.fn((element: Element) => element),
+      findBestVisibleChild: vi.fn(() => null),
+      getParentElement: vi.fn(() => null),
+      findSiblingElements: vi.fn((el: Element) => {
+        switch (el.id) {
+          case "sib-a": return { elements: [sibB, sibC], currentIndex: 0 };
+          case "sib-b": return { elements: [sibA, sibC], currentIndex: 0 };
+          case "sib-c": return { elements: [sibA, sibB], currentIndex: 0 };
+          default: return { elements: [], currentIndex: -1 };
+        }
+      }),
+    }));
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    (globalThis as Record<string, unknown>).chrome = {
+      runtime: {
+        onMessage: {
+          addListener: vi.fn((listener: RuntimeMessageListener) => {
+            messageListeners.push(listener);
+          }),
+        },
+        sendMessage: runtimeSendMessage,
+      },
+    };
+
+    await import("./contentScript");
+
+    const startResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "startDomPicker", targetId: "target-123" },
+      {} as chrome.runtime.MessageSender,
+      startResponse,
+    );
+
+    // mousemove to first sibling (sibA) — should have canGoUp=false, canGoDown=true
+    const sibAEl = document.querySelector("#sib-a");
+    sibAEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+
+    expect(setNavigationState).toHaveBeenCalledWith({
+      canNarrow: false,
+      canWiden: false,
+      canGoUp: false,
+      canGoDown: true,
+    });
+
+    // Click to select
+    sibAEl?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    setNavigationState.mockClear();
+    update.mockClear();
+
+    // onDown: sibA -> sibB
+    overlayCallbacks?.onDown();
+    expect(update).toHaveBeenCalledWith(sibB, true);
   });
 });

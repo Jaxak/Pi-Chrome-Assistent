@@ -16,6 +16,8 @@ describe("createSelectionOverlay", () => {
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
     const root = document.querySelector("#pi-dom-picker-overlay-root");
     const highlightBox = root?.firstElementChild;
@@ -36,6 +38,8 @@ describe("createSelectionOverlay", () => {
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
 
     expect(document.body.textContent).toContain("Выбор блока");
@@ -57,6 +61,8 @@ describe("createSelectionOverlay", () => {
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
 
     const root = document.querySelector("#pi-dom-picker-overlay-root");
@@ -96,6 +102,8 @@ describe("createSelectionOverlay", () => {
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
     const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
     expect(panel?.style.display).toBe("none");
@@ -109,6 +117,8 @@ describe("createSelectionOverlay", () => {
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
     overlay.showPanel();
     const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
@@ -123,6 +133,8 @@ describe("createSelectionOverlay", () => {
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
     overlay.showPanel();
     overlay.hidePanel();
@@ -138,6 +150,8 @@ describe("createSelectionOverlay", () => {
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
     expect(document.body.textContent).toContain("Изменить");
     const changeBtn = document.querySelector('[data-testid="picker-change"]');
@@ -152,12 +166,14 @@ describe("createSelectionOverlay", () => {
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
     const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
     const actions = panel?.querySelector("div[style*='grid-template-columns']") as HTMLDivElement | null;
     expect(actions?.style.gridTemplateColumns).toContain("2");
 
-    // Verify up/down buttons exist and are disabled
+    // Verify up/down buttons exist and are disabled by default
     const upButton = document.querySelector('[data-testid="picker-up"]');
     const downButton = document.querySelector('[data-testid="picker-down"]');
     expect(upButton).toBeInstanceOf(HTMLButtonElement);
@@ -181,6 +197,8 @@ describe("createSelectionOverlay", () => {
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
     overlay.update(div);
     const highlightBox = document.querySelector("#pi-dom-picker-overlay-root")?.firstElementChild as HTMLDivElement;
@@ -190,24 +208,87 @@ describe("createSelectionOverlay", () => {
     overlay.cleanup();
   });
 
-  it("disables the narrow button at the smallest candidate", () => {
+  it("enables up/down buttons when navigation state allows", () => {
     const overlay = createSelectionOverlay({
       onNarrow: vi.fn(),
       onWiden: vi.fn(),
       onChange: vi.fn(),
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
     });
 
-    overlay.setNavigationState({ canNarrow: false, canWiden: true });
+    overlay.setNavigationState({ canNarrow: false, canWiden: true, canGoUp: true, canGoDown: true });
 
     const narrowButton = document.querySelector('[data-testid="picker-narrow"]');
     const widenButton = document.querySelector('[data-testid="picker-widen"]');
+    const upButton = document.querySelector('[data-testid="picker-up"]');
+    const downButton = document.querySelector('[data-testid="picker-down"]');
 
     expect(narrowButton).toBeInstanceOf(HTMLButtonElement);
     expect(widenButton).toBeInstanceOf(HTMLButtonElement);
+    expect(upButton).toBeInstanceOf(HTMLButtonElement);
+    expect(downButton).toBeInstanceOf(HTMLButtonElement);
     expect((narrowButton as HTMLButtonElement).disabled).toBe(true);
     expect((widenButton as HTMLButtonElement).disabled).toBe(false);
+    expect((upButton as HTMLButtonElement).disabled).toBe(false);
+    expect((downButton as HTMLButtonElement).disabled).toBe(false);
+
+    overlay.cleanup();
+  });
+
+  it("enables up/down buttons via setNavigationState", () => {
+    const overlay = createSelectionOverlay({
+      onNarrow: vi.fn(),
+      onWiden: vi.fn(),
+      onChange: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+      onUp: vi.fn(),
+      onDown: vi.fn(),
+    });
+
+    // Initially disabled (default state)
+    let upButton = document.querySelector('[data-testid="picker-up"]') as HTMLButtonElement;
+    let downButton = document.querySelector('[data-testid="picker-down"]') as HTMLButtonElement;
+    expect(upButton.disabled).toBe(true);
+    expect(downButton.disabled).toBe(true);
+
+    overlay.setNavigationState({ canNarrow: true, canWiden: true, canGoUp: true, canGoDown: true });
+    expect(upButton.disabled).toBe(false);
+    expect(downButton.disabled).toBe(false);
+
+    overlay.setNavigationState({ canNarrow: true, canWiden: true, canGoUp: false, canGoDown: false });
+    expect(upButton.disabled).toBe(true);
+    expect(downButton.disabled).toBe(true);
+
+    overlay.cleanup();
+  });
+
+  it("calls onUp and onDown callbacks when buttons are clicked", () => {
+    const onUp = vi.fn();
+    const onDown = vi.fn();
+    const overlay = createSelectionOverlay({
+      onNarrow: vi.fn(),
+      onWiden: vi.fn(),
+      onChange: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+      onUp,
+      onDown,
+    });
+
+    overlay.setNavigationState({ canNarrow: true, canWiden: true, canGoUp: true, canGoDown: true });
+
+    const upButton = document.querySelector('[data-testid="picker-up"]') as HTMLButtonElement;
+    const downButton = document.querySelector('[data-testid="picker-down"]') as HTMLButtonElement;
+
+    upButton.click();
+    expect(onUp).toHaveBeenCalledTimes(1);
+
+    downButton.click();
+    expect(onDown).toHaveBeenCalledTimes(1);
 
     overlay.cleanup();
   });

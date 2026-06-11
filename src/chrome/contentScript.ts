@@ -1,4 +1,10 @@
-import { buildSelectionPayload, getSelectionCandidates } from "./domPicker";
+import {
+  buildSelectionPayload,
+  findBestVisibleChild,
+  findSiblingElements,
+  getParentElement,
+  getSelectionCandidates,
+} from "./domPicker";
 import {
   formatSendSelectionErrorToastMessage,
   SEND_SELECTION_SUCCESS_TOAST_MESSAGE,
@@ -65,11 +71,24 @@ function startDomPicker(targetId: string): void {
 
   const overlay = createSelectionOverlay({
     onNarrow: () => {
-      if (state !== 'selected' || !isActive || modalOpen || currentIndex <= 0) {
+      if (state !== 'selected' || !isActive || modalOpen) {
         return;
       }
 
-      currentIndex -= 1;
+      const currentSelection = getCurrentSelection();
+      if (!currentSelection) return;
+
+      const child = findBestVisibleChild(currentSelection);
+      if (!child) return;
+
+      // Rebuild candidate chain from the child so parent/child nav continues working
+      const newCandidates = getSelectionCandidates(child);
+      currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [child];
+      currentIndex = Math.min(
+        Math.max(newCandidates.recommendedIndex, 0),
+        currentCandidates.length - 1,
+      );
+
       updateCurrentSelection();
     },
     onChange: () => {
@@ -80,11 +99,24 @@ function startDomPicker(targetId: string): void {
       if (current) overlay.update(current, false);
     },
     onWiden: () => {
-      if (state !== 'selected' || !isActive || modalOpen || currentIndex >= currentCandidates.length - 1) {
+      if (state !== 'selected' || !isActive || modalOpen) {
         return;
       }
 
-      currentIndex += 1;
+      const currentSelection = getCurrentSelection();
+      if (!currentSelection) return;
+
+      const parent = getParentElement(currentSelection);
+      if (!parent) return;
+
+      // Rebuild candidate chain from the parent so parent/child nav continues working
+      const newCandidates = getSelectionCandidates(parent);
+      currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [parent];
+      currentIndex = Math.min(
+        Math.max(newCandidates.recommendedIndex, 0),
+        currentCandidates.length - 1,
+      );
+
       updateCurrentSelection();
     },
     onConfirm: () => {
@@ -141,24 +173,99 @@ function startDomPicker(targetId: string): void {
     onCancel: () => {
       cleanup();
     },
+    onUp: () => {
+      if (state !== 'selected' || !isActive || modalOpen) return;
+      tryNavigateToSibling('up');
+    },
+    onDown: () => {
+      if (state !== 'selected' || !isActive || modalOpen) return;
+      tryNavigateToSibling('down');
+    },
   });
 
   function getCurrentSelection(): Element | undefined {
     return currentCandidates[currentIndex];
   }
 
+  function findSiblingInDomOrder(
+    currentSelection: Element,
+    siblings: Element[],
+    direction: "up" | "down",
+  ): Element | null {
+    const parent = currentSelection.parentElement;
+    if (!parent) return null;
+
+    const allChildren = Array.from(parent.children);
+    const currentDomIndex = allChildren.indexOf(currentSelection);
+
+    if (direction === "up") {
+      for (let i = currentDomIndex - 1; i >= 0; i--) {
+        if (siblings.includes(allChildren[i])) {
+          return allChildren[i];
+        }
+      }
+    } else {
+      for (let i = currentDomIndex + 1; i < allChildren.length; i++) {
+        if (siblings.includes(allChildren[i])) {
+          return allChildren[i];
+        }
+      }
+    }
+    return null;
+  }
+
+  function tryNavigateToSibling(direction: "up" | "down"): boolean {
+    const currentSelection = getCurrentSelection();
+    if (!currentSelection) return false;
+
+    const siblings = findSiblingElements(currentSelection);
+    if (siblings.elements.length === 0) return false;
+
+    const found = findSiblingInDomOrder(currentSelection, siblings.elements, direction);
+    if (!found) return false;
+
+    // Rebuild candidate chain so narrow/widen works from the new element
+    const newCandidates = getSelectionCandidates(found);
+    currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [found];
+    currentIndex = Math.min(
+      Math.max(newCandidates.recommendedIndex, 0),
+      currentCandidates.length - 1,
+    );
+
+    updateCurrentSelection();
+    return true;
+  }
+
+  function getSiblingNavigationState(element: Element): { canGoUp: boolean; canGoDown: boolean } {
+    const siblings = findSiblingElements(element);
+    let canGoUp = false;
+    let canGoDown = false;
+
+    if (siblings.elements.length > 0) {
+      canGoUp = findSiblingInDomOrder(element, siblings.elements, "up") !== null;
+      canGoDown = findSiblingInDomOrder(element, siblings.elements, "down") !== null;
+    }
+
+    return { canGoUp, canGoDown };
+  }
+
   function updateCurrentSelection(): void {
     const currentSelection = getCurrentSelection();
 
     if (!currentSelection) {
-      overlay.setNavigationState({ canNarrow: false, canWiden: false });
+      overlay.setNavigationState({ canNarrow: false, canWiden: false, canGoUp: false, canGoDown: false });
       return;
     }
 
     overlay.update(currentSelection, state === 'selected');
+
+    const { canGoUp, canGoDown } = getSiblingNavigationState(currentSelection);
+
     overlay.setNavigationState({
-      canNarrow: currentIndex > 0,
-      canWiden: currentIndex < currentCandidates.length - 1,
+      canNarrow: findBestVisibleChild(currentSelection) !== null,
+      canWiden: getParentElement(currentSelection) !== null,
+      canGoUp,
+      canGoDown,
     });
   }
 
@@ -221,6 +328,19 @@ function startDomPicker(targetId: string): void {
       event.preventDefault();
       event.stopPropagation();
       cleanup();
+    }
+
+    // ArrowUp / ArrowDown for sibling navigation
+    if (state === 'selected' && !modalOpen) {
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        tryNavigateToSibling('up');
+      } else if (event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopPropagation();
+        tryNavigateToSibling('down');
+      }
     }
   };
 

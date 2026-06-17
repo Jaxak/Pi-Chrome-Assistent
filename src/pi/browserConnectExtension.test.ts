@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { mkdtempSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -232,33 +232,125 @@ describe("readOrCreateSharedToken", () => {
     expect((flags as number) & (actualFs.constants.O_NOFOLLOW ?? 0x20000)).not.toBe(0);
   });
 
-  it("throws a security error when O_NOFOLLOW is unavailable", async () => {
-    const tokenFilePath = "/virtual/.pi/browser-connect.token";
+  it("creates shared token files when no-follow support is unavailable", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-token-"));
+    const tokenFilePath = join(tempDir, "browser-connect.token");
     const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
-
-    const openSync = vi.fn(() => {
-      throw new Error("token file open should not be attempted without O_NOFOLLOW support");
-    });
 
     vi.doMock("node:fs", () => ({
       ...actualFs,
       constants: Object.fromEntries(
         Object.entries(actualFs.constants).filter(([key]) => key !== "O_NOFOLLOW"),
       ),
-      lstatSync: vi.fn(() => {
-        const error = new Error("missing") as NodeJS.ErrnoException;
-        error.code = "ENOENT";
-        throw error;
-      }),
-      mkdirSync: vi.fn(),
-      chmodSync: vi.fn(),
-      openSync,
     }));
 
     const { readOrCreateSharedToken } = await importBrowserConnectExtensionModule();
 
-    expect(() => readOrCreateSharedToken(tokenFilePath)).toThrow(/o_nofollow/i);
-    expect(openSync).not.toHaveBeenCalled();
+    try {
+      const token = readOrCreateSharedToken(tokenFilePath);
+
+      expect(token).toHaveLength(36);
+      expect(statSync(tokenFilePath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a symlinked shared token file without no-follow support", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-token-"));
+    const tokenFilePath = join(tempDir, "browser-connect.token");
+    const redirectedTokenPath = join(tempDir, "redirected-browser-connect.token");
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+
+    vi.doMock("node:fs", () => ({
+      ...actualFs,
+      constants: Object.fromEntries(
+        Object.entries(actualFs.constants).filter(([key]) => key !== "O_NOFOLLOW"),
+      ),
+    }));
+
+    const { readOrCreateSharedToken } = await importBrowserConnectExtensionModule();
+
+    try {
+      writeFileSync(redirectedTokenPath, "redirected-token\n", { encoding: "utf8", mode: 0o600 });
+      symlinkSync(redirectedTokenPath, tokenFilePath);
+
+      expect(() => readOrCreateSharedToken(tokenFilePath)).toThrow(/must not be a symlink/i);
+      expect(readFileSync(redirectedTokenPath, "utf8")).toBe("redirected-token\n");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a missing shared token path replaced with a symlink during fallback open", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-token-"));
+    const tokenFilePath = join(tempDir, "browser-connect.token");
+    const redirectedTokenPath = join(tempDir, "redirected-browser-connect.token");
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    let swappedTokenFile = false;
+
+    writeFileSync(redirectedTokenPath, "attacker-token\n", { encoding: "utf8", mode: 0o600 });
+
+    vi.doMock("node:fs", () => ({
+      ...actualFs,
+      constants: Object.fromEntries(
+        Object.entries(actualFs.constants).filter(([key]) => key !== "O_NOFOLLOW"),
+      ),
+      openSync: vi.fn((path: Parameters<typeof actualFs.openSync>[0], flags: number | string, mode?: fs.Mode) => {
+        if (path === tokenFilePath && !swappedTokenFile) {
+          swappedTokenFile = true;
+          actualFs.symlinkSync(redirectedTokenPath, tokenFilePath);
+        }
+
+        return mode === undefined ? actualFs.openSync(path, flags) : actualFs.openSync(path, flags, mode);
+      }),
+    }));
+
+    const { readOrCreateSharedToken } = await importBrowserConnectExtensionModule();
+
+    try {
+      expect(() => readOrCreateSharedToken(tokenFilePath)).toThrow(/must not be a symlink/i);
+      expect(readFileSync(redirectedTokenPath, "utf8")).toBe("attacker-token\n");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a shared token path swapped after fallback symlink validation", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-token-"));
+    const tokenFilePath = join(tempDir, "browser-connect.token");
+    const redirectedTokenPath = join(tempDir, "redirected-browser-connect.token");
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    let swappedTokenFile = false;
+
+    writeFileSync(tokenFilePath, "safe-token\n", { encoding: "utf8", mode: 0o600 });
+    writeFileSync(redirectedTokenPath, "attacker-token\n", { encoding: "utf8", mode: 0o600 });
+
+    vi.doMock("node:fs", () => ({
+      ...actualFs,
+      constants: Object.fromEntries(
+        Object.entries(actualFs.constants).filter(([key]) => key !== "O_NOFOLLOW"),
+      ),
+      lstatSync: vi.fn((path: Parameters<typeof actualFs.lstatSync>[0]) => {
+        const stats = actualFs.lstatSync(path);
+
+        if (path === tokenFilePath && !swappedTokenFile) {
+          swappedTokenFile = true;
+          actualFs.rmSync(tokenFilePath, { force: true });
+          actualFs.symlinkSync(redirectedTokenPath, tokenFilePath);
+        }
+
+        return stats;
+      }),
+    }));
+
+    const { readOrCreateSharedToken } = await importBrowserConnectExtensionModule();
+
+    try {
+      expect(() => readOrCreateSharedToken(tokenFilePath)).toThrow(/changed while opening/i);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("re-reads the token file when an exclusive create loses a race", async () => {

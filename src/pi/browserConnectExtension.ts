@@ -5,6 +5,7 @@ import {
   constants as fsConstants,
   fchmodSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -62,17 +63,88 @@ function ensureTokenDirectoryPermissions(tokenFilePath: string): void {
 }
 
 function getNoFollowFlag(): number {
-  if (typeof fsConstants.O_NOFOLLOW !== "number") {
-    throw new Error("Secure shared token file operations require fs.constants.O_NOFOLLOW support");
+  return typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+}
+
+function getTokenFileFallbackPreOpenStats(tokenFilePath: string): ReturnType<typeof lstatSync> | undefined {
+  if (typeof fsConstants.O_NOFOLLOW === "number") {
+    return undefined;
   }
 
-  return fsConstants.O_NOFOLLOW;
+  try {
+    const stats = lstatSync(tokenFilePath);
+
+    if (stats.isSymbolicLink()) {
+      throw new Error(`Shared token file must not be a symlink: ${tokenFilePath}`);
+    }
+
+    return stats;
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ENOENT") {
+      return undefined;
+    }
+
+    throw error;
+  }
+}
+
+function assertTokenFileOpenedSafely(
+  fd: number,
+  tokenFilePath: string,
+  preOpenStats: ReturnType<typeof lstatSync> | undefined,
+): void {
+  if (typeof fsConstants.O_NOFOLLOW === "number") {
+    return;
+  }
+
+  const openedStats = fstatSync(fd);
+
+  if (preOpenStats !== undefined) {
+    if (openedStats.dev !== preOpenStats.dev || openedStats.ino !== preOpenStats.ino) {
+      throw new Error(`Shared token file changed while opening: ${tokenFilePath}`);
+    }
+
+    return;
+  }
+
+  let pathStats: ReturnType<typeof lstatSync>;
+
+  try {
+    pathStats = lstatSync(tokenFilePath);
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ENOENT") {
+      throw new Error(`Shared token file changed while opening: ${tokenFilePath}`);
+    }
+
+    throw error;
+  }
+
+  if (pathStats.isSymbolicLink()) {
+    throw new Error(`Shared token file must not be a symlink: ${tokenFilePath}`);
+  }
+
+  if (openedStats.dev !== pathStats.dev || openedStats.ino !== pathStats.ino) {
+    throw new Error(`Shared token file changed while opening: ${tokenFilePath}`);
+  }
 }
 
 function openTokenFile(tokenFilePath: string, flags: number, mode?: number): number {
+  const preOpenStats = getTokenFileFallbackPreOpenStats(tokenFilePath);
+  let fd: number | undefined;
+
   try {
-    return mode === undefined ? openSync(tokenFilePath, flags) : openSync(tokenFilePath, flags, mode);
+    fd = mode === undefined ? openSync(tokenFilePath, flags) : openSync(tokenFilePath, flags, mode);
+    assertTokenFileOpenedSafely(fd, tokenFilePath, preOpenStats);
+    return fd;
   } catch (error) {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
+
     const nodeError = toNodeError(error);
 
     if (nodeError.code === "ELOOP") {

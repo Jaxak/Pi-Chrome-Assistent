@@ -356,6 +356,35 @@ describe("trustedBrowserStore", () => {
     }
   });
 
+  it("stores trusted browser tokens when no-follow and directory open flags are unavailable", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+
+    vi.doMock("node:fs", () => ({
+      ...actualFs,
+      constants: {
+        ...actualFs.constants,
+        O_DIRECTORY: undefined,
+        O_NOFOLLOW: undefined,
+      } as unknown as typeof actualFs.constants,
+    }));
+
+    const { addTrustedBrowserToken, isTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toEqual({
+        token: "browser-token",
+      });
+      await expect(isTrustedBrowserToken(trustedBrowsersPath, "browser-token")).resolves.toBe(true);
+      expect(JSON.parse(readFileSync(trustedBrowsersPath, "utf8"))).toEqual([
+        { token: "browser-token" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps duplicate auth as a true no-op when a second write would fail", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
     const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
@@ -801,6 +830,82 @@ describe("trustedBrowserStore", () => {
       });
 
       expect(statSync(trustedBrowsersDirectory).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a symlinked trusted browser store file without no-follow support", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const redirectedStorePath = join(tempDir, "redirected-store.json");
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+
+    vi.doMock("node:fs", () => ({
+      ...actualFs,
+      constants: {
+        ...actualFs.constants,
+        O_DIRECTORY: undefined,
+        O_NOFOLLOW: undefined,
+      } as unknown as typeof actualFs.constants,
+    }));
+
+    const { addTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      writeFileSync(redirectedStorePath, "[]\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      symlinkSync(redirectedStorePath, trustedBrowsersPath);
+
+      await expect(addTrustedBrowserToken(trustedBrowsersPath, "browser-token")).rejects.toThrow(/must not be a symlink/i);
+      expect(JSON.parse(readFileSync(redirectedStorePath, "utf8"))).toEqual([]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a trusted browser store path swapped after fallback symlink validation", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "trusted-browsers-"));
+    const trustedBrowsersPath = join(tempDir, "trusted-browsers.json");
+    const redirectedStorePath = join(tempDir, "redirected-store.json");
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    let swappedTrustedBrowserStore = false;
+
+    writeFileSync(trustedBrowsersPath, `${JSON.stringify([{ token: "safe-token" }])}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    writeFileSync(redirectedStorePath, `${JSON.stringify([{ token: "attacker-token" }])}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+
+    vi.doMock("node:fs", () => ({
+      ...actualFs,
+      constants: {
+        ...actualFs.constants,
+        O_DIRECTORY: undefined,
+        O_NOFOLLOW: undefined,
+      } as unknown as typeof actualFs.constants,
+      lstatSync: vi.fn((path: Parameters<typeof actualFs.lstatSync>[0]) => {
+        const stats = actualFs.lstatSync(path);
+
+        if (path === trustedBrowsersPath && !swappedTrustedBrowserStore) {
+          swappedTrustedBrowserStore = true;
+          actualFs.rmSync(trustedBrowsersPath, { force: true });
+          actualFs.symlinkSync(redirectedStorePath, trustedBrowsersPath);
+        }
+
+        return stats;
+      }),
+    }));
+
+    const { isTrustedBrowserToken } = await importTrustedBrowserStoreModule();
+
+    try {
+      await expect(isTrustedBrowserToken(trustedBrowsersPath, "attacker-token")).rejects.toThrow(/changed while opening/i);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

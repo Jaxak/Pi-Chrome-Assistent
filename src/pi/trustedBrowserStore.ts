@@ -4,6 +4,7 @@ import {
   constants as fsConstants,
   fchmodSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -32,14 +33,12 @@ interface TrustedBrowserStoreLockHandle {
   release(): void;
 }
 
+function canOpenTrustedBrowsersDirectoryForHardening(): boolean {
+  return typeof fsConstants.O_DIRECTORY === "number";
+}
+
 function getTrustedBrowsersDirectoryOpenFlags(): number {
-  const noFollowFlag = getNoFollowFlag();
-
-  if (typeof fsConstants.O_DIRECTORY !== "number") {
-    throw new Error("Secure trusted browser directory hardening requires fs.constants.O_DIRECTORY support");
-  }
-
-  return fsConstants.O_RDONLY | noFollowFlag | fsConstants.O_DIRECTORY;
+  return fsConstants.O_RDONLY | getNoFollowFlag() | fsConstants.O_DIRECTORY;
 }
 
 function openTrustedBrowsersDirectoryForHardening(trustedBrowsersDirectory: string): number {
@@ -61,6 +60,10 @@ function openTrustedBrowsersDirectoryForHardening(trustedBrowsersDirectory: stri
 }
 
 function hardenTrustedBrowsersDirectoryPermissions(trustedBrowsersDirectory: string): void {
+  if (!canOpenTrustedBrowsersDirectoryForHardening()) {
+    return;
+  }
+
   let fd: number | undefined;
 
   try {
@@ -96,19 +99,66 @@ function ensureTrustedBrowsersDirectory(trustedBrowsersPath: string): void {
 }
 
 function getNoFollowFlag(): number {
-  if (typeof fsConstants.O_NOFOLLOW !== "number") {
-    throw new Error("Secure trusted browser store operations require fs.constants.O_NOFOLLOW support");
+  return typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+}
+
+function getTrustedBrowserStoreFallbackPreOpenStats(
+  trustedBrowsersPath: string,
+): ReturnType<typeof lstatSync> | undefined {
+  if (typeof fsConstants.O_NOFOLLOW === "number") {
+    return undefined;
   }
 
-  return fsConstants.O_NOFOLLOW;
+  try {
+    const stats = lstatSync(trustedBrowsersPath);
+
+    if (stats.isSymbolicLink()) {
+      throw new Error(`Trusted browser store file must not be a symlink: ${trustedBrowsersPath}`);
+    }
+
+    return stats;
+  } catch (error) {
+    const nodeError = toNodeError(error);
+
+    if (nodeError.code === "ENOENT") {
+      return undefined;
+    }
+
+    throw error;
+  }
+}
+
+function assertTrustedBrowserStoreOpenedSameFile(
+  fd: number,
+  trustedBrowsersPath: string,
+  preOpenStats: ReturnType<typeof lstatSync> | undefined,
+): void {
+  if (preOpenStats === undefined) {
+    return;
+  }
+
+  const openedStats = fstatSync(fd);
+
+  if (openedStats.dev !== preOpenStats.dev || openedStats.ino !== preOpenStats.ino) {
+    throw new Error(`Trusted browser store file changed while opening: ${trustedBrowsersPath}`);
+  }
 }
 
 function openTrustedBrowserStoreFile(trustedBrowsersPath: string, flags: number, mode?: number): number {
+  const preOpenStats = getTrustedBrowserStoreFallbackPreOpenStats(trustedBrowsersPath);
+  let fd: number | undefined;
+
   try {
-    return mode === undefined
+    fd = mode === undefined
       ? openSync(trustedBrowsersPath, flags)
       : openSync(trustedBrowsersPath, flags, mode);
+    assertTrustedBrowserStoreOpenedSameFile(fd, trustedBrowsersPath, preOpenStats);
+    return fd;
   } catch (error) {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
+
     const nodeError = toNodeError(error);
 
     if (nodeError.code === "ELOOP") {

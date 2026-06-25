@@ -174,7 +174,7 @@ describe("contentScript", () => {
     document.body.innerHTML = `<div id="start">Start</div>`;
     const startEl = document.querySelector("#start") as Element;
 
-    mockOverlay({ update, updatePointer, showCommentModal });
+    const overlay = mockOverlay({ update, updatePointer, showCommentModal });
     mockDomPicker();
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
 
@@ -194,6 +194,7 @@ describe("contentScript", () => {
 
     expect(clickEvent.defaultPrevented).toBe(true);
     expect(stopPropagation).toHaveBeenCalledTimes(1);
+    expect(overlay.showPanel).not.toHaveBeenCalled();
     expect(showCommentModal).toHaveBeenCalledTimes(1);
   });
 
@@ -223,14 +224,16 @@ describe("contentScript", () => {
     document.body.innerHTML = `
       <section id="outer">
         <article id="inner">
-          <div id="start">Start</div>
+          <div id="hovered">Hovered</div>
+          <div id="clicked"><span>Clicked</span></div>
         </article>
       </section>
     `;
 
-    const startEl = document.querySelector("#start") as Element;
+    const hoveredEl = document.querySelector("#hovered") as Element;
+    const clickedEl = document.querySelector("#clicked") as Element;
 
-    mockOverlay({ update, showCommentModal });
+    const overlay = mockOverlay({ update, showCommentModal });
     mockDomPicker(buildSelectionPayload);
     vi.doMock("./toast", () => ({ showToast }));
 
@@ -238,16 +241,18 @@ describe("contentScript", () => {
 
     startPicker(messageListeners);
 
-    startEl.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
-    startEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    hoveredEl.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+    clickedEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
+    expect(overlay.showPanel).not.toHaveBeenCalled();
     expect(showCommentModal).toHaveBeenCalledTimes(1);
     expect(onSubmit).toBeTypeOf("function");
 
     onSubmit?.("Explain this");
     await flushAsyncWork();
 
-    expect(buildSelectionPayload).toHaveBeenCalledWith(startEl, "Explain this");
+    expect(buildSelectionPayload).toHaveBeenCalledWith(clickedEl, "Explain this");
+    expect(buildSelectionPayload).not.toHaveBeenCalledWith(hoveredEl, "Explain this");
     expect(runtimeSendMessage).toHaveBeenCalledWith({
       type: "sendSelection",
       targetId: "target-123",

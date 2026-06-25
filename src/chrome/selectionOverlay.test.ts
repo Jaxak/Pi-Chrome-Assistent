@@ -2,76 +2,33 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createSelectionOverlay } from "./selectionOverlay";
+import { createSelectionOverlay, isPickerUiElement } from "./selectionOverlay";
 
 afterEach(() => {
   document.documentElement.innerHTML = "";
 });
 
 describe("createSelectionOverlay", () => {
-  it("creates a managed Crosshair selection frame", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
+  it("creates a managed Crosshair selection frame and removes it on cleanup", () => {
+    const overlay = createSelectionOverlay();
 
-    expect(document.querySelector("#pi-dom-picker-overlay-root")).not.toBeNull();
+    const root = document.querySelector("#pi-dom-picker-overlay-root") as HTMLDivElement | null;
+    expect(root).not.toBeNull();
+    expect(root?.getAttribute("data-pi-picker-ui")).toBe("true");
+    expect(root?.style.pointerEvents).toBe("none");
     expect(document.querySelector("[data-pi-crosshair-root]")).not.toBeNull();
     expect(document.querySelector("[data-pi-crosshair-outline]")).not.toBeNull();
     expect(document.querySelector("style[data-pi-crosshair-style]")).not.toBeNull();
 
     overlay.cleanup();
 
+    expect(document.querySelector("#pi-dom-picker-overlay-root")).toBeNull();
     expect(document.querySelector("[data-pi-crosshair-root]")).toBeNull();
     expect(document.querySelector("style[data-pi-crosshair-style]")).toBeNull();
   });
 
-  it("renders picker controls with Russian labels", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
-
-    expect(document.body.textContent).toContain("Выбор блока");
-    expect(document.body.textContent).toContain("Меньше");
-    expect(document.body.textContent).toContain("Крупнее");
-    expect(document.body.textContent).toContain("Вверх");
-    expect(document.body.textContent).toContain("Вниз");
-    expect(document.body.textContent).toContain("Изменить");
-    expect(document.body.textContent).toContain("Отменить");
-    expect(document.body.textContent).toContain("Pi");
-
-    overlay.cleanup();
-  });
-
-  it("renders the control panel and comment modal in the light olive theme", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
-
-    const root = document.querySelector("#pi-dom-picker-overlay-root");
-    const panel = root?.lastElementChild as HTMLDivElement | null;
-
-    expect(panel).not.toBeNull();
-    expect(panel?.style.background).toBe("rgba(248, 250, 240, 0.96)");
-    expect(panel?.style.border).toBe("1px solid rgb(196, 204, 168)");
-    expect(panel?.style.color).toBe("rgb(47, 54, 28)");
+  it("renders the comment modal with Russian labels and light olive theme", () => {
+    const overlay = createSelectionOverlay();
 
     overlay.showCommentModal({
       onSubmit: vi.fn(),
@@ -95,99 +52,6 @@ describe("createSelectionOverlay", () => {
     overlay.cleanup();
   });
 
-  it("hides the panel by default", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
-    const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
-    expect(panel?.style.display).toBe("none");
-    overlay.cleanup();
-  });
-
-  it("shows the panel when showPanel is called", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
-    overlay.showPanel();
-    const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
-    expect(panel?.style.display).not.toBe("none");
-    overlay.cleanup();
-  });
-
-  it("hides the panel when hidePanel is called", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
-    overlay.showPanel();
-    overlay.hidePanel();
-    const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
-    expect(panel?.style.display).toBe("none");
-    overlay.cleanup();
-  });
-
-  it("renders the change button", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
-    expect(document.body.textContent).toContain("Изменить");
-    const changeBtn = document.querySelector('[data-testid="picker-change"]');
-    expect(changeBtn).toBeInstanceOf(HTMLButtonElement);
-    overlay.cleanup();
-  });
-
-  it("renders buttons in a 2-column grid with divider and full-width confirm", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
-    const panel = document.querySelector('[data-testid="picker-panel"]') as HTMLDivElement | null;
-    const actions = panel?.querySelector("div[style*='grid-template-columns']") as HTMLDivElement | null;
-    expect(actions?.style.gridTemplateColumns).toContain("2");
-
-    // Verify up/down buttons exist and are disabled by default
-    const upButton = document.querySelector('[data-testid="picker-up"]');
-    const downButton = document.querySelector('[data-testid="picker-down"]');
-    expect(upButton).toBeInstanceOf(HTMLButtonElement);
-    expect(downButton).toBeInstanceOf(HTMLButtonElement);
-    expect((upButton as HTMLButtonElement).disabled).toBe(true);
-    expect((downButton as HTMLButtonElement).disabled).toBe(true);
-
-    // Verify divider exists
-    const divider = actions?.querySelector("hr");
-    expect(divider).toBeInstanceOf(HTMLHRElement);
-
-    overlay.cleanup();
-  });
-
   it("marks the Crosshair outline as selected when update receives selected=true", () => {
     const div = document.createElement("div");
     document.body.appendChild(div);
@@ -203,15 +67,7 @@ describe("createSelectionOverlay", () => {
       toJSON: () => ({}),
     } as DOMRect);
 
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
+    const overlay = createSelectionOverlay();
 
     overlay.update(div);
     const outline = document.querySelector("[data-pi-crosshair-outline]") as HTMLElement;
@@ -224,87 +80,24 @@ describe("createSelectionOverlay", () => {
     overlay.cleanup();
   });
 
-  it("enables up/down buttons when navigation state allows", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
+  it("recognizes overlay and modal UI elements", () => {
+    const overlay = createSelectionOverlay();
+    const root = document.querySelector("#pi-dom-picker-overlay-root");
+
+    expect(isPickerUiElement(root)).toBe(true);
+
+    overlay.showCommentModal({
+      onSubmit: vi.fn(),
       onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
     });
 
-    overlay.setNavigationState({ canNarrow: false, canWiden: true, canGoUp: true, canGoDown: true });
+    const textarea = document.querySelector("#pi-dom-picker-modal-root textarea");
+    const pageElement = document.createElement("div");
+    document.body.append(pageElement);
 
-    const narrowButton = document.querySelector('[data-testid="picker-narrow"]');
-    const widenButton = document.querySelector('[data-testid="picker-widen"]');
-    const upButton = document.querySelector('[data-testid="picker-up"]');
-    const downButton = document.querySelector('[data-testid="picker-down"]');
-
-    expect(narrowButton).toBeInstanceOf(HTMLButtonElement);
-    expect(widenButton).toBeInstanceOf(HTMLButtonElement);
-    expect(upButton).toBeInstanceOf(HTMLButtonElement);
-    expect(downButton).toBeInstanceOf(HTMLButtonElement);
-    expect((narrowButton as HTMLButtonElement).disabled).toBe(true);
-    expect((widenButton as HTMLButtonElement).disabled).toBe(false);
-    expect((upButton as HTMLButtonElement).disabled).toBe(false);
-    expect((downButton as HTMLButtonElement).disabled).toBe(false);
-
-    overlay.cleanup();
-  });
-
-  it("enables up/down buttons via setNavigationState", () => {
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp: vi.fn(),
-      onDown: vi.fn(),
-    });
-
-    // Initially disabled (default state)
-    let upButton = document.querySelector('[data-testid="picker-up"]') as HTMLButtonElement;
-    let downButton = document.querySelector('[data-testid="picker-down"]') as HTMLButtonElement;
-    expect(upButton.disabled).toBe(true);
-    expect(downButton.disabled).toBe(true);
-
-    overlay.setNavigationState({ canNarrow: true, canWiden: true, canGoUp: true, canGoDown: true });
-    expect(upButton.disabled).toBe(false);
-    expect(downButton.disabled).toBe(false);
-
-    overlay.setNavigationState({ canNarrow: true, canWiden: true, canGoUp: false, canGoDown: false });
-    expect(upButton.disabled).toBe(true);
-    expect(downButton.disabled).toBe(true);
-
-    overlay.cleanup();
-  });
-
-  it("calls onUp and onDown callbacks when buttons are clicked", () => {
-    const onUp = vi.fn();
-    const onDown = vi.fn();
-    const overlay = createSelectionOverlay({
-      onNarrow: vi.fn(),
-      onWiden: vi.fn(),
-      onChange: vi.fn(),
-      onConfirm: vi.fn(),
-      onCancel: vi.fn(),
-      onUp,
-      onDown,
-    });
-
-    overlay.setNavigationState({ canNarrow: true, canWiden: true, canGoUp: true, canGoDown: true });
-
-    const upButton = document.querySelector('[data-testid="picker-up"]') as HTMLButtonElement;
-    const downButton = document.querySelector('[data-testid="picker-down"]') as HTMLButtonElement;
-
-    upButton.click();
-    expect(onUp).toHaveBeenCalledTimes(1);
-
-    downButton.click();
-    expect(onDown).toHaveBeenCalledTimes(1);
+    expect(isPickerUiElement(textarea)).toBe(true);
+    expect(isPickerUiElement(pageElement)).toBe(false);
+    expect(isPickerUiElement(null)).toBe(false);
 
     overlay.cleanup();
   });

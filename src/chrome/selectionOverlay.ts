@@ -12,9 +12,6 @@ export type CommentModalControls = {
 export type SelectionOverlayControls = {
   update(target: Element, selected?: boolean): void;
   updatePointer(x: number, y: number): void;
-  showPanel(): void;
-  hidePanel(): void;
-  setNavigationState(state: { canNarrow: boolean; canWiden: boolean; canGoUp: boolean; canGoDown: boolean }): void;
   showCommentModal(options: {
     onSubmit(comment: string): void;
     onCancel(): void;
@@ -26,43 +23,13 @@ function getOverlayHost(): HTMLElement {
   return document.body ?? document.documentElement;
 }
 
-function applyOverlayStyles(
-  container: HTMLDivElement,
-  panel: HTMLDivElement,
-  label: HTMLHeadingElement,
-  description: HTMLParagraphElement,
-): void {
+function applyOverlayStyles(container: HTMLDivElement): void {
   container.id = OVERLAY_ROOT_ID;
   container.setAttribute(UI_ATTRIBUTE, "true");
   container.style.position = "fixed";
   container.style.inset = "0";
   container.style.pointerEvents = "none";
   container.style.zIndex = Z_INDEX;
-
-  panel.setAttribute(UI_ATTRIBUTE, "true");
-  panel.style.position = "fixed";
-  panel.style.top = "16px";
-  panel.style.right = "16px";
-  panel.style.display = "none";
-  panel.style.gap = "10px";
-  panel.style.width = "min(320px, calc(100vw - 32px))";
-  panel.style.padding = "12px";
-  panel.style.borderRadius = "14px";
-  panel.style.border = "1px solid #c4cca8";
-  panel.style.background = "rgba(248, 250, 240, 0.96)";
-  panel.style.color = "#2f361c";
-  panel.style.boxShadow = "0 20px 48px rgba(78, 87, 39, 0.18)";
-  panel.style.pointerEvents = "auto";
-  panel.style.font = "13px/1.45 Inter, system-ui, sans-serif";
-  panel.dataset.testid = "picker-panel";
-
-  label.style.margin = "0";
-  label.style.font = "700 14px/1.2 Inter, system-ui, sans-serif";
-  label.textContent = "Выбор блока";
-
-  description.style.margin = "0";
-  description.style.color = "#5e6740";
-  description.textContent = "Наведите курсор, при необходимости уточните уровень блока и отправьте фрагмент в Pi.";
 }
 
 function applyControlButtonStyles(button: HTMLButtonElement, variant: "primary" | "secondary"): void {
@@ -92,98 +59,15 @@ function createModalRoot(): HTMLDivElement {
   return root;
 }
 
-export function createSelectionOverlay(callbacks: {
-  onNarrow(): void;
-  onWiden(): void;
-  onChange(): void;
-  onConfirm(): void;
-  onCancel(): void;
-  onUp(): void;
-  onDown(): void;
-}): SelectionOverlayControls {
+export function createSelectionOverlay(): SelectionOverlayControls {
   const container = document.createElement("div");
-  const panel = document.createElement("div");
-  const title = document.createElement("h2");
-  const description = document.createElement("p");
-  const actions = document.createElement("div");
-  const narrowButton = document.createElement("button");
-  const widenButton = document.createElement("button");
-  const changeButton = document.createElement("button");
-  const confirmButton = document.createElement("button");
-  const cancelButton = document.createElement("button");
   let modalRoot: HTMLDivElement | null = null;
   let modalCleanup: (() => void) | undefined;
 
   const highlighter = createCrosshairHighlighter({ animate: false });
 
-  applyOverlayStyles(container, panel, title, description);
+  applyOverlayStyles(container);
 
-  actions.style.display = "grid";
-  actions.style.gridTemplateColumns = "repeat(2, 1fr)";
-  actions.style.gap = "8px";
-  actions.setAttribute(UI_ATTRIBUTE, "true");
-
-  // Row 1: Крупнее | Меньше
-  widenButton.dataset.testid = "picker-widen";
-  widenButton.textContent = "Крупнее";
-  widenButton.addEventListener("click", callbacks.onWiden);
-  applyControlButtonStyles(widenButton, "secondary");
-
-  narrowButton.dataset.testid = "picker-narrow";
-  narrowButton.textContent = "Меньше";
-  narrowButton.addEventListener("click", callbacks.onNarrow);
-  applyControlButtonStyles(narrowButton, "secondary");
-
-  // Row 2: Вверх | Вниз
-  const upButton = document.createElement("button");
-  const downButton = document.createElement("button");
-  upButton.dataset.testid = "picker-up";
-  upButton.textContent = "Вверх";
-  upButton.disabled = true;
-  upButton.setAttribute("aria-disabled", "true");
-  upButton.title = "Переключиться на предыдущий блок";
-  upButton.addEventListener("click", callbacks.onUp);
-  applyControlButtonStyles(upButton, "secondary");
-  downButton.dataset.testid = "picker-down";
-  downButton.textContent = "Вниз";
-  downButton.disabled = true;
-  downButton.setAttribute("aria-disabled", "true");
-  downButton.title = "Переключиться на следующий блок";
-  downButton.addEventListener("click", callbacks.onDown);
-  applyControlButtonStyles(downButton, "secondary");
-
-  // Row 3: Изменить | Отменить
-  changeButton.dataset.testid = "picker-change";
-  changeButton.textContent = "Изменить";
-  changeButton.addEventListener("click", callbacks.onChange);
-  applyControlButtonStyles(changeButton, "secondary");
-
-  cancelButton.textContent = "Отменить";
-  cancelButton.addEventListener("click", callbacks.onCancel);
-  applyControlButtonStyles(cancelButton, "secondary");
-
-  // Row 4: Разделитель
-  const divider = document.createElement("hr");
-  divider.style.border = "none";
-  divider.style.borderTop = "1px solid #c4cca8";
-  divider.style.margin = "4px 0";
-  divider.style.gridColumn = "1 / -1";
-
-  // Row 5: Pi (основная кнопка, на всю ширину)
-  confirmButton.textContent = "Pi";
-  confirmButton.addEventListener("click", callbacks.onConfirm);
-  applyControlButtonStyles(confirmButton, "primary");
-  confirmButton.style.gridColumn = "1 / -1";
-
-  actions.append(
-    widenButton, narrowButton,
-    upButton, downButton,
-    changeButton, cancelButton,
-    divider,
-    confirmButton,
-  );
-  panel.append(title, description, actions);
-  container.append(panel);
   getOverlayHost().append(container);
 
   return {
@@ -192,22 +76,6 @@ export function createSelectionOverlay(callbacks: {
     },
     updatePointer(x, y) {
       highlighter.updatePointer(x, y);
-    },
-    showPanel() {
-      panel.style.display = "grid";
-    },
-    hidePanel() {
-      panel.style.display = "none";
-    },
-    setNavigationState(state) {
-      narrowButton.disabled = !state.canNarrow;
-      widenButton.disabled = !state.canWiden;
-      upButton.disabled = !state.canGoUp;
-      downButton.disabled = !state.canGoDown;
-      narrowButton.setAttribute("aria-disabled", String(!state.canNarrow));
-      widenButton.setAttribute("aria-disabled", String(!state.canWiden));
-      upButton.setAttribute("aria-disabled", String(!state.canGoUp));
-      downButton.setAttribute("aria-disabled", String(!state.canGoDown));
     },
     showCommentModal(options) {
       modalCleanup?.();

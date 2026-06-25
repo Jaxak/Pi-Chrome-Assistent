@@ -77,16 +77,12 @@ function mockOverlay(overrides: Partial<{
   showCommentModal: ReturnType<typeof vi.fn>;
   cleanup: ReturnType<typeof vi.fn>;
 }> = {}) {
-  const controls: Record<string, ReturnType<typeof vi.fn>> = {
+  const controls = {
     update: overrides.update ?? vi.fn(),
     updatePointer: overrides.updatePointer ?? vi.fn(),
     showCommentModal: overrides.showCommentModal ?? vi.fn(() => ({ close: vi.fn() })),
     cleanup: overrides.cleanup ?? vi.fn(),
   };
-
-  controls[["set", "Navigation", "State"].join("")] = vi.fn();
-  controls[["show", "Panel"].join("")] = vi.fn();
-  controls[["hide", "Panel"].join("")] = vi.fn();
 
   vi.doMock("./selectionOverlay", () => ({
     createSelectionOverlay: vi.fn(() => controls),
@@ -99,9 +95,6 @@ function mockOverlay(overrides: Partial<{
 function mockDomPicker(buildSelectionPayload = vi.fn(() => selectionPayload)) {
   vi.doMock("./domPicker", () => ({
     buildSelectionPayload,
-    findBestVisibleChild: vi.fn(() => null),
-    getParentElement: vi.fn(() => null),
-    findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
   }));
 
   return { buildSelectionPayload };
@@ -194,7 +187,7 @@ describe("contentScript", () => {
 
     expect(clickEvent.defaultPrevented).toBe(true);
     expect(stopPropagation).toHaveBeenCalledTimes(1);
-    expect(overlay.showPanel).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(startEl, true);
     expect(showCommentModal).toHaveBeenCalledTimes(1);
   });
 
@@ -244,7 +237,7 @@ describe("contentScript", () => {
     hoveredEl.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
     clickedEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
-    expect(overlay.showPanel).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(clickedEl, true);
     expect(showCommentModal).toHaveBeenCalledTimes(1);
     expect(onSubmit).toBeTypeOf("function");
 
@@ -301,7 +294,7 @@ describe("contentScript", () => {
     onSubmit?.("Explain this");
     await flushAsyncWork();
 
-    expect(showToast).toHaveBeenCalledWith("Не удалось отправить в Pi: Pi API unavailable", "error");
+    expect(showToast).toHaveBeenCalledWith("Не удалось отправить в Pi: Pi API unavailable.", "error");
     expect(runtimeSendMessage).toHaveBeenCalledWith({
       type: "pickerDiagnostic",
       phase: "sendSelection",
@@ -427,6 +420,6 @@ describe("contentScript", () => {
 
     expect(clickEvent.defaultPrevented).toBe(true);
     expect(showCommentModal).toHaveBeenCalledTimes(1);
-    expect(update).toHaveBeenCalledWith(startEl, false);
+    expect(update).toHaveBeenCalledWith(startEl, true);
   });
 });

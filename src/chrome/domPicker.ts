@@ -49,13 +49,6 @@ const MEANINGFUL_ARIA_ROLE_SCORES: Record<string, number> = {
   log: 70,
 };
 
-const MAX_SELECTION_CANDIDATE_DEPTH = 8;
-
-export type SelectionCandidates = {
-  candidates: Element[];
-  recommendedIndex: number;
-};
-
 export type SiblingNavigation = {
   elements: Element[];
   currentIndex: number;
@@ -254,67 +247,6 @@ function scoreElement(element: Element): number {
   score += getRectScore(element);
 
   return score;
-}
-
-function shouldIncludeSelectionCandidate(element: Element): boolean {
-  const tagName = element.tagName.toLowerCase();
-  return tagName !== "body" && tagName !== "html";
-}
-
-function collectCandidateChain(start: Element): Element[] {
-  const candidates: Element[] = [];
-  let current: Element | null = start;
-  let depth = 0;
-
-  while (current && depth < MAX_SELECTION_CANDIDATE_DEPTH) {
-    if (shouldIncludeSelectionCandidate(current)) {
-      candidates.push(current);
-    }
-
-    current = current.parentElement;
-    depth += 1;
-  }
-
-  return candidates;
-}
-
-function dedupeCandidates(candidates: Element[]): Element[] {
-  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
-}
-
-function chooseRecommendedCandidateIndex(candidates: Element[]): number {
-  if (candidates.length === 0) {
-    return 0;
-  }
-
-  let bestIndex = 0;
-  let bestScore = Number.NEGATIVE_INFINITY;
-
-  for (const [index, candidate] of candidates.entries()) {
-    const score = scoreElement(candidate);
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestIndex = index;
-    }
-  }
-
-  return bestIndex;
-}
-
-export function getSelectionCandidates(start: Element): SelectionCandidates {
-  const candidates = dedupeCandidates(collectCandidateChain(start));
-  const recommendedIndex = chooseRecommendedCandidateIndex(candidates);
-
-  return {
-    candidates: candidates.length > 0 ? candidates : [start],
-    recommendedIndex: candidates.length > 0 ? recommendedIndex : 0,
-  };
-}
-
-export function findLogicalSelectionElement(start: Element): Element {
-  const { candidates, recommendedIndex } = getSelectionCandidates(start);
-  return candidates[recommendedIndex] ?? start;
 }
 
 function escapeIdentifier(value: string): string {

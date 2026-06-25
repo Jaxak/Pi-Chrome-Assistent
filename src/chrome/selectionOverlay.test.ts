@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe("createSelectionOverlay", () => {
-  it("uses a soft olive highlight for the selection frame", () => {
+  it("creates a managed Crosshair selection frame", () => {
     const overlay = createSelectionOverlay({
       onNarrow: vi.fn(),
       onWiden: vi.fn(),
@@ -19,16 +19,16 @@ describe("createSelectionOverlay", () => {
       onUp: vi.fn(),
       onDown: vi.fn(),
     });
-    const root = document.querySelector("#pi-dom-picker-overlay-root");
-    const highlightBox = root?.firstElementChild;
 
-    expect(root).not.toBeNull();
-    expect(highlightBox).not.toBeNull();
-    expect(highlightBox).toBeInstanceOf(HTMLDivElement);
-    expect((highlightBox as HTMLDivElement).style.background).toBe("rgba(111, 127, 58, 0.18)");
-    expect((highlightBox as HTMLDivElement).style.boxShadow).toContain("rgba(111, 127, 58, 0.28)");
+    expect(document.querySelector("#pi-dom-picker-overlay-root")).not.toBeNull();
+    expect(document.querySelector("[data-pi-crosshair-root]")).not.toBeNull();
+    expect(document.querySelector("[data-pi-crosshair-outline]")).not.toBeNull();
+    expect(document.querySelector("style[data-pi-crosshair-style]")).not.toBeNull();
 
     overlay.cleanup();
+
+    expect(document.querySelector("[data-pi-crosshair-root]")).toBeNull();
+    expect(document.querySelector("style[data-pi-crosshair-style]")).toBeNull();
   });
 
   it("renders picker controls with Russian labels", () => {
@@ -188,9 +188,21 @@ describe("createSelectionOverlay", () => {
     overlay.cleanup();
   });
 
-  it("uses 1px border by default and 2px when selected", () => {
+  it("marks the Crosshair outline as selected when update receives selected=true", () => {
     const div = document.createElement("div");
     document.body.appendChild(div);
+    vi.spyOn(div, "getBoundingClientRect").mockReturnValue({
+      top: 10,
+      left: 20,
+      width: 100,
+      height: 40,
+      right: 120,
+      bottom: 50,
+      x: 20,
+      y: 10,
+      toJSON: () => ({}),
+    } as DOMRect);
+
     const overlay = createSelectionOverlay({
       onNarrow: vi.fn(),
       onWiden: vi.fn(),
@@ -200,11 +212,15 @@ describe("createSelectionOverlay", () => {
       onUp: vi.fn(),
       onDown: vi.fn(),
     });
+
     overlay.update(div);
-    const highlightBox = document.querySelector("#pi-dom-picker-overlay-root")?.firstElementChild as HTMLDivElement;
-    expect(highlightBox.style.borderWidth).toBe("1px");
+    const outline = document.querySelector("[data-pi-crosshair-outline]") as HTMLElement;
+    expect(outline.dataset.piCrosshairSelected).toBe("false");
+    expect(outline.style.width).toBe("115px");
+
     overlay.update(div, true);
-    expect(highlightBox.style.borderWidth).toBe("2px");
+    expect(outline.dataset.piCrosshairSelected).toBe("true");
+
     overlay.cleanup();
   });
 

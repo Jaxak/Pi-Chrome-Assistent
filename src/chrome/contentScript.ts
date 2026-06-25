@@ -3,7 +3,6 @@ import {
   findBestVisibleChild,
   findSiblingElements,
   getParentElement,
-  getSelectionCandidates,
 } from "./domPicker";
 import {
   formatSendSelectionErrorToastMessage,
@@ -66,8 +65,7 @@ function startDomPicker(targetId: string): void {
   let isActive = true;
   let modalOpen = false;
   let state: 'hover' | 'selected' = 'hover';
-  let currentCandidates: Element[] = [];
-  let currentIndex = 0;
+  let currentSelection: Element | undefined;
 
   const overlay = createSelectionOverlay({
     onNarrow: () => {
@@ -75,20 +73,13 @@ function startDomPicker(targetId: string): void {
         return;
       }
 
-      const currentSelection = getCurrentSelection();
-      if (!currentSelection) return;
+      const current = getCurrentSelection();
+      if (!current) return;
 
-      const child = findBestVisibleChild(currentSelection);
+      const child = findBestVisibleChild(current);
       if (!child) return;
 
-      // Rebuild candidate chain from the child so parent/child nav continues working
-      const newCandidates = getSelectionCandidates(child);
-      currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [child];
-      currentIndex = Math.min(
-        Math.max(newCandidates.recommendedIndex, 0),
-        currentCandidates.length - 1,
-      );
-
+      currentSelection = child;
       updateCurrentSelection();
     },
     onChange: () => {
@@ -103,20 +94,13 @@ function startDomPicker(targetId: string): void {
         return;
       }
 
-      const currentSelection = getCurrentSelection();
-      if (!currentSelection) return;
+      const current = getCurrentSelection();
+      if (!current) return;
 
-      const parent = getParentElement(currentSelection);
+      const parent = getParentElement(current);
       if (!parent) return;
 
-      // Rebuild candidate chain from the parent so parent/child nav continues working
-      const newCandidates = getSelectionCandidates(parent);
-      currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [parent];
-      currentIndex = Math.min(
-        Math.max(newCandidates.recommendedIndex, 0),
-        currentCandidates.length - 1,
-      );
-
+      currentSelection = parent;
       updateCurrentSelection();
     },
     onConfirm: () => {
@@ -184,7 +168,7 @@ function startDomPicker(targetId: string): void {
   });
 
   function getCurrentSelection(): Element | undefined {
-    return currentCandidates[currentIndex];
+    return currentSelection;
   }
 
   function findSiblingInDomOrder(
@@ -215,23 +199,16 @@ function startDomPicker(targetId: string): void {
   }
 
   function tryNavigateToSibling(direction: "up" | "down"): boolean {
-    const currentSelection = getCurrentSelection();
-    if (!currentSelection) return false;
+    const current = getCurrentSelection();
+    if (!current) return false;
 
-    const siblings = findSiblingElements(currentSelection);
+    const siblings = findSiblingElements(current);
     if (siblings.elements.length === 0) return false;
 
-    const found = findSiblingInDomOrder(currentSelection, siblings.elements, direction);
+    const found = findSiblingInDomOrder(current, siblings.elements, direction);
     if (!found) return false;
 
-    // Rebuild candidate chain so narrow/widen works from the new element
-    const newCandidates = getSelectionCandidates(found);
-    currentCandidates = newCandidates.candidates.length > 0 ? newCandidates.candidates : [found];
-    currentIndex = Math.min(
-      Math.max(newCandidates.recommendedIndex, 0),
-      currentCandidates.length - 1,
-    );
-
+    currentSelection = found;
     updateCurrentSelection();
     return true;
   }
@@ -269,10 +246,8 @@ function startDomPicker(targetId: string): void {
     });
   }
 
-  function applyCandidates(hovered: Element): void {
-    const result = getSelectionCandidates(hovered);
-    currentCandidates = result.candidates.length > 0 ? result.candidates : [hovered];
-    currentIndex = Math.min(Math.max(result.recommendedIndex, 0), currentCandidates.length - 1);
+  function applySelection(target: Element): void {
+    currentSelection = target;
     updateCurrentSelection();
   }
 
@@ -294,7 +269,13 @@ function startDomPicker(targetId: string): void {
   };
 
   const handleMouseMove = (event: MouseEvent) => {
-    if (state !== 'hover' || !isActive || modalOpen) {
+    if (!isActive || modalOpen) {
+      return;
+    }
+
+    overlay.updatePointer(event.clientX, event.clientY);
+
+    if (state !== 'hover') {
       return;
     }
 
@@ -306,7 +287,7 @@ function startDomPicker(targetId: string): void {
       return;
     }
 
-    applyCandidates(hovered);
+    applySelection(hovered);
   };
 
   const handleClick = (event: MouseEvent) => {
@@ -314,8 +295,11 @@ function startDomPicker(targetId: string): void {
     const target = event.target instanceof Element ? event.target : null;
     if (!target || isPickerUiElement(target)) return;
 
+    event.preventDefault();
+    event.stopPropagation();
+
     state = 'selected';
-    applyCandidates(target);
+    applySelection(target);
     overlay.showPanel();
   };
 

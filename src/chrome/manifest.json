@@ -3,6 +3,12 @@
   "name": "Pi Chrome Assistent",
   "version": "0.1.0",
   "description": "Отправляет выбранный контент из браузера в активную сессию Pi.",
+  "icons": {
+    "16": "icon.svg",
+    "32": "icon.svg",
+    "48": "icon.svg",
+    "128": "icon.svg"
+  },
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*"],
   "background": {
@@ -10,7 +16,8 @@
   },
   "action": {
     "default_title": "Pi Chrome Assistent",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": "icon.svg"
   },
   "content_scripts": []
 }

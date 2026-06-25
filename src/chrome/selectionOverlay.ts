@@ -1,3 +1,5 @@
+import { createCrosshairHighlighter } from "./crosshairHighlighter";
+
 const OVERLAY_ROOT_ID = "pi-dom-picker-overlay-root";
 const MODAL_ROOT_ID = "pi-dom-picker-modal-root";
 const UI_ATTRIBUTE = "data-pi-picker-ui";
@@ -9,6 +11,7 @@ export type CommentModalControls = {
 
 export type SelectionOverlayControls = {
   update(target: Element, selected?: boolean): void;
+  updatePointer(x: number, y: number): void;
   showPanel(): void;
   hidePanel(): void;
   setNavigationState(state: { canNarrow: boolean; canWiden: boolean; canGoUp: boolean; canGoDown: boolean }): void;
@@ -25,7 +28,6 @@ function getOverlayHost(): HTMLElement {
 
 function applyOverlayStyles(
   container: HTMLDivElement,
-  box: HTMLDivElement,
   panel: HTMLDivElement,
   label: HTMLHeadingElement,
   description: HTMLParagraphElement,
@@ -36,13 +38,6 @@ function applyOverlayStyles(
   container.style.inset = "0";
   container.style.pointerEvents = "none";
   container.style.zIndex = Z_INDEX;
-
-  box.style.position = "fixed";
-  box.style.border = "1px solid #6f7f3a";
-  box.style.borderRadius = "8px";
-  box.style.background = "rgba(111, 127, 58, 0.18)";
-  box.style.boxShadow = "0 0 0 1px rgba(111, 127, 58, 0.28), 0 12px 30px rgba(78, 87, 39, 0.18)";
-  box.style.pointerEvents = "none";
 
   panel.setAttribute(UI_ATTRIBUTE, "true");
   panel.style.position = "fixed";
@@ -83,13 +78,6 @@ function applyControlButtonStyles(button: HTMLButtonElement, variant: "primary" 
   button.style.boxShadow = variant === "primary" ? "0 8px 18px rgba(78, 87, 39, 0.18)" : "none";
 }
 
-function setBoxFromRect(box: HTMLDivElement, rect: DOMRect): void {
-  box.style.top = `${Math.max(0, rect.top)}px`;
-  box.style.left = `${Math.max(0, rect.left)}px`;
-  box.style.width = `${Math.max(0, rect.width)}px`;
-  box.style.height = `${Math.max(0, rect.height)}px`;
-}
-
 function createModalRoot(): HTMLDivElement {
   const root = document.createElement("div");
   root.id = MODAL_ROOT_ID;
@@ -114,7 +102,6 @@ export function createSelectionOverlay(callbacks: {
   onDown(): void;
 }): SelectionOverlayControls {
   const container = document.createElement("div");
-  const highlightBox = document.createElement("div");
   const panel = document.createElement("div");
   const title = document.createElement("h2");
   const description = document.createElement("p");
@@ -127,7 +114,9 @@ export function createSelectionOverlay(callbacks: {
   let modalRoot: HTMLDivElement | null = null;
   let modalCleanup: (() => void) | undefined;
 
-  applyOverlayStyles(container, highlightBox, panel, title, description);
+  const highlighter = createCrosshairHighlighter({ animate: false });
+
+  applyOverlayStyles(container, panel, title, description);
 
   actions.style.display = "grid";
   actions.style.gridTemplateColumns = "repeat(2, 1fr)";
@@ -194,14 +183,15 @@ export function createSelectionOverlay(callbacks: {
     confirmButton,
   );
   panel.append(title, description, actions);
-  container.append(highlightBox, panel);
+  container.append(panel);
   getOverlayHost().append(container);
 
   return {
     update(target, selected) {
-      const rect = target.getBoundingClientRect();
-      setBoxFromRect(highlightBox, rect);
-      highlightBox.style.borderWidth = selected ? "2px" : "1px";
+      highlighter.updateTarget(target, { selected });
+    },
+    updatePointer(x, y) {
+      highlighter.updatePointer(x, y);
     },
     showPanel() {
       panel.style.display = "grid";
@@ -315,6 +305,8 @@ export function createSelectionOverlay(callbacks: {
     },
     cleanup() {
       modalCleanup?.();
+
+      highlighter.cleanup();
 
       if (container.isConnected) {
         container.remove();

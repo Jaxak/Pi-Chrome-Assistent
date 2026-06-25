@@ -11,6 +11,11 @@ type RuntimeMessage = {
   url?: string;
 };
 
+type SendSelectionResponse = {
+  ok?: boolean;
+  error?: string;
+};
+
 type RuntimeMessageListener = (
   message: RuntimeMessage,
   sender: chrome.runtime.MessageSender,
@@ -42,7 +47,7 @@ function flushAsyncWork(): Promise<void> {
   return Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve());
 }
 
-function installChromeMock(runtimeSendMessage = vi.fn(async () => ({ ok: true }))) {
+function installChromeMock(runtimeSendMessage: ReturnType<typeof vi.fn> = vi.fn(async () => ({ ok: true }))) {
   const messageListeners: RuntimeMessageListener[] = [];
 
   (globalThis as Record<string, unknown>).chrome = {
@@ -76,6 +81,7 @@ function mockOverlay(overrides: Partial<{
   updatePointer: ReturnType<typeof vi.fn>;
   showCommentModal: ReturnType<typeof vi.fn>;
   cleanup: ReturnType<typeof vi.fn>;
+  isPickerUiElement: (element: Element) => boolean;
 }> = {}) {
   const controls = {
     update: overrides.update ?? vi.fn(),
@@ -83,10 +89,11 @@ function mockOverlay(overrides: Partial<{
     showCommentModal: overrides.showCommentModal ?? vi.fn(() => ({ close: vi.fn() })),
     cleanup: overrides.cleanup ?? vi.fn(),
   };
+  const isPickerUiElement = overrides.isPickerUiElement ?? (() => false);
 
   vi.doMock("./selectionOverlay", () => ({
     createSelectionOverlay: vi.fn(() => controls),
-    isPickerUiElement: () => false,
+    isPickerUiElement,
   }));
 
   return controls;
@@ -189,6 +196,105 @@ describe("contentScript", () => {
     expect(stopPropagation).toHaveBeenCalledTimes(1);
     expect(update).toHaveBeenCalledWith(startEl, true);
     expect(showCommentModal).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open selection modal or intercept clicks on picker UI elements", async () => {
+    const update = vi.fn();
+    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
+    const { messageListeners } = installChromeMock();
+
+    document.body.innerHTML = `<button id="picker-ui">Picker UI</button>`;
+    const pickerUiEl = document.querySelector("#picker-ui") as Element;
+
+    mockOverlay({
+      update,
+      showCommentModal,
+      isPickerUiElement: (element) => element === pickerUiEl,
+    });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    startPicker(messageListeners);
+
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
+    const stopPropagation = vi.spyOn(clickEvent, "stopPropagation");
+
+    pickerUiEl.dispatchEvent(clickEvent);
+
+    expect(clickEvent.defaultPrevented).toBe(false);
+    expect(stopPropagation).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalledWith(pickerUiEl, true);
+    expect(showCommentModal).not.toHaveBeenCalled();
+  });
+
+  it("blocks additional DOM picker clicks while selection submit is pending", async () => {
+    let onSubmit: ((comment: string) => void) | undefined;
+    let resolveSendSelection: ((response: SendSelectionResponse) => void) | undefined;
+
+    const cleanup = vi.fn();
+    const update = vi.fn();
+    const showCommentModal = vi.fn(({ onSubmit: submit }: CommentModalOptions) => {
+      onSubmit = submit;
+      return { close: vi.fn() };
+    });
+    const buildSelectionPayload = vi.fn(() => selectionPayload);
+    const runtimeSendMessage = vi.fn((message: RuntimeMessage) => {
+      if (message.type === "sendSelection") {
+        return new Promise<SendSelectionResponse>((resolve) => {
+          resolveSendSelection = resolve;
+        });
+      }
+
+      if (message.type === "pickerDiagnostic") {
+        return Promise.resolve({ ok: true });
+      }
+
+      throw new Error(`Unexpected runtime message: ${message.type}`);
+    });
+    const { messageListeners } = installChromeMock(runtimeSendMessage);
+
+    document.body.innerHTML = `
+      <div id="first">First</div>
+      <div id="second">Second</div>
+    `;
+    const firstEl = document.querySelector("#first") as Element;
+    const secondEl = document.querySelector("#second") as Element;
+
+    mockOverlay({ update, showCommentModal, cleanup });
+    mockDomPicker(buildSelectionPayload);
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    startPicker(messageListeners);
+    firstEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    expect(showCommentModal).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toBeTypeOf("function");
+
+    onSubmit?.("First comment");
+    await Promise.resolve();
+
+    secondEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    expect(showCommentModal).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalledWith(secondEl, true);
+    expect(buildSelectionPayload).toHaveBeenCalledTimes(1);
+    expect(runtimeSendMessage).toHaveBeenCalledTimes(1);
+    expect(runtimeSendMessage).toHaveBeenCalledWith({
+      type: "sendSelection",
+      targetId: "target-123",
+      selection: selectionPayload,
+    });
+    expect(cleanup).not.toHaveBeenCalled();
+
+    resolveSendSelection?.({ ok: true });
+    await flushAsyncWork();
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeUndefined();
   });
 
   it("sends payload for the exact clicked element from the comment modal", async () => {

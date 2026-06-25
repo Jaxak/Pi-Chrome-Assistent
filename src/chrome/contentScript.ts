@@ -74,7 +74,6 @@ function startDomPicker(targetId: string): void {
         cleanup();
       },
       onSubmit: (comment) => {
-        modalOpen = false;
         void (async () => {
           try {
             const activeTargetId = pickerWindow[PICKER_SESSION_KEY]?.targetId;

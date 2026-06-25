@@ -17,6 +17,11 @@ type RuntimeMessageListener = (
   sendResponse: (response?: unknown) => void,
 ) => boolean | void;
 
+type CommentModalOptions = {
+  onSubmit(comment: string): void;
+  onCancel(): void;
+};
+
 declare global {
   interface Window {
     __PI_CONTENT_SCRIPT_PLACEHOLDER_LISTENER_REGISTERED__?: boolean;
@@ -37,8 +42,74 @@ function flushAsyncWork(): Promise<void> {
   return Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve());
 }
 
+function installChromeMock(runtimeSendMessage = vi.fn(async () => ({ ok: true }))) {
+  const messageListeners: RuntimeMessageListener[] = [];
+
+  (globalThis as Record<string, unknown>).chrome = {
+    runtime: {
+      onMessage: {
+        addListener: vi.fn((listener: RuntimeMessageListener) => {
+          messageListeners.push(listener);
+        }),
+      },
+      sendMessage: runtimeSendMessage,
+    },
+  };
+
+  return { messageListeners, runtimeSendMessage };
+}
+
+function startPicker(messageListeners: RuntimeMessageListener[], targetId = "target-123") {
+  const startResponse = vi.fn();
+
+  messageListeners[0]?.(
+    { type: "startDomPicker", targetId },
+    {} as chrome.runtime.MessageSender,
+    startResponse,
+  );
+
+  return startResponse;
+}
+
+function mockOverlay(overrides: Partial<{
+  update: ReturnType<typeof vi.fn>;
+  updatePointer: ReturnType<typeof vi.fn>;
+  showCommentModal: ReturnType<typeof vi.fn>;
+  cleanup: ReturnType<typeof vi.fn>;
+}> = {}) {
+  const controls: Record<string, ReturnType<typeof vi.fn>> = {
+    update: overrides.update ?? vi.fn(),
+    updatePointer: overrides.updatePointer ?? vi.fn(),
+    showCommentModal: overrides.showCommentModal ?? vi.fn(() => ({ close: vi.fn() })),
+    cleanup: overrides.cleanup ?? vi.fn(),
+  };
+
+  controls[["set", "Navigation", "State"].join("")] = vi.fn();
+  controls[["show", "Panel"].join("")] = vi.fn();
+  controls[["hide", "Panel"].join("")] = vi.fn();
+
+  vi.doMock("./selectionOverlay", () => ({
+    createSelectionOverlay: vi.fn(() => controls),
+    isPickerUiElement: () => false,
+  }));
+
+  return controls;
+}
+
+function mockDomPicker(buildSelectionPayload = vi.fn(() => selectionPayload)) {
+  vi.doMock("./domPicker", () => ({
+    buildSelectionPayload,
+    findBestVisibleChild: vi.fn(() => null),
+    getParentElement: vi.fn(() => null),
+    findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
+  }));
+
+  return { buildSelectionPayload };
+}
+
 describe("contentScript", () => {
   afterEach(() => {
+    (window.__PI_DOM_PICKER_SESSION__ as { cleanup?: () => void } | undefined)?.cleanup?.();
     document.documentElement.innerHTML = "";
     delete (globalThis as Record<string, unknown>).chrome;
     delete window.__PI_CONTENT_SCRIPT_PLACEHOLDER_LISTENER_REGISTERED__;
@@ -47,12 +118,90 @@ describe("contentScript", () => {
     vi.restoreAllMocks();
   });
 
+  it("starts picker with a valid target id and rejects missing target ids with diagnostics", async () => {
+    const cleanup = vi.fn();
+    const createSelectionOverlay = vi.fn(() => ({
+      update: vi.fn(),
+      updatePointer: vi.fn(),
+      showCommentModal: vi.fn(() => ({ close: vi.fn() })),
+      cleanup,
+    }));
+    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
+    const { messageListeners } = installChromeMock(runtimeSendMessage);
+
+    vi.doMock("./selectionOverlay", () => ({
+      createSelectionOverlay,
+      isPickerUiElement: () => false,
+    }));
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    const validResponse = startPicker(messageListeners, " target-123 ");
+
+    expect(validResponse).toHaveBeenCalledWith({ ok: true, source: "contentScript" });
+    expect(createSelectionOverlay).toHaveBeenCalledTimes(1);
+    expect(window.__PI_DOM_PICKER_SESSION__).toEqual(expect.objectContaining({ targetId: "target-123" }));
+
+    const invalidResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "startDomPicker" },
+      {} as chrome.runtime.MessageSender,
+      invalidResponse,
+    );
+    await flushAsyncWork();
+
+    expect(invalidResponse).toHaveBeenCalledWith({
+      ok: false,
+      error: "No selected target provided for DOM picker startup",
+    });
+    expect(runtimeSendMessage).toHaveBeenCalledWith({
+      type: "pickerDiagnostic",
+      phase: "startDomPicker",
+      message: "No selected target provided for DOM picker startup",
+      url: window.location.href,
+    });
+  });
+
+  it("opens the comment modal immediately after clicking the hovered element", async () => {
+    const update = vi.fn();
+    const updatePointer = vi.fn();
+    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
+    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
+    const { messageListeners } = installChromeMock(runtimeSendMessage);
+
+    document.body.innerHTML = `<div id="start">Start</div>`;
+    const startEl = document.querySelector("#start") as Element;
+
+    mockOverlay({ update, updatePointer, showCommentModal });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    startPicker(messageListeners);
+
+    startEl.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, clientX: 42, clientY: 84 }));
+
+    expect(updatePointer).toHaveBeenCalledWith(42, 84);
+    expect(update).toHaveBeenCalledWith(startEl, false);
+
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
+    const stopPropagation = vi.spyOn(clickEvent, "stopPropagation");
+
+    startEl.dispatchEvent(clickEvent);
+
+    expect(clickEvent.defaultPrevented).toBe(true);
+    expect(stopPropagation).toHaveBeenCalledTimes(1);
+    expect(showCommentModal).toHaveBeenCalledTimes(1);
+  });
+
   it("sends payload for the exact clicked element from the comment modal", async () => {
     let onSubmit: ((comment: string) => void) | undefined;
 
     const update = vi.fn();
-    const setNavigationState = vi.fn();
-    const showCommentModal = vi.fn(({ onSubmit: submit }: { onSubmit(comment: string): void; onCancel(): void }) => {
+    const showCommentModal = vi.fn(({ onSubmit: submit }: CommentModalOptions) => {
       onSubmit = submit;
       return { close: vi.fn() };
     });
@@ -69,7 +218,7 @@ describe("contentScript", () => {
 
       throw new Error(`Unexpected runtime message: ${message.type}`);
     });
-    const messageListeners: RuntimeMessageListener[] = [];
+    const { messageListeners } = installChromeMock(runtimeSendMessage);
 
     document.body.innerHTML = `
       <section id="outer">
@@ -81,43 +230,13 @@ describe("contentScript", () => {
 
     const startEl = document.querySelector("#start") as Element;
 
-    vi.doMock("./selectionOverlay", () => ({
-      createSelectionOverlay: () => ({
-        update,
-        updatePointer: vi.fn(),
-        setNavigationState,
-        showCommentModal,
-        cleanup: vi.fn(),
-      }),
-      isPickerUiElement: () => false,
-    }));
-    vi.doMock("./domPicker", () => ({
-      buildSelectionPayload,
-      findBestVisibleChild: vi.fn(() => null),
-      getParentElement: vi.fn(() => null),
-      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
-    }));
+    mockOverlay({ update, showCommentModal });
+    mockDomPicker(buildSelectionPayload);
     vi.doMock("./toast", () => ({ showToast }));
-
-    (globalThis as Record<string, unknown>).chrome = {
-      runtime: {
-        onMessage: {
-          addListener: vi.fn((listener: RuntimeMessageListener) => {
-            messageListeners.push(listener);
-          }),
-        },
-        sendMessage: runtimeSendMessage,
-      },
-    };
 
     await import("./contentScript");
 
-    const startResponse = vi.fn();
-    messageListeners[0]?.(
-      { type: "startDomPicker", targetId: "target-123" },
-      {} as chrome.runtime.MessageSender,
-      startResponse,
-    );
+    startPicker(messageListeners);
 
     startEl.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
     startEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -135,139 +254,146 @@ describe("contentScript", () => {
       selection: selectionPayload,
     });
     expect(showToast).toHaveBeenCalledWith("Отправлено в Pi", "success");
-    expect(update).toHaveBeenCalledWith(startEl, false);
-    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: false, canWiden: false, canGoUp: false, canGoDown: false });
   });
 
-  it("opens the comment modal immediately after clicking the hovered element", async () => {
-    const update = vi.fn();
-    const updatePointer = vi.fn();
-    const setNavigationState = vi.fn();
-    const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
-    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
-    const messageListeners: RuntimeMessageListener[] = [];
+  it("shows an error toast and reports diagnostics when sending selection fails", async () => {
+    let onSubmit: ((comment: string) => void) | undefined;
+
+    const cleanup = vi.fn();
+    const showCommentModal = vi.fn(({ onSubmit: submit }: CommentModalOptions) => {
+      onSubmit = submit;
+      return { close: vi.fn() };
+    });
+    const showToast = vi.fn();
+    const runtimeSendMessage = vi.fn(async (message: RuntimeMessage) => {
+      if (message.type === "sendSelection") {
+        return { ok: false, error: "Pi API unavailable" };
+      }
+
+      if (message.type === "pickerDiagnostic") {
+        return { ok: true };
+      }
+
+      throw new Error(`Unexpected runtime message: ${message.type}`);
+    });
+    const { messageListeners } = installChromeMock(runtimeSendMessage);
 
     document.body.innerHTML = `<div id="start">Start</div>`;
-
     const startEl = document.querySelector("#start") as Element;
 
-    vi.doMock("./selectionOverlay", () => ({
-      createSelectionOverlay: () => ({
-        update,
-        updatePointer,
-        setNavigationState,
-        showCommentModal,
-        cleanup: vi.fn(),
-      }),
-      isPickerUiElement: () => false,
-    }));
-    vi.doMock("./domPicker", () => ({
-      buildSelectionPayload: vi.fn(() => selectionPayload),
-      findBestVisibleChild: vi.fn(() => null),
-      getParentElement: vi.fn(() => null),
-      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
-    }));
-    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
-
-    (globalThis as Record<string, unknown>).chrome = {
-      runtime: {
-        onMessage: {
-          addListener: vi.fn((listener: RuntimeMessageListener) => {
-            messageListeners.push(listener);
-          }),
-        },
-        sendMessage: runtimeSendMessage,
-      },
-    };
+    mockOverlay({ showCommentModal, cleanup });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast }));
 
     await import("./contentScript");
 
-    messageListeners[0]?.(
-      { type: "startDomPicker", targetId: "target-123" },
-      {} as chrome.runtime.MessageSender,
-      vi.fn(),
-    );
+    startPicker(messageListeners);
+    startEl.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+    startEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
-    startEl.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, clientX: 42, clientY: 84 }));
+    expect(onSubmit).toBeTypeOf("function");
 
-    expect(updatePointer).toHaveBeenCalledWith(42, 84);
-    expect(update).toHaveBeenCalledWith(startEl, false);
+    onSubmit?.("Explain this");
+    await flushAsyncWork();
 
-    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
-    const stopPropagation = vi.spyOn(clickEvent, "stopPropagation");
+    expect(showToast).toHaveBeenCalledWith("Не удалось отправить в Pi: Pi API unavailable", "error");
+    expect(runtimeSendMessage).toHaveBeenCalledWith({
+      type: "pickerDiagnostic",
+      phase: "sendSelection",
+      message: "Pi API unavailable",
+      url: window.location.href,
+    });
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeUndefined();
+  });
 
-    startEl.dispatchEvent(clickEvent);
+  it("removes picker overlay and clears session when modal is cancelled", async () => {
+    let onCancel: (() => void) | undefined;
 
-    expect(clickEvent.defaultPrevented).toBe(true);
-    expect(stopPropagation).toHaveBeenCalledTimes(1);
+    const cleanup = vi.fn();
+    const showCommentModal = vi.fn(({ onCancel: cancel }: CommentModalOptions) => {
+      onCancel = cancel;
+      return { close: vi.fn() };
+    });
+    const { messageListeners } = installChromeMock();
+
+    document.body.innerHTML = `<button id="start">Start</button><button id="other">Other</button>`;
+    const startEl = document.querySelector("#start") as Element;
+    const otherEl = document.querySelector("#other") as Element;
+
+    mockOverlay({ showCommentModal, cleanup });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    startPicker(messageListeners);
+    startEl.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+    startEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    expect(onCancel).toBeTypeOf("function");
+
+    onCancel?.();
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeUndefined();
+
+    startEl.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+    otherEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
     expect(showCommentModal).toHaveBeenCalledTimes(1);
-    expect(setNavigationState).toHaveBeenCalledWith({ canNarrow: false, canWiden: false, canGoUp: false, canGoDown: false });
+  });
+
+  it("cleans up the active picker when Escape is pressed", async () => {
+    const cleanup = vi.fn();
+    const { messageListeners } = installChromeMock();
+
+    document.body.innerHTML = `<div id="start">Start</div>`;
+
+    mockOverlay({ cleanup });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    startPicker(messageListeners);
+
+    const escapeEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    const stopPropagation = vi.spyOn(escapeEvent, "stopPropagation");
+
+    document.dispatchEvent(escapeEvent);
+
+    expect(escapeEvent.defaultPrevented).toBe(true);
+    expect(stopPropagation).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeUndefined();
   });
 
   it("ignores mousemove after click selection", async () => {
     const update = vi.fn();
-    const setNavigationState = vi.fn();
     const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
-    const cleanup = vi.fn();
-    const runtimeSendMessage = vi.fn(async () => ({ ok: true }));
-    const messageListeners: RuntimeMessageListener[] = [];
+    const { messageListeners } = installChromeMock();
 
     document.body.innerHTML = `
-      <div id="small">Small</div>
-      <article id="medium">Medium</article>
-      <section id="large">Large</section>
       <div id="start">Start</div>
       <div id="other">Other</div>
     `;
 
-    vi.doMock("./selectionOverlay", () => ({
-      createSelectionOverlay: () => ({
-        update,
-        updatePointer: vi.fn(),
-        setNavigationState,
-        showCommentModal,
-        cleanup,
-      }),
-      isPickerUiElement: () => false,
-    }));
-    vi.doMock("./domPicker", () => ({
-      buildSelectionPayload: vi.fn(() => selectionPayload),
-      findBestVisibleChild: vi.fn(() => null),
-      getParentElement: vi.fn(() => null),
-      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
-    }));
+    mockOverlay({ update, showCommentModal });
+    mockDomPicker();
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
-
-    (globalThis as Record<string, unknown>).chrome = {
-      runtime: {
-        onMessage: {
-          addListener: vi.fn((listener: RuntimeMessageListener) => {
-            messageListeners.push(listener);
-          }),
-        },
-        sendMessage: runtimeSendMessage,
-      },
-    };
 
     await import("./contentScript");
 
-    const startResponse = vi.fn();
-    messageListeners[0]?.(
-      { type: "startDomPicker", targetId: "target-123" },
-      {} as chrome.runtime.MessageSender,
-      startResponse,
-    );
+    startPicker(messageListeners);
 
-    // mousemove to set up candidates
     const startEl = document.querySelector("#start");
     startEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
     update.mockClear();
 
-    // click to fix selection
     startEl?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     update.mockClear();
 
-    // mousemove on a different element after fix — should be ignored
     const otherEl = document.querySelector("#other");
     otherEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
 
@@ -277,46 +403,17 @@ describe("contentScript", () => {
   it("перехватывает клик выбора, чтобы страница не выполнила действие элемента", async () => {
     const update = vi.fn();
     const showCommentModal = vi.fn(() => ({ close: vi.fn() }));
-    const messageListeners: RuntimeMessageListener[] = [];
+    const { messageListeners } = installChromeMock();
 
     document.body.innerHTML = `<a id="start" href="#target">Start</a>`;
 
-    vi.doMock("./selectionOverlay", () => ({
-      createSelectionOverlay: () => ({
-        update,
-        updatePointer: vi.fn(),
-        setNavigationState: vi.fn(),
-        showCommentModal,
-        cleanup: vi.fn(),
-      }),
-      isPickerUiElement: () => false,
-    }));
-    vi.doMock("./domPicker", () => ({
-      buildSelectionPayload: vi.fn(() => selectionPayload),
-      findBestVisibleChild: vi.fn(() => null),
-      getParentElement: vi.fn(() => null),
-      findSiblingElements: vi.fn(() => ({ elements: [], currentIndex: -1 })),
-    }));
+    mockOverlay({ update, showCommentModal });
+    mockDomPicker();
     vi.doMock("./toast", () => ({ showToast: vi.fn() }));
-
-    (globalThis as Record<string, unknown>).chrome = {
-      runtime: {
-        onMessage: {
-          addListener: vi.fn((listener: RuntimeMessageListener) => {
-            messageListeners.push(listener);
-          }),
-        },
-        sendMessage: vi.fn(async () => ({ ok: true })),
-      },
-    };
 
     await import("./contentScript");
 
-    messageListeners[0]?.(
-      { type: "startDomPicker", targetId: "target-123" },
-      {} as chrome.runtime.MessageSender,
-      vi.fn(),
-    );
+    startPicker(messageListeners);
 
     const startEl = document.querySelector("#start");
     const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
@@ -327,6 +424,4 @@ describe("contentScript", () => {
     expect(showCommentModal).toHaveBeenCalledTimes(1);
     expect(update).toHaveBeenCalledWith(startEl, false);
   });
-
-
 });

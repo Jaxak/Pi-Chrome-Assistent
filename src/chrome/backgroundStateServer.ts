@@ -138,9 +138,21 @@ export class BackgroundAssistantStateServer {
     } catch (error) {
       if (startupGeneration === this.startupGeneration) {
         this.started = false;
+        const userMessage = "Не удалось подготовить токен браузера. Попробуйте ещё раз.";
+        this.state = reduceAssistantState(this.state, {
+          kind: "connection_updated",
+          connection: {
+            brokerOnline: false,
+            bridgeOnline: false,
+            connecting: false,
+            tokenConfigured: false,
+            browserAuthorized: undefined,
+            lastError: userMessage,
+          },
+        });
         await this.handleAuthCommandError(
           "assistant.start",
-          "Не удалось подготовить токен браузера. Попробуйте ещё раз.",
+          userMessage,
           error,
         );
       }
@@ -261,6 +273,10 @@ export class BackgroundAssistantStateServer {
     const currentToken = this.state.auth.browserToken;
 
     if (currentToken === nextToken) {
+      if (nextToken === undefined) {
+        this.applyMissingBrowserTokenStateIfNeeded();
+      }
+
       return;
     }
 
@@ -314,6 +330,38 @@ export class BackgroundAssistantStateServer {
       this.brokerClient.connect();
     }
 
+    this.broadcastSnapshot();
+  }
+
+  private applyMissingBrowserTokenStateIfNeeded(): void {
+    const missingTokenConnection = {
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: false,
+      tokenConfigured: false,
+      browserAuthorized: undefined,
+      lastError: "Токен браузера не настроен. Сгенерируйте токен для подключения к Pi.",
+    };
+
+    const connection = this.state.connection;
+    const alreadyApplied = connection.brokerOnline === missingTokenConnection.brokerOnline
+      && connection.bridgeOnline === missingTokenConnection.bridgeOnline
+      && connection.connecting === missingTokenConnection.connecting
+      && connection.tokenConfigured === missingTokenConnection.tokenConfigured
+      && connection.browserAuthorized === missingTokenConnection.browserAuthorized
+      && connection.lastError === missingTokenConnection.lastError;
+
+    if (alreadyApplied) {
+      return;
+    }
+
+    this.state = reduceAssistantState(
+      reduceAssistantState(this.state, {
+        kind: "connection_updated",
+        connection: missingTokenConnection,
+      }),
+      { kind: "epoch_incremented" },
+    );
     this.broadcastSnapshot();
   }
 

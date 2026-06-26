@@ -291,6 +291,8 @@ describe("BackgroundAssistantStateServer", () => {
       mutationPending: false,
       error: "Не удалось подготовить токен браузера. Попробуйте ещё раз.",
     });
+    expect(server.getSnapshot().connection.connecting).toBe(false);
+    expect(server.getSnapshot().connection.lastError).toBe("Не удалось подготовить токен браузера. Попробуйте ещё раз.");
     expect(diagnostics).toEqual([
       {
         phase: "assistant.start",
@@ -320,6 +322,8 @@ describe("BackgroundAssistantStateServer", () => {
     expect(brokerClients).toHaveLength(0);
     expect(server.getSnapshot().auth.browserToken).toBeUndefined();
     expect(server.getSnapshot().auth.tokenConfigured).toBe(false);
+    expect(server.getSnapshot().connection.connecting).toBe(false);
+    expect(server.getSnapshot().connection.lastError).toBe("Токен браузера не настроен. Сгенерируйте токен для подключения к Pi.");
   });
 
   it("immediately posts an assistant snapshot when a port connects", () => {

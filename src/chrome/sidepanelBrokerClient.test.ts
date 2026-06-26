@@ -50,6 +50,10 @@ class FakeWebSocket {
     this.emit("close");
   }
 
+  emitError(): void {
+    this.emit("error");
+  }
+
   private emit(eventName: BrokerEventName, event?: { data?: string }): void {
     for (const listener of this.listeners.get(eventName) ?? []) {
       listener(event);
@@ -139,6 +143,67 @@ describe("SidePanelBrokerClient", () => {
     });
   });
 
+  it("reports the bridge online only after the broker accepts client target listing", async () => {
+    const socket = new FakeWebSocket();
+    const onConnectionState = vi.fn();
+    const client = new SidePanelBrokerClient({
+      browserToken: "browser-token-1",
+      webSocketFactory: () => socket,
+      onConnectionState,
+      reconnectDelaysMs: [],
+    });
+
+    client.connect();
+    socket.emitOpen();
+    await flush();
+
+    expect(onConnectionState).toHaveBeenCalledTimes(1);
+    expect(onConnectionState).toHaveBeenLastCalledWith({ online: false, statusText: "Подключаемся к Pi…" });
+
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "client.targets",
+      requestId: readSent(socket, 1).requestId,
+      payload: { targets: [target] },
+    });
+    await flush();
+
+    expect(onConnectionState).toHaveBeenLastCalledWith({ online: true, statusText: "Pi подключён" });
+  });
+
+  it("keeps the bridge online when a selected target becomes unavailable", async () => {
+    const socket = new FakeWebSocket();
+    const onConnectionState = vi.fn();
+    const client = new SidePanelBrokerClient({
+      browserToken: "browser-token-1",
+      selectedTargetId: "target-1",
+      webSocketFactory: () => socket,
+      onConnectionState,
+      reconnectDelaysMs: [],
+    });
+
+    client.connect();
+    socket.emitOpen();
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "client.targets",
+      requestId: readSent(socket, 1).requestId,
+      payload: { targets: [target] },
+    });
+    await flush();
+
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "client.error",
+      requestId: readSent(socket, 2).requestId,
+      payload: { error: "Target is not available" },
+    });
+    await flush();
+
+    expect(onConnectionState).not.toHaveBeenCalledWith({ online: false, statusText: "Target is not available" });
+    expect(onConnectionState).toHaveBeenLastCalledWith({ online: true, statusText: "Pi подключён" });
+  });
+
   it("sends chat messages to the selected target", async () => {
     const socket = new FakeWebSocket();
     const client = new SidePanelBrokerClient({
@@ -192,6 +257,33 @@ describe("SidePanelBrokerClient", () => {
     await flush();
 
     expect(onChatEvent).toHaveBeenCalledWith(chatEvent);
+  });
+
+  it("ignores late socket events after the client is closed", async () => {
+    const socket = new FakeWebSocket();
+    const onConnectionState = vi.fn();
+    const client = new SidePanelBrokerClient({
+      browserToken: "browser-token-1",
+      webSocketFactory: () => socket,
+      onConnectionState,
+      reconnectDelaysMs: [],
+    });
+
+    client.connect();
+    client.close();
+
+    socket.emitError();
+    socket.emitOpen();
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "client.targets",
+      payload: { targets: [target] },
+    });
+    await flush();
+
+    expect(onConnectionState).toHaveBeenCalledTimes(1);
+    expect(onConnectionState).toHaveBeenLastCalledWith({ online: false, statusText: "Подключаемся к Pi…" });
+    expect(socket.sent).toEqual([]);
   });
 
   it("surfaces connection state and bounded reconnect attempts", async () => {

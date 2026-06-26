@@ -47,6 +47,7 @@ const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const DEFAULT_RECONNECT_DELAYS_MS = [250, 500, 1_000];
 const DEFAULT_BROKER_URL = `ws://${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`;
+const TARGET_UNAVAILABLE_ERROR = "Target is not available";
 
 function createBrowserWebSocket(url: string): SidePanelBrokerSocket {
   return new WebSocket(url) as unknown as SidePanelBrokerSocket;
@@ -180,9 +181,14 @@ export class SidePanelBrokerClient {
     const socket = this.webSocketFactory(this.brokerUrl);
     this.socket = socket;
 
+    const isCurrentActiveSocket = () => this.socket === socket && !this.closedByClient;
+
     const onOpen = () => {
+      if (!isCurrentActiveSocket()) {
+        return;
+      }
+
       this.reconnectAttempt = 0;
-      this.reportState(true, "Pi подключён");
       sendEnvelope(socket, {
         type: "client.hello",
         requestId: this.requestIdFactory(),
@@ -195,7 +201,7 @@ export class SidePanelBrokerClient {
     };
 
     const onMessage = (event?: { data?: string }) => {
-      if (typeof event?.data !== "string") {
+      if (!isCurrentActiveSocket() || typeof event?.data !== "string") {
         return;
       }
 
@@ -203,6 +209,10 @@ export class SidePanelBrokerClient {
     };
 
     const onError = () => {
+      if (!isCurrentActiveSocket()) {
+        return;
+      }
+
       this.reportState(false, "Pi недоступен");
     };
 
@@ -212,11 +222,13 @@ export class SidePanelBrokerClient {
       socket.removeEventListener("error", onError);
       socket.removeEventListener("close", onClose);
 
-      if (this.socket === socket) {
+      const wasCurrentSocket = this.socket === socket;
+
+      if (wasCurrentSocket) {
         this.socket = undefined;
       }
 
-      if (!this.closedByClient) {
+      if (!this.closedByClient && wasCurrentSocket) {
         this.reportState(false, "Pi недоступен");
         this.scheduleReconnect();
       }
@@ -238,6 +250,7 @@ export class SidePanelBrokerClient {
     if (envelope.type === "client.targets") {
       const targets = (envelope.payload as { targets?: unknown } | undefined)?.targets;
       const validTargets = Array.isArray(targets) ? targets.filter(isTargetMetadata) : [];
+      this.reportState(true, "Pi подключён");
       this.onTargets?.(validTargets);
 
       if (this.selectedTargetId && validTargets.some((target) => target.targetId === this.selectedTargetId)) {
@@ -257,7 +270,14 @@ export class SidePanelBrokerClient {
 
     if (envelope.type === "client.error") {
       const error = (envelope.payload as { error?: unknown } | undefined)?.error;
-      this.reportState(false, typeof error === "string" && error.length > 0 ? error : "Pi недоступен");
+      const errorMessage = typeof error === "string" && error.length > 0 ? error : "Pi недоступен";
+
+      if (errorMessage === TARGET_UNAVAILABLE_ERROR) {
+        this.reportState(true, "Pi подключён");
+        return;
+      }
+
+      this.reportState(false, errorMessage);
     }
   }
 

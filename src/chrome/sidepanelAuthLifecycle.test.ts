@@ -5,30 +5,27 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const brokerMock = vi.hoisted(() => {
-  const instances: Array<{
-    options: Record<string, unknown>;
-    connect: ReturnType<typeof vi.fn>;
-    close: ReturnType<typeof vi.fn>;
-    setSelectedTargetId: ReturnType<typeof vi.fn>;
-    sendChatMessage: ReturnType<typeof vi.fn>;
-  }> = [];
+import { createInitialAssistantState, type BackgroundAssistantState } from "./assistantState";
 
-  return { instances };
-});
+const brokerMock = vi.hoisted(() => ({
+  constructed: 0,
+}));
 
 vi.mock("./sidepanelBrokerClient", () => ({
   SidePanelBrokerClient: class MockSidePanelBrokerClient {
-    readonly connect = vi.fn();
-    readonly close = vi.fn();
-    readonly setSelectedTargetId = vi.fn();
-    readonly sendChatMessage = vi.fn(() => true);
-
-    constructor(readonly options: Record<string, unknown>) {
-      brokerMock.instances.push(this);
+    constructor() {
+      brokerMock.constructed += 1;
+      throw new Error("Sidepanel не должен создавать broker client");
     }
   },
 }));
+
+type PortListener = (message: unknown) => void;
+
+type MockPort = {
+  postMessage: ReturnType<typeof vi.fn>;
+  emit(message: unknown): void;
+};
 
 function loadSidePanelHtml(): void {
   const html = readFileSync(resolve(process.cwd(), "src/chrome/sidepanel.html"), "utf8");
@@ -41,22 +38,7 @@ async function flush(): Promise<void> {
   await Promise.resolve();
 }
 
-type AuthResponse = {
-  ok?: boolean;
-  browserToken?: string;
-  tokenConfigured?: boolean;
-};
-
-type TargetMetadataLike = {
-  targetId: string;
-  alias?: string;
-  cwd: string;
-  gitBranch?: string;
-  pid: number;
-  sessionName?: string;
-  connectedAt: number;
-  lastSeenAt: number;
-};
+type TargetMetadataLike = BackgroundAssistantState["targets"][number];
 
 function createTarget(overrides: Partial<TargetMetadataLike> = {}): TargetMetadataLike {
   return {
@@ -72,34 +54,64 @@ function createTarget(overrides: Partial<TargetMetadataLike> = {}): TargetMetada
   };
 }
 
-function mockChrome(authResponses: AuthResponse[]): void {
-  let mutationResponseIndex = 1;
-  const runtimeSendMessage = vi.fn(async (message: { type: string }) => {
-    if (message.type === "getBrowserAuthState") {
-      return authResponses[0] ?? { ok: true, browserToken: "token-1", tokenConfigured: true };
-    }
+function createSnapshot(overrides: Partial<BackgroundAssistantState> = {}): BackgroundAssistantState {
+  const base = createInitialAssistantState();
+  return {
+    ...base,
+    connection: {
+      ...base.connection,
+      brokerOnline: true,
+      bridgeOnline: true,
+      connecting: false,
+      tokenConfigured: true,
+      browserAuthorized: true,
+      ...overrides.connection,
+    },
+    targets: overrides.targets ?? base.targets,
+    selectedTargetId: overrides.selectedTargetId,
+    chat: {
+      ...base.chat,
+      ...overrides.chat,
+    },
+    auth: {
+      ...base.auth,
+      tokenConfigured: true,
+      browserToken: "token-1",
+      ...overrides.auth,
+    },
+    diagnostics: overrides.diagnostics ?? base.diagnostics,
+    epoch: overrides.epoch ?? base.epoch,
+  };
+}
 
-    if (message.type === "clearBrowserToken") {
-      return authResponses[mutationResponseIndex++] ?? { ok: true, tokenConfigured: false };
-    }
-
-    if (message.type === "regenerateBrowserToken") {
-      return authResponses[mutationResponseIndex++] ?? { ok: true, browserToken: "token-2", tokenConfigured: true };
-    }
-
-    if (message.type === "listTargets") {
-      return { ok: true, targets: [], tokenConfigured: true };
-    }
-
-    if (message.type === "getDiagnostics") {
-      return { ok: true, diagnostics: [] };
-    }
-
-    return { ok: false, error: "Неизвестный запрос" };
-  });
+function mockChrome(): { connect: ReturnType<typeof vi.fn>; port: MockPort } {
+  const listeners: PortListener[] = [];
+  const port: MockPort = {
+    postMessage: vi.fn(),
+    emit(message: unknown) {
+      for (const listener of listeners) {
+        listener(message);
+      }
+    },
+  };
+  const connect = vi.fn(() => ({
+    name: "sidepanel",
+    postMessage: port.postMessage,
+    onMessage: {
+      addListener: vi.fn((listener: PortListener) => {
+        listeners.push(listener);
+      }),
+    },
+    onDisconnect: {
+      addListener: vi.fn(),
+    },
+  }));
 
   vi.stubGlobal("chrome", {
-    runtime: { sendMessage: runtimeSendMessage },
+    runtime: {
+      connect,
+      sendMessage: vi.fn(async () => ({ ok: true })),
+    },
     storage: {
       local: {
         get: vi.fn(async () => ({})),
@@ -110,6 +122,8 @@ function mockChrome(authResponses: AuthResponse[]): void {
       query: vi.fn(async () => [{ id: 1 }]),
     },
   });
+
+  return { connect, port };
 }
 
 async function importInitializedSidePanel(): Promise<void> {
@@ -122,74 +136,60 @@ describe("sidepanel auth lifecycle", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.resetModules();
-    brokerMock.instances.length = 0;
+    brokerMock.constructed = 0;
     document.documentElement.innerHTML = "";
   });
 
-  it("renders unsolicited dynamic targets from the persistent broker client without reopening sidepanel", async () => {
+  it("opens exactly one sidepanel port and never constructs a broker client", async () => {
     loadSidePanelHtml();
-    mockChrome([{ ok: true, browserToken: "token-1", tokenConfigured: true }]);
+    const { connect } = mockChrome();
+
     await importInitializedSidePanel();
 
-    expect(brokerMock.instances).toHaveLength(1);
-    const brokerClient = brokerMock.instances[0];
-    const onTargets = brokerClient.options.onTargets as ((targets: TargetMetadataLike[]) => void) | undefined;
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledWith({ name: "sidepanel" });
+    expect(brokerMock.constructed).toBe(0);
+  });
 
-    expect(onTargets).toBeTypeOf("function");
-    expect(document.querySelector("#target-container")?.textContent).toContain("Нет активных целей");
+  it("renders targets and auth token from assistant snapshots", async () => {
+    loadSidePanelHtml();
+    const { port } = mockChrome();
+    await importInitializedSidePanel();
 
-    onTargets?.([createTarget()]);
+    port.emit({
+      type: "assistant.snapshot",
+      state: createSnapshot({ targets: [createTarget()], selectedTargetId: "target-1" }),
+    });
     await flush();
 
+    expect(document.querySelector("#status-text")?.textContent).toBe("Pi подключён · целей: 1");
     expect(document.querySelector("#target-container")?.textContent).toContain("Alpha");
     expect(document.querySelector("#target-container")?.textContent).toContain("/tmp/pi-alpha");
+    expect(document.querySelector("#browser-token-output")?.textContent).toBe("token-1");
   });
 
-  it("does not close and recreate broker client when rendering the same token repeatedly", async () => {
+  it("posts auth commands from auth controls and keeps token copy local", async () => {
     loadSidePanelHtml();
-    mockChrome([{ ok: true, browserToken: "token-1", tokenConfigured: true }]);
+    const { port } = mockChrome();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
     await importInitializedSidePanel();
-
-    expect(brokerMock.instances).toHaveLength(1);
-    const firstClient = brokerMock.instances[0];
-
-    document.querySelector<HTMLButtonElement>("#header-auth-button")?.click();
+    port.emit({ type: "assistant.snapshot", state: createSnapshot() });
     await flush();
 
-    expect(brokerMock.instances).toHaveLength(1);
-    expect(firstClient.close).not.toHaveBeenCalled();
-  });
-
-  it("closes the current broker client when the browser token is cleared", async () => {
-    loadSidePanelHtml();
-    mockChrome([
-      { ok: true, browserToken: "token-1", tokenConfigured: true },
-      { ok: true, tokenConfigured: false },
-    ]);
-    await importInitializedSidePanel();
-
-    const firstClient = brokerMock.instances[0];
+    document.querySelector<HTMLButtonElement>("#header-auth-button")?.click();
+    document.querySelector<HTMLButtonElement>("#copy-browser-token-button")?.click();
+    document.querySelector<HTMLButtonElement>("#regenerate-browser-token-button")?.click();
     document.querySelector<HTMLButtonElement>("#clear-browser-token-button")?.click();
     await flush();
 
-    expect(firstClient.close).toHaveBeenCalledTimes(1);
-    expect(document.querySelector<HTMLButtonElement>("#chat-send-button")?.disabled).toBe(true);
-  });
-
-  it("reconnects exactly once when the browser token is regenerated", async () => {
-    loadSidePanelHtml();
-    mockChrome([
-      { ok: true, browserToken: "token-1", tokenConfigured: true },
-      { ok: true, browserToken: "token-2", tokenConfigured: true },
-    ]);
-    await importInitializedSidePanel();
-
-    const firstClient = brokerMock.instances[0];
-    document.querySelector<HTMLButtonElement>("#regenerate-browser-token-button")?.click();
-    await flush();
-
-    expect(firstClient.close).toHaveBeenCalledTimes(1);
-    expect(brokerMock.instances).toHaveLength(2);
-    expect(brokerMock.instances[1].connect).toHaveBeenCalledTimes(1);
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.auth.refresh" });
+    expect(writeText).toHaveBeenCalledWith("token-1");
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.auth.regenerateToken" });
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.auth.clearToken" });
   });
 });

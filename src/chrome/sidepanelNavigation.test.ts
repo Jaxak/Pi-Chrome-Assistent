@@ -5,29 +5,96 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createInitialAssistantState, type BackgroundAssistantState } from "./assistantState";
+
 function loadSidePanelHtml(): void {
   const html = readFileSync(resolve(process.cwd(), "src/chrome/sidepanel.html"), "utf8");
   document.documentElement.innerHTML = html;
 }
 
-function mockChromeRuntime(): void {
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+type PortListener = (message: unknown) => void;
+
+type MockPort = {
+  postMessage: ReturnType<typeof vi.fn>;
+  emit(message: unknown): void;
+};
+
+function createTarget(overrides: Partial<BackgroundAssistantState["targets"][number]> = {}): BackgroundAssistantState["targets"][number] {
+  return {
+    targetId: "target-1",
+    alias: "Alpha",
+    cwd: "/tmp/pi-alpha",
+    gitBranch: "main",
+    pid: 101,
+    sessionName: "session-a",
+    connectedAt: 1_710_000_000_000,
+    lastSeenAt: 1_710_000_000_100,
+    ...overrides,
+  };
+}
+
+function createReadySnapshot(overrides: Partial<BackgroundAssistantState> = {}): BackgroundAssistantState {
+  const base = createInitialAssistantState();
+  const targets = overrides.targets ?? [createTarget()];
+  return {
+    ...base,
+    epoch: overrides.epoch ?? base.epoch,
+    connection: {
+      ...base.connection,
+      brokerOnline: true,
+      bridgeOnline: true,
+      connecting: false,
+      tokenConfigured: true,
+      browserAuthorized: true,
+      ...overrides.connection,
+    },
+    targets,
+    selectedTargetId: overrides.selectedTargetId ?? targets[0]?.targetId,
+    chat: {
+      ...base.chat,
+      ...overrides.chat,
+    },
+    auth: {
+      ...base.auth,
+      tokenConfigured: true,
+      browserToken: "token-1",
+      ...overrides.auth,
+    },
+    diagnostics: overrides.diagnostics ?? base.diagnostics,
+  };
+}
+
+function mockChromeRuntime(): MockPort {
+  const listeners: PortListener[] = [];
+  const port: MockPort = {
+    postMessage: vi.fn(),
+    emit(message: unknown) {
+      for (const listener of listeners) {
+        listener(message);
+      }
+    },
+  };
+
   vi.stubGlobal("chrome", {
     runtime: {
-      sendMessage: vi.fn(async (message: { type: string }) => {
-        if (message.type === "getBrowserAuthState") {
-          return { ok: true, tokenConfigured: false };
-        }
-
-        if (message.type === "listTargets") {
-          return { ok: true, targets: [], tokenConfigured: false };
-        }
-
-        if (message.type === "getDiagnostics") {
-          return { ok: true, diagnostics: [] };
-        }
-
-        return { ok: false, error: "Неизвестный запрос" };
-      }),
+      connect: vi.fn(() => ({
+        name: "sidepanel",
+        postMessage: port.postMessage,
+        onMessage: {
+          addListener: vi.fn((listener: PortListener) => {
+            listeners.push(listener);
+          }),
+        },
+        onDisconnect: {
+          addListener: vi.fn(),
+        },
+      })),
+      sendMessage: vi.fn(async () => ({ ok: true })),
     },
     storage: {
       local: {
@@ -35,12 +102,18 @@ function mockChromeRuntime(): void {
         set: vi.fn(async () => undefined),
       },
     },
+    tabs: {
+      query: vi.fn(async () => [{ id: 1 }]),
+    },
   });
+
+  return port;
 }
 
 async function importInitializedSidePanel(): Promise<void> {
   vi.resetModules();
   await import("./sidepanel");
+  await flush();
 }
 
 describe("sidepanel navigation", () => {
@@ -71,5 +144,46 @@ describe("sidepanel navigation", () => {
 
     expect(assistantPanel?.hidden).toBe(false);
     expect(sessionsPanel?.hidden).toBe(true);
+  });
+
+  it("posts target selection without mutating selected UI before next snapshot", async () => {
+    loadSidePanelHtml();
+    const port = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    port.emit({
+      type: "assistant.snapshot",
+      state: createReadySnapshot({
+        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
+        selectedTargetId: "target-1",
+      }),
+    });
+    await flush();
+
+    document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.click();
+
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.selectTarget", targetId: "target-2" });
+    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.className).toContain("target-option--selected");
+    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.className).not.toContain("target-option--selected");
+  });
+
+  it("posts chat send command instead of sending through a sidepanel broker", async () => {
+    loadSidePanelHtml();
+    const port = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    port.emit({ type: "assistant.snapshot", state: createReadySnapshot() });
+    await flush();
+
+    const input = document.querySelector<HTMLTextAreaElement>("#chat-input");
+    if (input) {
+      input.value = "  Привет Pi  ";
+      input.dispatchEvent(new Event("input"));
+    }
+
+    document.querySelector<HTMLButtonElement>("#chat-send-button")?.click();
+
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.sendChatMessage", message: "Привет Pi" });
+    expect(input?.value).toBe("");
   });
 });

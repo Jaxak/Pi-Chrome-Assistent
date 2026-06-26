@@ -1,21 +1,14 @@
-import { BROWSER_NOT_AUTHORIZED_ERROR } from "../shared/constants";
 import type { TargetMetadata } from "../shared/protocol";
+import {
+  formatAssistantStatus,
+  isChatSendDisabled,
+  type BackgroundAssistantState,
+} from "./assistantState";
 import type { DiagnosticEntry } from "./diagnostics";
-import { SidePanelBrokerClient } from "./sidepanelBrokerClient";
 import {
   createAgentWorkingElement,
   createChatMessageElement,
-  isChatSendDisabled,
 } from "./sidepanelRender";
-import {
-  chooseSidePanelSelectedTargetId,
-  createInitialSidePanelState,
-  formatSidePanelStatus,
-  reduceSidePanelChatEvent,
-  startSendingUserMessage,
-  type SidePanelConnectionStatus,
-  type SidePanelState,
-} from "./sidepanelState";
 
 export type ListTargetsResponse = {
   ok?: boolean;
@@ -25,22 +18,12 @@ export type ListTargetsResponse = {
   tokenConfigured?: boolean;
 };
 
-type GetDiagnosticsResponse = {
-  ok?: boolean;
-  diagnostics?: DiagnosticEntry[];
-};
-
-type BrowserAuthStateResponse = {
-  ok?: boolean;
-  error?: string;
-  browserToken?: string;
-  tokenConfigured?: boolean;
-};
-
 type StartDomPickerResponse = {
   ok?: boolean;
   error?: string;
 };
+
+type AssistantSnapshotMessage = { type: "assistant.snapshot"; state: BackgroundAssistantState };
 
 type SidePanelTab = "assistant" | "sessions" | "auth";
 
@@ -75,17 +58,14 @@ type SidePanelElements = {
   clearBrowserTokenButton: HTMLButtonElement | null;
 };
 
-const SELECTED_TARGET_STORAGE_KEY = "selectedTargetId";
 const BROKER_UNAVAILABLE_GUIDANCE = "Pi не подключён. Выполните /chrome-assistent-connect в терминале.";
 const NO_TARGETS_GUIDANCE = "Нет активных целей. Выполните /chrome-assistent-connect в нужной сессии Pi.";
-const SELECT_TARGET_PROMPT = "Выберите цель Pi, затем нажмите «Отправить в Pi».";
 const TOKEN_REQUIRED_GUIDANCE = "Для отправки настройте browserToken в chrome.storage.local.";
 const AUTH_REQUIRED_GUIDANCE = "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.";
 const START_PICKER_PROMPT = "Выберите элемент на странице, чтобы отправить его в Pi.";
 const START_PICKER_BUTTON_LABEL = "Запустить DOM picker на активной вкладке";
 const NO_TARGET_BUTTON_LABEL = "Выберите цель Pi, чтобы включить кнопку «Отправить в Pi»";
 const SIDEPANEL_UNAVAILABLE_BUTTON_LABEL = "Сейчас состояние боковой панели недоступно";
-const AUTH_TAB_LOADING_TEXT = "Загружаем токен браузера...";
 const AUTH_TAB_READY_TEXT = "Скопируйте токен и выполните /chrome-assistent-auth в Pi.";
 const AUTH_TAB_CLEARED_TEXT = "Токен удалён. Нажмите «Сгенерировать новый токен», чтобы создать новый.";
 const AUTH_TAB_COPY_SUCCESS_TEXT = "Токен скопирован. Теперь выполните /chrome-assistent-auth в Pi.";
@@ -94,28 +74,14 @@ const AUTH_TAB_ERROR_TEXT = "Не удалось загрузить состоя
 const TOKEN_REMOVED_LABEL = "Токен удалён.";
 const TOKEN_NOT_LOADED_LABEL = "Токен ещё не загружен.";
 
+let assistantPort: chrome.runtime.Port | undefined;
+let currentSnapshot: BackgroundAssistantState | undefined;
 let currentTargets: TargetMetadata[] = [];
 let currentSelectedTargetId: string | undefined;
 let currentTokenConfigured: boolean | undefined;
+let currentBrowserToken: string | undefined;
 let currentDiagnosticsBaseText = "Недавних диагностических сообщений нет.";
-let currentRefreshRequestId = 0;
 let currentActiveTab: SidePanelTab = "assistant";
-let currentBrowserAuthState: BrowserAuthStateResponse | undefined;
-let currentChatState: SidePanelState = createInitialSidePanelState();
-let currentBrokerClientToken: string | undefined;
-let currentConnectionStatus: SidePanelConnectionStatus = {
-  brokerOnline: false,
-  bridgeOnline: false,
-  tokenConfigured: undefined,
-  browserAuthorized: undefined,
-  targetsCount: 0,
-  selectedTargetAvailable: false,
-  connecting: true,
-};
-let currentBrokerClient: SidePanelBrokerClient | undefined;
-let authStateLoaded = false;
-let authRequestId = 0;
-let authMutationPending = false;
 
 function getSidePanelElements(): SidePanelElements {
   return {
@@ -156,18 +122,6 @@ function setStatus(elements: SidePanelElements, message: string): void {
   }
 }
 
-function renderConnectionStatus(elements: SidePanelElements): void {
-  setStatus(elements, formatSidePanelStatus(currentConnectionStatus));
-}
-
-function updateConnectionStatus(elements: SidePanelElements, patch: Partial<SidePanelConnectionStatus>): void {
-  currentConnectionStatus = {
-    ...currentConnectionStatus,
-    ...patch,
-  };
-  renderConnectionStatus(elements);
-}
-
 function setDiagnostics(elements: SidePanelElements, message: string): void {
   if (elements.diagnosticsOutput) {
     elements.diagnosticsOutput.textContent = message;
@@ -187,10 +141,6 @@ function setPickerErrorDiagnostics(elements: SidePanelElements, errorMessage: st
   setDiagnostics(elements, appendDiagnosticsNote(currentDiagnosticsBaseText, `Ошибка DOM picker: ${errorMessage}`));
 }
 
-function formatSelectedTargetStorageWarning(errorMessage: string): string {
-  return `Предупреждение хранилища: не удалось сохранить выбранную цель. ${errorMessage}`;
-}
-
 function setAuthStatus(elements: SidePanelElements, message: string): void {
   if (elements.authStatusText) {
     elements.authStatusText.textContent = message;
@@ -201,86 +151,6 @@ function setBrowserTokenOutput(elements: SidePanelElements, message: string): vo
   if (elements.browserTokenOutput) {
     elements.browserTokenOutput.textContent = message;
   }
-}
-
-function disconnectPersistentBrokerClient(): void {
-  currentBrokerClient?.close();
-  currentBrokerClient = undefined;
-  currentBrokerClientToken = undefined;
-  currentChatState = {
-    ...currentChatState,
-    bridgeOnline: false,
-    sending: false,
-    agentBusy: false,
-  };
-}
-
-function connectPersistentBrokerClient(elements: SidePanelElements, browserToken: string): void {
-  currentTokenConfigured = true;
-
-  if (currentBrokerClient && currentBrokerClientToken === browserToken) {
-    currentBrokerClient.setSelectedTargetId(currentSelectedTargetId);
-    updateChatSendButton(elements);
-    return;
-  }
-
-  updateConnectionStatus(elements, {
-    brokerOnline: false,
-    bridgeOnline: false,
-    tokenConfigured: true,
-    browserAuthorized: undefined,
-    connecting: true,
-  });
-  disconnectPersistentBrokerClient();
-  currentBrokerClientToken = browserToken;
-  currentBrokerClient = new SidePanelBrokerClient({
-    browserToken,
-    selectedTargetId: currentSelectedTargetId,
-    onConnectionState: (state) => {
-      currentChatState = {
-        ...currentChatState,
-        bridgeOnline: state.online,
-      };
-
-      updateConnectionStatus(elements, {
-        brokerOnline: state.online,
-        bridgeOnline: state.online,
-        browserAuthorized: isBrowserAuthorizationError(state.statusText) ? false : state.online ? true : currentConnectionStatus.browserAuthorized,
-        lastError: state.online ? undefined : state.statusText,
-        connecting: state.statusText === "Подключаемся к Pi…",
-      });
-      updateChatSendButton(elements);
-    },
-    onTargets: (targets) => {
-      const previousSelectedTargetId = currentSelectedTargetId;
-      currentTargets = targets;
-      currentSelectedTargetId = chooseSelectedTargetId(currentTargets, [previousSelectedTargetId]);
-
-      if (previousSelectedTargetId !== currentSelectedTargetId) {
-        currentBrokerClient?.setSelectedTargetId(currentSelectedTargetId);
-      }
-
-      currentChatState = {
-        ...currentChatState,
-        selectedTargetId: currentSelectedTargetId,
-        sending: currentSelectedTargetId ? currentChatState.sending : false,
-        agentBusy: currentSelectedTargetId ? currentChatState.agentBusy : false,
-      };
-      updateConnectionStatus(elements, {
-        targetsCount: currentTargets.length,
-        selectedTargetId: currentSelectedTargetId,
-        selectedTargetAvailable: findTargetById(currentSelectedTargetId, currentTargets) !== undefined,
-      });
-      renderTargetList(elements);
-      updateSendButton(elements);
-      updateChatSendButton(elements);
-    },
-    onChatEvent: (event) => {
-      currentChatState = reduceSidePanelChatEvent(currentChatState, event);
-      renderChat(elements);
-    },
-  });
-  currentBrokerClient.connect();
 }
 
 function setButtonDisabled(button: HTMLButtonElement | null, disabled: boolean): void {
@@ -326,27 +196,8 @@ function findTargetById(targetId: string | undefined, targets: TargetMetadata[])
   return targets.find((target) => target.targetId === targetId);
 }
 
-function chooseSelectedTargetId(
-  targets: TargetMetadata[],
-  preferredTargetIds: Array<string | undefined>,
-): string | undefined {
-  return chooseSidePanelSelectedTargetId(targets, preferredTargetIds);
-}
-
-async function loadStoredSelectedTargetId(): Promise<string | undefined> {
-  try {
-    const storedValues = await chrome.storage.local.get(SELECTED_TARGET_STORAGE_KEY);
-    const storedTargetId = storedValues[SELECTED_TARGET_STORAGE_KEY];
-    return typeof storedTargetId === "string" && storedTargetId.trim().length > 0
-      ? storedTargetId.trim()
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function persistSelectedTargetId(targetId: string): Promise<void> {
-  await chrome.storage.local.set({ [SELECTED_TARGET_STORAGE_KEY]: targetId });
+function postAssistantCommand(message: unknown): void {
+  assistantPort?.postMessage(message);
 }
 
 function renderTargetPlaceholder(elements: SidePanelElements, message: string, tone: "default" | "warning" = "default"): void {
@@ -443,21 +294,22 @@ export function formatTargetSecondaryLabel(target: TargetMetadata): string {
   return details.join(" · ");
 }
 
-function isBrowserAuthorizationError(error: string | undefined): boolean {
-  return typeof error === "string" && error.includes(BROWSER_NOT_AUTHORIZED_ERROR);
-}
-
 function updateSendButton(elements: SidePanelElements): void {
   if (!elements.sendButton) {
     return;
   }
 
   const hasSelectedTarget = findTargetById(currentSelectedTargetId, currentTargets) !== undefined;
-  const tokenReady = currentTokenConfigured !== false;
+  const tokenReady = currentTokenConfigured === true;
   const sendReady = hasSelectedTarget && tokenReady;
 
   elements.sendButton.disabled = !sendReady;
   elements.sendButton.setAttribute("aria-disabled", String(!sendReady));
+
+  if (!currentSnapshot) {
+    elements.sendButton.title = SIDEPANEL_UNAVAILABLE_BUTTON_LABEL;
+    return;
+  }
 
   if (!hasSelectedTarget) {
     elements.sendButton.title = NO_TARGET_BUTTON_LABEL;
@@ -468,28 +320,25 @@ function updateSendButton(elements: SidePanelElements): void {
 }
 
 function updateChatSendButton(elements: SidePanelElements): void {
-  const disabled = isChatSendDisabled({
-    selectedTargetId: currentSelectedTargetId,
-    tokenConfigured: currentTokenConfigured !== false,
-    bridgeOnline: currentChatState.bridgeOnline,
-    text: elements.chatInput?.value ?? "",
-  });
+  const disabled = !currentSnapshot || isChatSendDisabled(currentSnapshot, elements.chatInput?.value ?? "");
   setButtonDisabled(elements.chatSendButton, disabled);
 }
 
 function renderChat(elements: SidePanelElements): void {
+  const chat = currentSnapshot?.chat;
+
   if (elements.messageList) {
     const fragment = document.createDocumentFragment();
-    for (const message of currentChatState.messages) {
+    for (const message of chat?.messages ?? []) {
       fragment.append(createChatMessageElement(message));
     }
     elements.messageList.replaceChildren(fragment);
   }
 
   if (elements.agentWorking) {
-    const agentWorking = createAgentWorkingElement(currentChatState.busyLabel);
+    const agentWorking = createAgentWorkingElement(chat?.busyLabel ?? "Агент работает в фоне…");
     agentWorking.id = "agent-working";
-    agentWorking.hidden = !currentChatState.agentBusy;
+    agentWorking.hidden = !chat?.agentBusy;
     elements.agentWorking.replaceWith(agentWorking);
     elements.agentWorking = agentWorking;
   }
@@ -528,7 +377,7 @@ function renderTargetList(elements: SidePanelElements): void {
 
     option.append(primary, secondary);
     option.addEventListener("click", () => {
-      void setSelectedTarget(elements, target.targetId);
+      postAssistantCommand({ type: "assistant.selectTarget", targetId: target.targetId });
     });
 
     fragment.append(option);
@@ -537,45 +386,28 @@ function renderTargetList(elements: SidePanelElements): void {
   elements.targetContainer.replaceChildren(fragment);
 }
 
-function setSelectedTarget(
-  elements: SidePanelElements,
-  targetId: string | undefined,
-  options: { persist?: boolean } = {},
-): void {
-  currentSelectedTargetId = targetId;
-  currentChatState = {
-    ...currentChatState,
-    selectedTargetId: targetId,
-  };
-  currentBrokerClient?.setSelectedTargetId(targetId);
-  renderTargetList(elements);
-  updateSendButton(elements);
-  updateChatSendButton(elements);
-
-  if (options.persist !== false && targetId) {
-    void persistSelectedTargetId(targetId).catch(() => {
-      // Preserve the in-memory selection even if storage is temporarily unavailable.
-    });
+function renderTargetsFromSnapshot(elements: SidePanelElements, state: BackgroundAssistantState): void {
+  if (state.connection.tokenConfigured === false) {
+    renderTargetPlaceholder(elements, TOKEN_REQUIRED_GUIDANCE, "warning");
+    return;
   }
-}
 
-function appendBrokerError(diagnostics: DiagnosticEntry[], brokerError: string): string {
-  const baseDiagnostics = formatDiagnostics(diagnostics);
-  return `${baseDiagnostics}\n\nОшибка broker: ${brokerError}`;
-}
+  if (state.connection.browserAuthorized === false) {
+    renderTargetPlaceholder(elements, AUTH_REQUIRED_GUIDANCE, "warning");
+    return;
+  }
 
-function updateConnectedStatus(elements: SidePanelElements, response: ListTargetsResponse): void {
-  updateConnectionStatus(elements, {
-    brokerOnline: response.ok === true,
-    bridgeOnline: currentChatState.bridgeOnline,
-    tokenConfigured: response.tokenConfigured,
-    browserAuthorized: isBrowserAuthorizationError(response.error) ? false : response.ok === true ? true : currentConnectionStatus.browserAuthorized,
-    targetsCount: currentTargets.length,
-    selectedTargetId: currentSelectedTargetId,
-    selectedTargetAvailable: findTargetById(currentSelectedTargetId, currentTargets) !== undefined,
-    lastError: response.error,
-    connecting: false,
-  });
+  if (!state.connection.brokerOnline && !state.connection.connecting) {
+    renderTargetPlaceholder(elements, BROKER_UNAVAILABLE_GUIDANCE, "warning");
+    return;
+  }
+
+  if (state.targets.length === 0) {
+    renderTargetPlaceholder(elements, NO_TARGETS_GUIDANCE);
+    return;
+  }
+
+  renderTargetList(elements);
 }
 
 function setAuthButtonsPending(elements: SidePanelElements, pending: boolean): void {
@@ -584,17 +416,19 @@ function setAuthButtonsPending(elements: SidePanelElements, pending: boolean): v
   setButtonDisabled(elements.clearBrowserTokenButton, pending);
 }
 
-function renderBrowserAuthState(elements: SidePanelElements, response: BrowserAuthStateResponse): void {
-  currentBrowserAuthState = response;
-  authStateLoaded = true;
-  authMutationPending = false;
-
-  const token = typeof response.browserToken === "string" && response.browserToken.length > 0
-    ? response.browserToken
+function renderBrowserAuthSnapshot(elements: SidePanelElements, state: BackgroundAssistantState): void {
+  currentBrowserToken = typeof state.auth.browserToken === "string" && state.auth.browserToken.length > 0
+    ? state.auth.browserToken
     : undefined;
 
-  if (!response.ok) {
-    setAuthStatus(elements, response.error ?? AUTH_TAB_ERROR_TEXT);
+  if (state.auth.mutationPending) {
+    setAuthStatus(elements, "Обновляем состояние авторизации браузера...");
+    setAuthButtonsPending(elements, true);
+    return;
+  }
+
+  if (state.auth.error) {
+    setAuthStatus(elements, state.auth.error || AUTH_TAB_ERROR_TEXT);
     setBrowserTokenOutput(elements, TOKEN_NOT_LOADED_LABEL);
     setButtonDisabled(elements.copyBrowserTokenButton, true);
     setButtonDisabled(elements.clearBrowserTokenButton, true);
@@ -602,18 +436,7 @@ function renderBrowserAuthState(elements: SidePanelElements, response: BrowserAu
     return;
   }
 
-  if (!response.tokenConfigured || !token) {
-    currentTokenConfigured = false;
-    disconnectPersistentBrokerClient();
-    updateConnectionStatus(elements, {
-      brokerOnline: false,
-      bridgeOnline: false,
-      tokenConfigured: false,
-      browserAuthorized: undefined,
-      connecting: false,
-    });
-    updateSendButton(elements);
-    updateChatSendButton(elements);
+  if (!state.auth.tokenConfigured || !currentBrowserToken) {
     setAuthStatus(elements, AUTH_TAB_CLEARED_TEXT);
     setBrowserTokenOutput(elements, TOKEN_REMOVED_LABEL);
     setButtonDisabled(elements.copyBrowserTokenButton, true);
@@ -623,124 +446,50 @@ function renderBrowserAuthState(elements: SidePanelElements, response: BrowserAu
   }
 
   setAuthStatus(elements, AUTH_TAB_READY_TEXT);
-  setBrowserTokenOutput(elements, token);
-  connectPersistentBrokerClient(elements, token);
+  setBrowserTokenOutput(elements, currentBrowserToken);
   setButtonDisabled(elements.copyBrowserTokenButton, false);
   setButtonDisabled(elements.clearBrowserTokenButton, false);
   setButtonDisabled(elements.regenerateBrowserTokenButton, false);
 }
 
-function startAuthRequest(): number {
-  authRequestId += 1;
-  return authRequestId;
+function renderAssistantSnapshot(elements: SidePanelElements, state: BackgroundAssistantState): void {
+  currentSnapshot = state;
+  currentTargets = state.targets;
+  currentSelectedTargetId = state.selectedTargetId;
+  currentTokenConfigured = state.connection.tokenConfigured;
+
+  setStatus(elements, formatAssistantStatus(state));
+  setBaseDiagnostics(elements, formatDiagnostics(state.diagnostics));
+  renderTargetsFromSnapshot(elements, state);
+  renderChat(elements);
+  renderBrowserAuthSnapshot(elements, state);
+  updateSendButton(elements);
+  updateChatSendButton(elements);
 }
 
-function isLatestAuthRequest(requestId: number): boolean {
-  return requestId === authRequestId;
+function isAssistantSnapshotMessage(message: unknown): message is AssistantSnapshotMessage {
+  return Boolean(
+    message &&
+      typeof message === "object" &&
+      (message as { type?: unknown }).type === "assistant.snapshot" &&
+      typeof (message as { state?: unknown }).state === "object" &&
+      (message as { state?: unknown }).state !== null,
+  );
 }
 
-async function refreshBrowserAuthState(elements: SidePanelElements, force = false): Promise<void> {
-  if (!force && authStateLoaded) {
-    renderBrowserAuthState(elements, currentBrowserAuthState ?? { ok: true, tokenConfigured: false });
-    return;
-  }
-
-  const requestId = startAuthRequest();
-  authStateLoaded = false;
-  setAuthStatus(elements, AUTH_TAB_LOADING_TEXT);
-  setBrowserTokenOutput(elements, TOKEN_NOT_LOADED_LABEL);
-  setButtonDisabled(elements.copyBrowserTokenButton, true);
-  setButtonDisabled(elements.clearBrowserTokenButton, true);
-  setButtonDisabled(elements.regenerateBrowserTokenButton, authMutationPending);
-
-  try {
-    const response = (await chrome.runtime.sendMessage({ type: "getBrowserAuthState" })) as BrowserAuthStateResponse | undefined;
-
-    if (!isLatestAuthRequest(requestId)) {
+function connectAssistantPort(elements: SidePanelElements): void {
+  assistantPort = chrome.runtime.connect({ name: "sidepanel" });
+  assistantPort.onMessage.addListener((message: unknown) => {
+    if (!isAssistantSnapshotMessage(message)) {
       return;
     }
 
-    renderBrowserAuthState(elements, response ?? { ok: false, error: AUTH_TAB_ERROR_TEXT, tokenConfigured: false });
-  } catch (error) {
-    if (!isLatestAuthRequest(requestId)) {
-      return;
-    }
-
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    renderBrowserAuthState(elements, {
-      ok: false,
-      error: errorMessage || AUTH_TAB_ERROR_TEXT,
-      tokenConfigured: false,
-    });
-  }
-}
-
-async function regenerateBrowserTokenForSidePanel(elements: SidePanelElements): Promise<void> {
-  if (authMutationPending) {
-    return;
-  }
-
-  const requestId = startAuthRequest();
-  authMutationPending = true;
-  setAuthStatus(elements, "Генерируем новый токен браузера...");
-  setAuthButtonsPending(elements, true);
-
-  try {
-    const response = (await chrome.runtime.sendMessage({ type: "regenerateBrowserToken" })) as BrowserAuthStateResponse | undefined;
-
-    if (!isLatestAuthRequest(requestId)) {
-      return;
-    }
-
-    renderBrowserAuthState(elements, response ?? { ok: false, error: AUTH_TAB_ERROR_TEXT, tokenConfigured: false });
-  } catch (error) {
-    if (!isLatestAuthRequest(requestId)) {
-      return;
-    }
-
-    renderBrowserAuthState(elements, {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-      tokenConfigured: false,
-    });
-  }
-}
-
-async function clearBrowserTokenForSidePanel(elements: SidePanelElements): Promise<void> {
-  if (authMutationPending) {
-    return;
-  }
-
-  const requestId = startAuthRequest();
-  authMutationPending = true;
-  setAuthStatus(elements, "Удаляем токен браузера...");
-  setAuthButtonsPending(elements, true);
-
-  try {
-    const response = (await chrome.runtime.sendMessage({ type: "clearBrowserToken" })) as BrowserAuthStateResponse | undefined;
-
-    if (!isLatestAuthRequest(requestId)) {
-      return;
-    }
-
-    renderBrowserAuthState(elements, response ?? { ok: true, tokenConfigured: false });
-  } catch (error) {
-    if (!isLatestAuthRequest(requestId)) {
-      return;
-    }
-
-    renderBrowserAuthState(elements, {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-      tokenConfigured: false,
-    });
-  }
+    renderAssistantSnapshot(elements, message.state);
+  });
 }
 
 async function copyBrowserToken(elements: SidePanelElements): Promise<void> {
-  const token = currentBrowserAuthState?.browserToken;
-
-  if (!token) {
+  if (!currentBrowserToken) {
     setAuthStatus(elements, AUTH_TAB_COPY_UNAVAILABLE_TEXT);
     return;
   }
@@ -750,168 +499,49 @@ async function copyBrowserToken(elements: SidePanelElements): Promise<void> {
       throw new Error(AUTH_TAB_COPY_UNAVAILABLE_TEXT);
     }
 
-    await navigator.clipboard.writeText(token);
+    await navigator.clipboard.writeText(currentBrowserToken);
     setAuthStatus(elements, AUTH_TAB_COPY_SUCCESS_TEXT);
   } catch {
     setAuthStatus(elements, AUTH_TAB_COPY_UNAVAILABLE_TEXT);
   }
 }
 
-function resetChatState(): void {
-  currentChatState = createInitialSidePanelState();
-  currentBrokerClient?.close();
-  currentBrokerClient = undefined;
-  currentBrokerClientToken = undefined;
-}
-
 function activateTab(elements: SidePanelElements, tab: SidePanelTab): void {
+  const previousTab = currentActiveTab;
   currentActiveTab = tab;
 
   setPanelState(elements.assistantPanel, elements.assistantTabButton, tab === "assistant");
   setPanelState(elements.sessionsPanel, elements.sessionsTabButton, tab === "sessions");
   setPanelState(elements.authorizationPanel, elements.authorizationTabButton, tab === "auth");
 
-  if (tab === "auth") {
-    void refreshBrowserAuthState(elements);
+  if (tab === "auth" && previousTab !== "auth") {
+    postAssistantCommand({ type: "assistant.auth.refresh" });
   }
 }
 
-export async function refreshSidePanelState(elements = getSidePanelElements()): Promise<void> {
-  updateSendButton(elements);
-  const refreshRequestId = ++currentRefreshRequestId;
-
-  try {
-    const inMemorySelectedTargetId = currentSelectedTargetId;
-    const [targetsResponse, diagnosticsResponse] = await Promise.all([
-      chrome.runtime.sendMessage({ type: "listTargets" }) as Promise<ListTargetsResponse | undefined>,
-      chrome.runtime.sendMessage({ type: "getDiagnostics" }) as Promise<GetDiagnosticsResponse | undefined>,
-    ]);
-
-    if (refreshRequestId !== currentRefreshRequestId) {
-      return;
-    }
-
-    const diagnostics = diagnosticsResponse?.diagnostics ?? [];
-
-    currentTargets = targetsResponse?.targets ?? [];
-    currentSelectedTargetId = chooseSelectedTargetId(currentTargets, [
-      inMemorySelectedTargetId,
-      targetsResponse?.selectedTargetId,
-    ]);
-    currentTokenConfigured = targetsResponse?.tokenConfigured;
-
-    updateConnectedStatus(elements, targetsResponse ?? {});
-
-    if (!targetsResponse?.ok) {
-      const baseDiagnostics = targetsResponse?.error
-        ? appendBrokerError(diagnostics, targetsResponse.error)
-        : formatDiagnostics(diagnostics);
-
-      if (targetsResponse?.tokenConfigured === false) {
-        renderTargetPlaceholder(elements, TOKEN_REQUIRED_GUIDANCE, "warning");
-        updateSendButton(elements);
-        updateConnectionStatus(elements, { tokenConfigured: false, connecting: false });
-        setBaseDiagnostics(elements, appendDiagnosticsNote(baseDiagnostics, TOKEN_REQUIRED_GUIDANCE));
-        return;
-      }
-
-      if (isBrowserAuthorizationError(targetsResponse?.error)) {
-        renderTargetPlaceholder(elements, AUTH_REQUIRED_GUIDANCE, "warning");
-        updateSendButton(elements);
-        updateConnectionStatus(elements, { browserAuthorized: false, connecting: false });
-        setBaseDiagnostics(elements, appendDiagnosticsNote(baseDiagnostics, AUTH_REQUIRED_GUIDANCE));
-        return;
-      }
-
-      renderTargetPlaceholder(elements, BROKER_UNAVAILABLE_GUIDANCE, "warning");
-      updateSendButton(elements);
-      updateConnectionStatus(elements, { brokerOnline: false, connecting: false, lastError: targetsResponse?.error });
-      setBaseDiagnostics(elements, baseDiagnostics);
-      return;
-    }
-
-    if (currentTargets.length === 0) {
-      renderTargetPlaceholder(elements, NO_TARGETS_GUIDANCE);
-      updateSendButton(elements);
-      setBaseDiagnostics(elements, formatDiagnostics(diagnostics));
-      return;
-    }
-
-    setSelectedTarget(elements, currentSelectedTargetId, { persist: false });
-    setBaseDiagnostics(
-      elements,
-      targetsResponse.tokenConfigured === false
-        ? appendDiagnosticsNote(formatDiagnostics(diagnostics), TOKEN_REQUIRED_GUIDANCE)
-        : formatDiagnostics(diagnostics),
-    );
-    updateConnectedStatus(elements, targetsResponse);
-
-    const selectedTargetIdBeforeStoredLoad = currentSelectedTargetId;
-
-    void loadStoredSelectedTargetId()
-      .then((storedSelectedTargetId) => {
-        if (refreshRequestId !== currentRefreshRequestId) {
-          return;
-        }
-
-        if (currentSelectedTargetId !== selectedTargetIdBeforeStoredLoad) {
-          return;
-        }
-
-        const nextSelectedTargetId = chooseSelectedTargetId(currentTargets, [
-          inMemorySelectedTargetId,
-          storedSelectedTargetId,
-          targetsResponse.selectedTargetId,
-        ]);
-
-        if (nextSelectedTargetId === currentSelectedTargetId) {
-          return;
-        }
-
-        setSelectedTarget(elements, nextSelectedTargetId, { persist: false });
-        updateConnectedStatus(elements, targetsResponse);
-      })
-      .catch(() => {
-        // Ignore storage read failures so side panel state stays responsive.
-      });
-  } catch (error) {
-    if (refreshRequestId !== currentRefreshRequestId) {
-      return;
-    }
-
-    const errorMessage = error instanceof Error ? error.message : String(error);
-
-    currentTargets = [];
-    currentSelectedTargetId = undefined;
-    currentTokenConfigured = undefined;
-    renderTargetPlaceholder(elements, BROKER_UNAVAILABLE_GUIDANCE, "warning");
-    updateSendButton(elements);
-    updateConnectionStatus(elements, {
-      brokerOnline: false,
-      bridgeOnline: false,
-      targetsCount: 0,
-      selectedTargetId: undefined,
-      selectedTargetAvailable: false,
-      lastError: errorMessage,
-      connecting: false,
-    });
-    setBaseDiagnostics(elements, errorMessage);
-
-    if (elements.sendButton) {
-      elements.sendButton.title = SIDEPANEL_UNAVAILABLE_BUTTON_LABEL;
-    }
-  }
+export async function refreshSidePanelState(): Promise<void> {
+  postAssistantCommand({ type: "assistant.diagnostics.refresh" });
 }
 
 function initializeSidePanel(): void {
   const elements = getSidePanelElements();
 
-  resetChatState();
+  currentSnapshot = undefined;
+  currentTargets = [];
+  currentSelectedTargetId = undefined;
+  currentTokenConfigured = undefined;
+  currentBrowserToken = undefined;
+  currentDiagnosticsBaseText = "Недавних диагностических сообщений нет.";
+  currentActiveTab = "assistant";
+
+  connectAssistantPort(elements);
   activateTab(elements, "assistant");
   updateSendButton(elements);
-  renderBrowserAuthState(elements, { ok: true, tokenConfigured: false });
-  authStateLoaded = false;
-  void refreshBrowserAuthState(elements, true);
+  updateChatSendButton(elements);
+  setAuthStatus(elements, TOKEN_NOT_LOADED_LABEL);
+  setBrowserTokenOutput(elements, TOKEN_NOT_LOADED_LABEL);
+  setButtonDisabled(elements.copyBrowserTokenButton, true);
+  setButtonDisabled(elements.clearBrowserTokenButton, true);
 
   elements.assistantTabButton?.addEventListener("click", () => {
     activateTab(elements, "assistant");
@@ -961,30 +591,14 @@ function initializeSidePanel(): void {
   });
 
   elements.chatSendButton?.addEventListener("click", () => {
-    const text = elements.chatInput?.value ?? "";
+    const text = elements.chatInput?.value.trim() ?? "";
 
-    if (isChatSendDisabled({
-      selectedTargetId: currentSelectedTargetId,
-      tokenConfigured: currentTokenConfigured !== false,
-      bridgeOnline: currentChatState.bridgeOnline,
-      text,
-    })) {
+    if (!currentSnapshot || isChatSendDisabled(currentSnapshot, text)) {
       updateChatSendButton(elements);
       return;
     }
 
-    currentChatState = startSendingUserMessage(currentChatState, text, Date.now());
-    renderChat(elements);
-
-    if (!currentBrokerClient?.sendChatMessage(text)) {
-      currentChatState = reduceSidePanelChatEvent(currentChatState, {
-        kind: "error",
-        message: "Pi недоступен",
-        timestamp: Date.now(),
-      });
-      renderChat(elements);
-      return;
-    }
+    postAssistantCommand({ type: "assistant.sendChatMessage", message: text });
 
     if (elements.chatInput) {
       elements.chatInput.value = "";
@@ -992,9 +606,8 @@ function initializeSidePanel(): void {
     updateChatSendButton(elements);
   });
 
-  elements.diagnosticsButton?.addEventListener("click", async () => {
-    setStatus(elements, "Обновляем диагностику...");
-    await refreshSidePanelState(elements);
+  elements.diagnosticsButton?.addEventListener("click", () => {
+    void refreshSidePanelState();
   });
 
   elements.copyBrowserTokenButton?.addEventListener("click", () => {
@@ -1002,11 +615,11 @@ function initializeSidePanel(): void {
   });
 
   elements.regenerateBrowserTokenButton?.addEventListener("click", () => {
-    void regenerateBrowserTokenForSidePanel(elements);
+    postAssistantCommand({ type: "assistant.auth.regenerateToken" });
   });
 
   elements.clearBrowserTokenButton?.addEventListener("click", () => {
-    void clearBrowserTokenForSidePanel(elements);
+    postAssistantCommand({ type: "assistant.auth.clearToken" });
   });
 
   elements.sendButton?.addEventListener("click", async () => {
@@ -1014,12 +627,7 @@ function initializeSidePanel(): void {
     const sendButton = elements.sendButton;
     const selectedTarget = findTargetById(currentSelectedTargetId, currentTargets);
 
-    if (!sendButton || !selectedTarget || currentTokenConfigured === false) {
-      if (currentTokenConfigured === false) {
-        setStatus(elements, TOKEN_REQUIRED_GUIDANCE);
-        setDiagnostics(elements, appendDiagnosticsNote(currentDiagnosticsBaseText, TOKEN_REQUIRED_GUIDANCE));
-      }
-
+    if (!sendButton || !selectedTarget || currentTokenConfigured !== true) {
       updateSendButton(elements);
       return;
     }
@@ -1029,20 +637,10 @@ function initializeSidePanel(): void {
       sendButton.setAttribute("aria-disabled", "true");
       setStatus(elements, `Запускаем DOM picker · ${formatTargetPrimaryLabel(selectedTarget)}`);
 
-      let storageWarning: string | undefined;
-      const selectedTargetId = selectedTarget.targetId;
-      const storagePersistence = persistSelectedTargetId(selectedTargetId)
-        .then(() => undefined)
-        .catch((error) => {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          storageWarning = formatSelectedTargetStorageWarning(errorMessage);
-          return storageWarning;
-        });
-
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       const response = (await chrome.runtime.sendMessage({
         type: "startDomPicker",
-        targetId: selectedTargetId,
+        targetId: selectedTarget.targetId,
         tabId: activeTab?.id,
       })) as StartDomPickerResponse | undefined;
 
@@ -1054,23 +652,7 @@ function initializeSidePanel(): void {
       }
 
       setStatus(elements, START_PICKER_PROMPT);
-      setDiagnostics(
-        elements,
-        storageWarning ? appendDiagnosticsNote(currentDiagnosticsBaseText, storageWarning) : currentDiagnosticsBaseText,
-      );
-
-      void storagePersistence.then((resolvedStorageWarning) => {
-        if (!resolvedStorageWarning) {
-          return;
-        }
-
-        if (currentSelectedTargetId !== selectedTargetId) {
-          return;
-        }
-
-        setDiagnostics(elements, appendDiagnosticsNote(currentDiagnosticsBaseText, resolvedStorageWarning));
-      });
-
+      setDiagnostics(elements, currentDiagnosticsBaseText);
       // Боковая панель остаётся открытой, пока пользователь выбирает DOM-элемент на странице.
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1080,8 +662,6 @@ function initializeSidePanel(): void {
       updateSendButton(elements);
     }
   });
-
-  void refreshSidePanelState(elements);
 }
 
 if (typeof document !== "undefined") {

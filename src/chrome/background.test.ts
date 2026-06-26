@@ -139,6 +139,51 @@ async function readDiagnostics(storage: StorageAdapter): Promise<DiagnosticEntry
 }
 
 describe("background", () => {
+  it("starts the assistant state server when a sidepanel port connects", async () => {
+    vi.resetModules();
+    const onConnectAddListener = vi.fn();
+    const webSocketFactory = vi.fn(() => new FakeWebSocket());
+
+    vi.stubGlobal("WebSocket", webSocketFactory);
+    vi.stubGlobal(
+      "chrome",
+      {
+        storage: {
+          local: {
+            get: vi.fn(async () => ({})),
+            set: vi.fn(async () => undefined),
+            remove: vi.fn(async () => undefined),
+          },
+        },
+        action: { onClicked: { addListener: vi.fn() } },
+        sidePanel: {
+          setPanelBehavior: vi.fn(async () => undefined),
+          open: vi.fn(async () => undefined),
+        },
+        runtime: {
+          onInstalled: { addListener: vi.fn() },
+          onConnect: { addListener: onConnectAddListener },
+          onMessage: { addListener: vi.fn() },
+        },
+      } as unknown as typeof chrome,
+    );
+
+    await import("./background");
+
+    expect(onConnectAddListener).toHaveBeenCalledOnce();
+    expect(webSocketFactory).not.toHaveBeenCalled();
+
+    const onConnect = onConnectAddListener.mock.calls[0]?.[0] as (port: chrome.runtime.Port) => void;
+    onConnect({
+      name: "sidepanel",
+      postMessage: vi.fn(),
+      onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
+      onDisconnect: { addListener: vi.fn(), removeListener: vi.fn() },
+    } as unknown as chrome.runtime.Port);
+
+    expect(webSocketFactory).toHaveBeenCalledWith("ws://127.0.0.1:17345");
+  });
+
   it("configures Chrome action clicks to open the side panel", async () => {
     const addListener = vi.fn();
     const setPanelBehavior = vi.fn(async () => undefined);

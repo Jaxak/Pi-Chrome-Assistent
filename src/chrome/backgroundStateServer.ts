@@ -151,12 +151,16 @@ export class BackgroundAssistantStateServer {
     this.state = reduceAssistantState(nextState, { kind: "epoch_incremented" });
     this.brokerClient?.setSelectedTargetId?.(this.state.selectedTargetId);
     this.broadcastSnapshot();
-    void this.persistSelectedTargetId(this.state.selectedTargetId);
+    void this.persistSelectedTargetId(this.state.selectedTargetId).catch(() => undefined);
   }
 
   private async persistSelectedTargetId(selectedTargetId: string | undefined): Promise<void> {
     try {
-      await this.storage.set(SELECTED_TARGET_STORAGE_KEY, selectedTargetId);
+      if (selectedTargetId === undefined) {
+        await this.storage.remove(SELECTED_TARGET_STORAGE_KEY);
+      } else {
+        await this.storage.set(SELECTED_TARGET_STORAGE_KEY, selectedTargetId);
+      }
     } catch (error) {
       const message = `Не удалось сохранить выбранную цель Pi: ${getErrorMessage(error)}`;
       await this.recordDiagnostic("assistant.selectTarget", message);
@@ -178,7 +182,12 @@ export class BackgroundAssistantStateServer {
       { kind: "epoch_incremented" },
     );
     this.broadcastSnapshot();
-    await this.recordDiagnosticEntry(diagnostic);
+
+    try {
+      await this.recordDiagnosticEntry(diagnostic);
+    } catch {
+      // Diagnostic persistence is best-effort: the in-memory diagnostic above is enough for this lifecycle.
+    }
   }
 
   private applyState(event: Parameters<typeof reduceAssistantState>[1]): void {
@@ -187,16 +196,20 @@ export class BackgroundAssistantStateServer {
   }
 
   private broadcastSnapshot(): void {
-    for (const { port } of this.ports.values()) {
+    for (const { port } of Array.from(this.ports.values())) {
       this.postSnapshot(port);
     }
   }
 
   private postSnapshot(port: ChromeRuntimePortLike): void {
-    port.postMessage({
-      type: "assistant.snapshot",
-      state: this.getSnapshot(),
-    });
+    try {
+      port.postMessage({
+        type: "assistant.snapshot",
+        state: this.getSnapshot(),
+      });
+    } catch {
+      this.removePort(port);
+    }
   }
 
   private removePort(port: ChromeRuntimePortLike): void {

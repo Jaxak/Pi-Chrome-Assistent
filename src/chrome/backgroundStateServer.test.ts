@@ -10,6 +10,7 @@ import {
 class FakePort implements ChromeRuntimePortLike {
   readonly name = "sidepanel";
   readonly postedMessages: unknown[] = [];
+  throwOnPost = false;
   private readonly messageListeners = new Set<(message: unknown) => void>();
   private readonly disconnectListeners = new Set<() => void>();
 
@@ -32,6 +33,10 @@ class FakePort implements ChromeRuntimePortLike {
   };
 
   postMessage(message: unknown): void {
+    if (this.throwOnPost) {
+      throw new Error("port closed");
+    }
+
     this.postedMessages.push(message);
   }
 
@@ -50,6 +55,7 @@ class FakePort implements ChromeRuntimePortLike {
 
 class FakeStorage implements BackgroundStateServerStorage {
   readonly values = new Map<string, unknown>();
+  readonly removedKeys: string[] = [];
   setError: unknown;
 
   async get<T>(key: string): Promise<T | undefined> {
@@ -65,6 +71,7 @@ class FakeStorage implements BackgroundStateServerStorage {
   }
 
   async remove(key: string): Promise<void> {
+    this.removedKeys.push(key);
     this.values.delete(key);
   }
 }
@@ -184,6 +191,40 @@ describe("BackgroundAssistantStateServer", () => {
     expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
   });
 
+  it("removes persisted selectedTargetId when assistant.selectTarget clears the target", async () => {
+    const { server, storage, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+    port.emitMessage({ type: "assistant.selectTarget", targetId: undefined });
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
+    expect(storage.values.get("selectedTargetId")).toBeUndefined();
+    expect(storage.removedKeys).toContain("selectedTargetId");
+  });
+
+  it("removes ports that throw on postMessage and continues broadcasting", async () => {
+    const { server, brokerClients } = createServer();
+    const throwingPort = new FakePort();
+    const healthyPort = new FakePort();
+    throwingPort.throwOnPost = true;
+    await server.start();
+
+    expect(() => server.connectPort(throwingPort)).not.toThrow();
+    server.connectPort(healthyPort);
+
+    brokerClients[0]?.emitTargets([createTarget()]);
+
+    expect(healthyPort.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+    expect(healthyPort.postedMessages).toHaveLength(2);
+    expect(throwingPort.postedMessages).toHaveLength(0);
+  });
+
   it("records a Russian diagnostic without rolling back in-memory selection when storage fails", async () => {
     const { server, storage, diagnostics, brokerClients } = createServer();
     const port = new FakePort();
@@ -202,5 +243,23 @@ describe("BackgroundAssistantStateServer", () => {
         message: "Не удалось сохранить выбранную цель Pi: disk full",
       },
     ]);
+  });
+
+  it("keeps selection and does not reject async work when persistence and diagnostic recording fail", async () => {
+    const { server, storage, brokerClients } = createServer({
+      recordDiagnostic: async () => {
+        throw new Error("diagnostic unavailable");
+      },
+    });
+    const port = new FakePort();
+    storage.setError = new Error("disk full");
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+
+    expect(() => port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" })).not.toThrow();
+    await expect(flushAsyncWork()).resolves.toBeUndefined();
+
+    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
   });
 });

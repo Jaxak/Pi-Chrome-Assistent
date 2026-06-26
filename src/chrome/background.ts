@@ -804,6 +804,9 @@ if (typeof chrome !== "undefined") {
   configureSidePanelOnActionClick();
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name === "sidepanel") {
+      void stateServer.start().catch((error: unknown) => {
+        console.warn("Не удалось запустить сервер состояния ассистента", error);
+      });
       stateServer.connectPort(port);
     }
   });

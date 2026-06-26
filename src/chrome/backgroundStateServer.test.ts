@@ -59,9 +59,14 @@ class FakePort implements ChromeRuntimePortLike {
 class FakeStorage implements BackgroundStateServerStorage {
   readonly values = new Map<string, unknown>();
   readonly removedKeys: string[] = [];
+  getError: unknown;
   setError: unknown;
 
   async get<T>(key: string): Promise<T | undefined> {
+    if (this.getError) {
+      throw this.getError;
+    }
+
     return this.values.get(key) as T | undefined;
   }
 
@@ -468,6 +473,47 @@ describe("BackgroundAssistantStateServer", () => {
     expect(portB.postedMessages.at(-1)).toEqual(expected);
   });
 
+  it("loads stored diagnostics and broadcasts a snapshot for assistant.diagnostics.refresh", async () => {
+    const { server, storage } = createServer();
+    const port = new FakePort();
+    const storedDiagnostics = [
+      { timestamp: 1_710_000_000_001, phase: "startup", message: "Первый журнал" },
+      { timestamp: 1_710_000_000_002, phase: "bridge", message: "Второй журнал" },
+    ];
+    storage.values.set("diagnostics", storedDiagnostics);
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.diagnostics.refresh" });
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().diagnostics).toEqual(storedDiagnostics);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("records a Russian diagnostic without rejecting when diagnostics refresh storage fails", async () => {
+    const { server, storage, diagnostics } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    storage.getError = new Error("storage offline");
+
+    expect(() => port.emitMessage({ type: "assistant.diagnostics.refresh" })).not.toThrow();
+    await expect(flushAsyncWork()).resolves.toBeUndefined();
+
+    expect(server.getSnapshot().diagnostics.at(-1)).toMatchObject({
+      phase: "assistant.diagnostics.refresh",
+      message: "Не удалось обновить диагностику: storage offline",
+    });
+    expect(diagnostics).toEqual([
+      {
+        phase: "assistant.diagnostics.refresh",
+        message: "Не удалось обновить диагностику: storage offline",
+      },
+    ]);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
   it("uses broker connection state to make background snapshots ready and send-enabled", async () => {
     const { server, brokerClients } = createServer();
     const port = new FakePort();
@@ -849,6 +895,47 @@ describe("BackgroundAssistantStateServer", () => {
 
     expect(connectedPort.postedMessages).toHaveLength(2);
     expect(disconnectedPort.postedMessages).toHaveLength(1);
+  });
+
+  it("restores stored selectedTargetId on startup when a matching broker target appears", async () => {
+    const storage = new FakeStorage();
+    storage.values.set("selectedTargetId", "target-2");
+    const { server, brokerClients } = createServer({ storage });
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([
+      createTarget({ targetId: "target-1" }),
+      createTarget({ targetId: "target-2", alias: "Beta" }),
+    ]);
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().selectedTargetId).toBe("target-2");
+    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenCalledWith("target-2");
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("ignores missing stored selectedTargetId and allows later user selection", async () => {
+    const storage = new FakeStorage();
+    storage.values.set("selectedTargetId", "missing-target");
+    const { server, brokerClients } = createServer({ storage });
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
+    expect(brokerClients[0]?.setSelectedTargetId).not.toHaveBeenCalledWith("missing-target");
+
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
+    expect(storage.values.get("selectedTargetId")).toBe("target-1");
+    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenLastCalledWith("target-1");
   });
 
   it("updates state and persists selectedTargetId for assistant.selectTarget", async () => {

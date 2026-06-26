@@ -13,7 +13,7 @@ import {
   regenerateBrowserToken,
   type BrowserAuthState,
 } from "./browserToken";
-import { appendDiagnostic, chromeStorageAdapter, type DiagnosticEntry } from "./diagnostics";
+import { appendDiagnostic, chromeStorageAdapter, listDiagnostics, type DiagnosticEntry } from "./diagnostics";
 
 const SELECTED_TARGET_STORAGE_KEY = "selectedTargetId";
 
@@ -94,6 +94,7 @@ export class BackgroundAssistantStateServer {
   private readonly ports = new Map<ChromeRuntimePortLike, ConnectedPort>();
   private state: BackgroundAssistantState = createInitialAssistantState();
   private brokerClient: BackgroundStateServerBrokerClient | undefined;
+  private preferredSelectedTargetId: string | undefined;
   private started = false;
   private startupGeneration = 0;
   private brokerGeneration = 0;
@@ -143,6 +144,12 @@ export class BackgroundAssistantStateServer {
     const startupGeneration = ++this.startupGeneration;
 
     try {
+      await this.restorePreferredSelectedTargetId(startupGeneration);
+
+      if (!this.started || startupGeneration !== this.startupGeneration) {
+        return;
+      }
+
       const browserToken = await this.tokenHelpers.ensureBrowserToken(this.storage);
 
       if (!this.started || startupGeneration !== this.startupGeneration) {
@@ -233,6 +240,11 @@ export class BackgroundAssistantStateServer {
         ? (command as { message: string }).message
         : "";
       this.sendChatMessage(messageText);
+      return;
+    }
+
+    if (command?.type === "assistant.diagnostics.refresh") {
+      void this.refreshDiagnostics();
       return;
     }
 
@@ -351,6 +363,7 @@ export class BackgroundAssistantStateServer {
   }
 
   private selectTarget(targetId: string | undefined): void {
+    this.preferredSelectedTargetId = undefined;
     const previousSelectedTargetId = this.state.selectedTargetId;
     const nextState = reduceAssistantState(this.state, { kind: "select_target", targetId });
 
@@ -366,7 +379,17 @@ export class BackgroundAssistantStateServer {
 
   private applyTargets(targets: TargetMetadata[]): void {
     const previousSelectedTargetId = this.state.selectedTargetId;
-    const nextState = reduceAssistantState(this.state, { kind: "targets_updated", targets });
+    let nextState = reduceAssistantState(this.state, { kind: "targets_updated", targets });
+    const preferredSelectedTargetId = this.preferredSelectedTargetId;
+
+    if (
+      nextState.selectedTargetId === undefined &&
+      preferredSelectedTargetId !== undefined &&
+      targets.some((target) => target.targetId === preferredSelectedTargetId)
+    ) {
+      nextState = reduceAssistantState(nextState, { kind: "select_target", targetId: preferredSelectedTargetId });
+      this.preferredSelectedTargetId = undefined;
+    }
 
     this.state = reduceAssistantState(nextState, { kind: "epoch_incremented" });
 
@@ -433,6 +456,22 @@ export class BackgroundAssistantStateServer {
         this.applyBrowserToken(authState.browserToken);
       },
     );
+  }
+
+  private async refreshDiagnostics(): Promise<void> {
+    try {
+      const diagnostics = await listDiagnostics(this.storage);
+      this.state = reduceAssistantState(
+        reduceAssistantState(this.state, { kind: "diagnostics_updated", diagnostics }),
+        { kind: "epoch_incremented" },
+      );
+      this.broadcastSnapshot();
+    } catch (error) {
+      await this.recordDiagnostic(
+        "assistant.diagnostics.refresh",
+        `Не удалось обновить диагностику: ${getErrorMessage(error)}`,
+      );
+    }
   }
 
   private async regenerateBrowserToken(): Promise<void> {
@@ -643,6 +682,25 @@ export class BackgroundAssistantStateServer {
       { kind: "epoch_incremented" },
     );
     this.broadcastSnapshot();
+  }
+
+  private async restorePreferredSelectedTargetId(startupGeneration: number): Promise<void> {
+    try {
+      const storedSelectedTargetId = await this.storage.get<unknown>(SELECTED_TARGET_STORAGE_KEY);
+
+      if (!this.started || startupGeneration !== this.startupGeneration) {
+        return;
+      }
+
+      this.preferredSelectedTargetId = typeof storedSelectedTargetId === "string" && storedSelectedTargetId.trim().length > 0
+        ? storedSelectedTargetId.trim()
+        : undefined;
+    } catch (error) {
+      await this.recordDiagnostic(
+        "assistant.start",
+        `Не удалось восстановить выбранную цель Pi: ${getErrorMessage(error)}`,
+      );
+    }
   }
 
   private async persistSelectedTargetId(selectedTargetId: string | undefined): Promise<void> {

@@ -1,7 +1,12 @@
 import { BROWSER_NOT_AUTHORIZED_ERROR } from "../shared/constants";
 import type { TargetMetadata } from "../shared/protocol";
 import type { DiagnosticEntry } from "./diagnostics";
-import { createInitialSidePanelState, type SidePanelState } from "./sidepanelState";
+import { SidePanelBrokerClient } from "./sidepanelBrokerClient";
+import {
+  createInitialSidePanelState,
+  reduceSidePanelChatEvent,
+  type SidePanelState,
+} from "./sidepanelState";
 
 export type ListTargetsResponse = {
   ok?: boolean;
@@ -76,6 +81,7 @@ let currentRefreshRequestId = 0;
 let currentActiveTab: SidePanelTab = "assistant";
 let currentBrowserAuthState: BrowserAuthStateResponse | undefined;
 let currentChatState: SidePanelState = createInitialSidePanelState();
+let currentBrokerClient: SidePanelBrokerClient | undefined;
 let authStateLoaded = false;
 let authRequestId = 0;
 let authMutationPending = false;
@@ -140,6 +146,35 @@ function setBrowserTokenOutput(elements: SidePanelElements, message: string): vo
   if (elements.browserTokenOutput) {
     elements.browserTokenOutput.textContent = message;
   }
+}
+
+function connectPersistentBrokerClient(elements: SidePanelElements, browserToken: string): void {
+  currentBrokerClient?.close();
+  currentBrokerClient = new SidePanelBrokerClient({
+    browserToken,
+    selectedTargetId: currentSelectedTargetId,
+    onConnectionState: (state) => {
+      currentChatState = {
+        ...currentChatState,
+        bridgeOnline: state.online,
+      };
+      setStatus(elements, state.statusText);
+    },
+    onTargets: (targets) => {
+      currentTargets = targets;
+      currentSelectedTargetId = chooseSelectedTargetId(currentTargets, [currentSelectedTargetId]);
+      currentChatState = {
+        ...currentChatState,
+        selectedTargetId: currentSelectedTargetId,
+      };
+      renderTargetList(elements);
+      updateSendButton(elements);
+    },
+    onChatEvent: (event) => {
+      currentChatState = reduceSidePanelChatEvent(currentChatState, event);
+    },
+  });
+  currentBrokerClient.connect();
 }
 
 function setButtonDisabled(button: HTMLButtonElement | null, disabled: boolean): void {
@@ -434,6 +469,7 @@ function renderBrowserAuthState(elements: SidePanelElements, response: BrowserAu
 
   setAuthStatus(elements, AUTH_TAB_READY_TEXT);
   setBrowserTokenOutput(elements, token);
+  connectPersistentBrokerClient(elements, token);
   setButtonDisabled(elements.copyBrowserTokenButton, false);
   setButtonDisabled(elements.clearBrowserTokenButton, false);
   setButtonDisabled(elements.regenerateBrowserTokenButton, false);
@@ -568,6 +604,8 @@ async function copyBrowserToken(elements: SidePanelElements): Promise<void> {
 
 function resetChatState(): void {
   currentChatState = createInitialSidePanelState();
+  currentBrokerClient?.close();
+  currentBrokerClient = undefined;
 }
 
 function activateTab(elements: SidePanelElements, tab: SidePanelTab): void {
@@ -709,6 +747,7 @@ function initializeSidePanel(): void {
   updateSendButton(elements);
   renderBrowserAuthState(elements, { ok: true, tokenConfigured: false });
   authStateLoaded = false;
+  void refreshBrowserAuthState(elements, true);
 
   elements.assistantTabButton?.addEventListener("click", () => {
     activateTab(elements, "assistant");

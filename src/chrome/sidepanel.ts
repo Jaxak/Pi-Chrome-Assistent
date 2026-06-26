@@ -3,8 +3,14 @@ import type { TargetMetadata } from "../shared/protocol";
 import type { DiagnosticEntry } from "./diagnostics";
 import { SidePanelBrokerClient } from "./sidepanelBrokerClient";
 import {
+  createAgentWorkingElement,
+  createChatMessageElement,
+  isChatSendDisabled,
+} from "./sidepanelRender";
+import {
   createInitialSidePanelState,
   reduceSidePanelChatEvent,
+  startSendingUserMessage,
   type SidePanelState,
 } from "./sidepanelState";
 
@@ -44,6 +50,17 @@ type SidePanelElements = {
   authorizationPanel: HTMLElement | null;
   statusText: HTMLSpanElement | null;
   sendButton: HTMLButtonElement | null;
+  chatInput: HTMLTextAreaElement | null;
+  chatSendButton: HTMLButtonElement | null;
+  messageList: HTMLElement | null;
+  messagesScroll: HTMLElement | null;
+  agentWorking: HTMLElement | null;
+  headerMenuButton: HTMLButtonElement | null;
+  headerMenu: HTMLElement | null;
+  headerAuthButton: HTMLButtonElement | null;
+  headerDevlogButton: HTMLButtonElement | null;
+  composerMenuButton: HTMLButtonElement | null;
+  composerMenu: HTMLElement | null;
   diagnosticsButton: HTMLButtonElement | null;
   diagnosticsOutput: HTMLElement | null;
   targetContainer: HTMLElement | null;
@@ -96,6 +113,17 @@ function getSidePanelElements(): SidePanelElements {
     authorizationPanel: document.querySelector<HTMLElement>("#panel-auth"),
     statusText: document.querySelector<HTMLSpanElement>("#status-text"),
     sendButton: document.querySelector<HTMLButtonElement>("#send-button"),
+    chatInput: document.querySelector<HTMLTextAreaElement>("#chat-input"),
+    chatSendButton: document.querySelector<HTMLButtonElement>("#chat-send-button"),
+    messageList: document.querySelector<HTMLElement>("#message-list"),
+    messagesScroll: document.querySelector<HTMLElement>("#messages-scroll"),
+    agentWorking: document.querySelector<HTMLElement>("#agent-working"),
+    headerMenuButton: document.querySelector<HTMLButtonElement>("#header-menu-button"),
+    headerMenu: document.querySelector<HTMLElement>("#header-menu"),
+    headerAuthButton: document.querySelector<HTMLButtonElement>("#header-auth-button"),
+    headerDevlogButton: document.querySelector<HTMLButtonElement>("#header-devlog-button"),
+    composerMenuButton: document.querySelector<HTMLButtonElement>("#composer-menu-button"),
+    composerMenu: document.querySelector<HTMLElement>("#composer-menu"),
     diagnosticsButton: document.querySelector<HTMLButtonElement>("#diagnostics-button"),
     diagnosticsOutput: document.querySelector<HTMLElement>("#diagnostics-output"),
     targetContainer: document.querySelector<HTMLElement>("#target-container"),
@@ -149,6 +177,7 @@ function setBrowserTokenOutput(elements: SidePanelElements, message: string): vo
 }
 
 function connectPersistentBrokerClient(elements: SidePanelElements, browserToken: string): void {
+  currentTokenConfigured = true;
   currentBrokerClient?.close();
   currentBrokerClient = new SidePanelBrokerClient({
     browserToken,
@@ -159,6 +188,7 @@ function connectPersistentBrokerClient(elements: SidePanelElements, browserToken
         bridgeOnline: state.online,
       };
       setStatus(elements, state.statusText);
+      updateChatSendButton(elements);
     },
     onTargets: (targets) => {
       currentTargets = targets;
@@ -169,9 +199,11 @@ function connectPersistentBrokerClient(elements: SidePanelElements, browserToken
       };
       renderTargetList(elements);
       updateSendButton(elements);
+      updateChatSendButton(elements);
     },
     onChatEvent: (event) => {
       currentChatState = reduceSidePanelChatEvent(currentChatState, event);
+      renderChat(elements);
     },
   });
   currentBrokerClient.connect();
@@ -186,6 +218,16 @@ function setButtonDisabled(button: HTMLButtonElement | null, disabled: boolean):
   button.setAttribute("aria-disabled", String(disabled));
 }
 
+function setMenuOpen(button: HTMLButtonElement | null, menu: HTMLElement | null, open: boolean): void {
+  if (menu) {
+    menu.hidden = !open;
+  }
+
+  if (button) {
+    button.setAttribute("aria-expanded", String(open));
+  }
+}
+
 function setPanelState(panel: HTMLElement | null, button: HTMLButtonElement | null, active: boolean): void {
   if (panel) {
     panel.hidden = !active;
@@ -193,7 +235,6 @@ function setPanelState(panel: HTMLElement | null, button: HTMLButtonElement | nu
 
   if (button) {
     button.setAttribute("aria-selected", String(active));
-    button.className = active ? "tab-button tab-button--active" : "tab-button";
   }
 }
 
@@ -358,6 +399,40 @@ function updateSendButton(elements: SidePanelElements): void {
   elements.sendButton.title = tokenReady ? START_PICKER_BUTTON_LABEL : TOKEN_REQUIRED_GUIDANCE;
 }
 
+function updateChatSendButton(elements: SidePanelElements): void {
+  const disabled = isChatSendDisabled({
+    selectedTargetId: currentSelectedTargetId,
+    tokenConfigured: currentTokenConfigured !== false,
+    bridgeOnline: currentChatState.bridgeOnline,
+    text: elements.chatInput?.value ?? "",
+  });
+  setButtonDisabled(elements.chatSendButton, disabled);
+}
+
+function renderChat(elements: SidePanelElements): void {
+  if (elements.messageList) {
+    const fragment = document.createDocumentFragment();
+    for (const message of currentChatState.messages) {
+      fragment.append(createChatMessageElement(message));
+    }
+    elements.messageList.replaceChildren(fragment);
+  }
+
+  if (elements.agentWorking) {
+    const agentWorking = createAgentWorkingElement(currentChatState.busyLabel);
+    agentWorking.id = "agent-working";
+    agentWorking.hidden = !currentChatState.agentBusy;
+    elements.agentWorking.replaceWith(agentWorking);
+    elements.agentWorking = agentWorking;
+  }
+
+  if (elements.messagesScroll) {
+    elements.messagesScroll.scrollTop = elements.messagesScroll.scrollHeight;
+  }
+
+  updateChatSendButton(elements);
+}
+
 function renderTargetList(elements: SidePanelElements): void {
   if (!elements.targetContainer) {
     return;
@@ -400,8 +475,14 @@ function setSelectedTarget(
   options: { persist?: boolean } = {},
 ): void {
   currentSelectedTargetId = targetId;
+  currentChatState = {
+    ...currentChatState,
+    selectedTargetId: targetId,
+  };
+  currentBrokerClient?.setSelectedTargetId(targetId);
   renderTargetList(elements);
   updateSendButton(elements);
+  updateChatSendButton(elements);
 
   if (options.persist !== false && targetId) {
     void persistSelectedTargetId(targetId).catch(() => {
@@ -761,6 +842,69 @@ function initializeSidePanel(): void {
     activateTab(elements, "auth");
   });
 
+  elements.headerMenuButton?.addEventListener("click", () => {
+    setMenuOpen(elements.headerMenuButton, elements.headerMenu, elements.headerMenu?.hidden !== false);
+  });
+
+  elements.composerMenuButton?.addEventListener("click", () => {
+    setMenuOpen(elements.composerMenuButton, elements.composerMenu, elements.composerMenu?.hidden !== false);
+  });
+
+  elements.headerAuthButton?.addEventListener("click", () => {
+    setMenuOpen(elements.headerMenuButton, elements.headerMenu, false);
+    activateTab(elements, "auth");
+  });
+
+  elements.headerDevlogButton?.addEventListener("click", () => {
+    setMenuOpen(elements.headerMenuButton, elements.headerMenu, false);
+    activateTab(elements, "sessions");
+  });
+
+  elements.chatInput?.addEventListener("input", () => {
+    updateChatSendButton(elements);
+  });
+
+  elements.chatInput?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
+    }
+
+    event.preventDefault();
+    elements.chatSendButton?.click();
+  });
+
+  elements.chatSendButton?.addEventListener("click", () => {
+    const text = elements.chatInput?.value ?? "";
+
+    if (isChatSendDisabled({
+      selectedTargetId: currentSelectedTargetId,
+      tokenConfigured: currentTokenConfigured !== false,
+      bridgeOnline: currentChatState.bridgeOnline,
+      text,
+    })) {
+      updateChatSendButton(elements);
+      return;
+    }
+
+    currentChatState = startSendingUserMessage(currentChatState, text, Date.now());
+    renderChat(elements);
+
+    if (!currentBrokerClient?.sendChatMessage(text)) {
+      currentChatState = reduceSidePanelChatEvent(currentChatState, {
+        kind: "error",
+        message: "Pi недоступен",
+        timestamp: Date.now(),
+      });
+      renderChat(elements);
+      return;
+    }
+
+    if (elements.chatInput) {
+      elements.chatInput.value = "";
+    }
+    updateChatSendButton(elements);
+  });
+
   elements.diagnosticsButton?.addEventListener("click", async () => {
     setStatus(elements, "Обновляем диагностику...");
     await refreshSidePanelState(elements);
@@ -779,6 +923,7 @@ function initializeSidePanel(): void {
   });
 
   elements.sendButton?.addEventListener("click", async () => {
+    setMenuOpen(elements.composerMenuButton, elements.composerMenu, false);
     const sendButton = elements.sendButton;
     const selectedTarget = findTargetById(currentSelectedTargetId, currentTargets);
 

@@ -7,53 +7,79 @@
     <link rel="stylesheet" href="./sidepanel.css" />
   </head>
   <body>
-    <main class="sidepanel popup">
-      <header class="popup__header">
-        <h1>Pi Chrome Assistent</h1>
-        <p class="popup__subtitle">Боковая панель для отправки контента из браузера в Pi</p>
+    <main class="sidepanel" aria-label="Pi Chrome Assistent">
+      <header class="ant-layout-header">
+        <div class="header-row">
+          <div class="brand">
+            <div class="avatar" aria-hidden="true">π</div>
+            <div class="brand-copy">
+              <div class="brand-title">Ассистент</div>
+              <div id="status-text" class="brand-subtitle">Подключаемся к Pi…</div>
+            </div>
+          </div>
+          <div class="header-actions">
+            <span class="ant-badge-status"><i class="ant-badge-status-dot"></i>готов</span>
+            <div class="kebab-menu kebab-menu--header">
+              <button id="header-menu-button" class="ant-btn-icon" type="button" aria-label="Меню панели" aria-expanded="false">⋯</button>
+              <div id="header-menu" class="kebab-menu__dropdown" hidden>
+                <button class="kebab-menu__item" type="button" disabled aria-disabled="true">Настройки</button>
+                <button id="header-auth-button" class="kebab-menu__item" type="button">Авторизация</button>
+                <button id="header-devlog-button" class="kebab-menu__item" type="button">Dev-журнал</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </header>
 
-      <nav class="tabs" aria-label="Разделы Chrome Assistent">
-        <button id="tab-assistant" class="tab-button tab-button--active" type="button" aria-selected="true" aria-controls="panel-assistant">Ассистент</button>
-        <button id="tab-sessions" class="tab-button" type="button" aria-selected="false" aria-controls="panel-sessions">Сессии</button>
-        <button id="tab-auth" class="tab-button" type="button" aria-selected="false" aria-controls="panel-auth">Авторизация</button>
-      </nav>
-
-      <section id="panel-assistant" class="tab-panel tab-panel--active" aria-labelledby="tab-assistant">
-        <section class="panel" aria-labelledby="status-heading">
-          <div class="status-row">
-            <span id="status-heading" class="panel__label">Статус</span>
-            <span id="status-text" class="status-pill">Ожидание</span>
+      <section id="panel-assistant" class="ant-content" aria-label="Чат ассистента">
+        <section class="ant-card session-card" aria-labelledby="target-heading">
+          <div class="ant-card-body">
+            <label class="field-label" id="target-heading">Сессия</label>
+            <div id="target-container" class="target-container" role="listbox" aria-label="Сессии Pi">
+              <div class="target-placeholder">Цели появятся здесь.</div>
+            </div>
           </div>
-          <p class="panel__hint">Выберите активную Pi-сессию на вкладке «Сессии», затем отправьте выделение через DOM picker.</p>
         </section>
 
-        <div class="actions actions--single">
-          <button id="send-button" type="button" disabled aria-disabled="true">Отправить в Pi</button>
-        </div>
+        <section class="ant-card chat-card" aria-labelledby="chat-heading">
+          <div class="chat-head">
+            <strong id="chat-heading">Чат</strong>
+            <div class="ant-segmented" aria-hidden="true">
+              <span class="ant-segmented-item active">чат</span>
+              <span class="ant-segmented-item">сессия</span>
+            </div>
+          </div>
+
+          <div class="ant-card-body messages" id="messages-scroll">
+            <div id="message-list" class="message-list" aria-live="polite"></div>
+            <div id="agent-working" class="agent-working" role="status" aria-live="polite" hidden>
+              <span class="agent-working__dots"><i></i><i></i><i></i></span>
+              Агент работает в фоне…
+            </div>
+          </div>
+
+          <footer class="composer">
+            <textarea id="chat-input" class="ant-input" placeholder="Сообщение ассистенту" rows="3"></textarea>
+            <div class="composer-actions">
+              <div class="kebab-menu">
+                <button id="composer-menu-button" class="ant-btn-icon" type="button" aria-label="Дополнительные действия" aria-expanded="false">⋯</button>
+                <div id="composer-menu" class="kebab-menu__dropdown" hidden>
+                  <button id="send-button" class="kebab-menu__item" type="button" disabled aria-disabled="true">DOM picker</button>
+                </div>
+              </div>
+              <button id="chat-send-button" class="ant-btn ant-btn-primary" type="button" disabled aria-disabled="true">Отправить</button>
+            </div>
+          </footer>
+        </section>
       </section>
 
-      <section id="panel-sessions" class="tab-panel" aria-labelledby="tab-sessions" hidden>
-        <section class="panel" aria-labelledby="target-heading">
-          <div class="panel__label" id="target-heading">Сессии Pi</div>
-          <div id="target-container" class="target-container" role="listbox" aria-label="Цели Pi">
-            <div class="target-placeholder">Цели появятся здесь.</div>
-          </div>
-        </section>
-
-        <section class="panel" aria-labelledby="diagnostics-heading">
+      <section id="panel-auth" class="drawer-panel" aria-label="Авторизация" hidden>
+        <section class="ant-card">
           <div class="panel__header">
-            <div class="panel__label" id="diagnostics-heading">Диагностика</div>
-            <button id="diagnostics-button" type="button" class="button-secondary button-compact">Обновить</button>
+            <div class="panel__label" id="auth-heading">Авторизация браузера</div>
+            <button id="tab-assistant" class="button-secondary button-compact" type="button">Назад</button>
           </div>
-          <pre id="diagnostics-output" class="diagnostics-output">Диагностика ещё не запускалась.</pre>
-        </section>
-      </section>
-
-      <section id="panel-auth" class="tab-panel" aria-labelledby="tab-auth" hidden>
-        <section class="panel" aria-labelledby="auth-heading">
-          <div class="panel__label" id="auth-heading">Авторизация браузера</div>
-          <p id="auth-status-text" class="panel__hint">Откройте вкладку «Авторизация», чтобы получить токен браузера.</p>
+          <p id="auth-status-text" class="panel__hint">Откройте авторизацию, чтобы получить токен браузера.</p>
           <pre id="browser-token-output" class="token-output">Токен ещё не загружен.</pre>
           <div class="actions actions--auth">
             <button id="copy-browser-token-button" type="button" class="button-secondary" disabled aria-disabled="true">Скопировать токен</button>
@@ -62,6 +88,21 @@
           </div>
         </section>
       </section>
+
+      <section id="panel-sessions" class="drawer-panel" aria-label="Dev-журнал" hidden>
+        <section class="ant-card">
+          <div class="panel__header">
+            <div class="panel__label" id="diagnostics-heading">Dev-журнал</div>
+            <div class="panel-actions">
+              <button id="diagnostics-button" type="button" class="button-secondary button-compact">Обновить</button>
+              <button id="tab-sessions" class="button-secondary button-compact" type="button">Назад</button>
+            </div>
+          </div>
+          <pre id="diagnostics-output" class="diagnostics-output">Диагностика ещё не запускалась.</pre>
+        </section>
+      </section>
+
+      <button id="tab-auth" class="visually-hidden" type="button" aria-hidden="true" tabindex="-1">Авторизация</button>
     </main>
 
     <script src="./sidepanel.js"></script>

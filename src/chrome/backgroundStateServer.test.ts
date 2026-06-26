@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { ChatEvent, TargetMetadata } from "../shared/protocol";
+import type { BrokerConnectionState } from "./brokerClient";
 import type { BrowserAuthState } from "./browserToken";
 import {
   BackgroundAssistantStateServer,
@@ -82,6 +83,7 @@ type FakeBrokerClientOptions = {
   browserToken?: string;
   onTargets?: (targets: TargetMetadata[]) => void;
   onChatEvent?: (event: ChatEvent) => void;
+  onConnectionState?: (state: BrokerConnectionState) => void;
 };
 
 class FakeBrokerClient {
@@ -105,6 +107,10 @@ class FakeBrokerClient {
 
   emitChatEvent(event: ChatEvent): void {
     this.options.onChatEvent?.(event);
+  }
+
+  emitConnectionState(state: BrokerConnectionState): void {
+    this.options.onConnectionState?.(state);
   }
 }
 
@@ -365,6 +371,82 @@ describe("BackgroundAssistantStateServer", () => {
     expect(portB.postedMessages.at(-1)).toEqual(expected);
   });
 
+  it("uses broker connection state to make background snapshots ready and send-enabled", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+
+    expect(isChatSendDisabled(server.getSnapshot(), "Привет")).toBe(true);
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: true,
+      browserAuthorized: undefined,
+    });
+
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: true,
+      bridgeOnline: true,
+      connecting: false,
+      browserAuthorized: true,
+      lastError: undefined,
+    });
+    expect(isChatSendDisabled(server.getSnapshot(), "Привет")).toBe(false);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("reduces broker connection states and ignores stale generation updates", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    const staleClient = brokerClients[0];
+
+    staleClient?.emitConnectionState({ online: false, statusText: "Подключаемся к Pi…" });
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: true,
+      browserAuthorized: undefined,
+      lastError: undefined,
+    });
+
+    staleClient?.emitConnectionState({ online: false, statusText: "Pi недоступен" });
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: false,
+      lastError: "Pi недоступен",
+    });
+
+    staleClient?.emitConnectionState({ online: false, statusText: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале." });
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: false,
+      browserAuthorized: false,
+      lastError: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.",
+    });
+
+    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    await flushAsyncWork();
+    staleClient?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+
+    expect(brokerClients).toHaveLength(2);
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: true,
+      browserAuthorized: false,
+    });
+  });
+
   it("keeps selected target when broker targets still include it", async () => {
     const { server, brokerClients } = createServer();
     const port = new FakePort();
@@ -451,6 +533,7 @@ describe("BackgroundAssistantStateServer", () => {
     await server.start();
     server.connectPort(port);
     brokerClients[0]?.emitTargets([createTarget()]);
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
     port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
     await flushAsyncWork();
 
@@ -464,12 +547,65 @@ describe("BackgroundAssistantStateServer", () => {
     expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
   });
 
+  it("does not append or call broker twice for duplicate sends while chat is busy", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+
+    port.emitMessage({ type: "assistant.sendChatMessage", message: "Первое" });
+    port.emitMessage({ type: "assistant.sendChatMessage", message: "Второе" });
+    await flushAsyncWork();
+
+    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledTimes(1);
+    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledWith("Первое");
+    expect(server.getSnapshot().chat.messages).toEqual([
+      { role: "user", text: "Первое", timestamp: 1_710_000_000_123 },
+    ]);
+    expect(server.getSnapshot().chat.agentBusy).toBe(true);
+    expect(server.getSnapshot().chat.sending).toBe(true);
+  });
+
+  it("does not send while connection is not ready or browser auth is invalid and emits Russian errors", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+
+    port.emitMessage({ type: "assistant.sendChatMessage", message: "Привет" });
+
+    expect(brokerClients[0]?.sendChatMessage).not.toHaveBeenCalled();
+    expect(server.getSnapshot().chat.error).toBe("Pi недоступен");
+    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "system", text: "Pi недоступен", tone: "error" });
+    const messagesAfterNotReadySend = server.getSnapshot().chat.messages.length;
+
+    brokerClients[0]?.emitConnectionState({
+      online: false,
+      statusText: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.",
+    });
+    port.emitMessage({ type: "assistant.sendChatMessage", message: "Ещё раз" });
+
+    expect(brokerClients[0]?.sendChatMessage).not.toHaveBeenCalled();
+    expect(server.getSnapshot().connection.browserAuthorized).toBe(false);
+    expect(server.getSnapshot().chat.messages).toHaveLength(messagesAfterNotReadySend + 1);
+    expect(server.getSnapshot().chat.error).toBe("Pi недоступен");
+    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "system", text: "Pi недоступен", tone: "error" });
+  });
+
   it("adds a Pi unavailable chat error and clears busy when broker send fails", async () => {
     const { server, brokerClients } = createServer();
     const port = new FakePort();
     await server.start();
     server.connectPort(port);
     brokerClients[0]?.emitTargets([createTarget()]);
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
     port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
     await flushAsyncWork();
     if (brokerClients[0]) {

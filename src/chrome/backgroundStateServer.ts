@@ -1,10 +1,11 @@
 import type { ChatEvent, TargetMetadata } from "../shared/protocol";
 import {
   createInitialAssistantState,
+  isChatSendDisabled,
   reduceAssistantState,
   type BackgroundAssistantState,
 } from "./assistantState";
-import { BrokerClient } from "./brokerClient";
+import { BrokerClient, type BrokerConnectionState } from "./brokerClient";
 import {
   clearBrowserToken,
   ensureBrowserToken,
@@ -53,6 +54,7 @@ export type BackgroundStateServerBrokerClientOptions = {
   selectedTargetId?: string;
   onTargets?: (targets: TargetMetadata[]) => void;
   onChatEvent?: (event: ChatEvent) => void;
+  onConnectionState?: (state: BrokerConnectionState) => void;
 };
 
 export type BackgroundStateServerTokenHelpers = {
@@ -97,6 +99,7 @@ export class BackgroundAssistantStateServer {
       selectedTargetId: options.selectedTargetId,
       onTargets: options.onTargets,
       onChatEvent: options.onChatEvent,
+      onConnectionState: options.onConnectionState,
     }));
     this.recordDiagnosticEntry = dependencies.recordDiagnostic ?? (async (diagnostic) => {
       await appendDiagnostic(this.storage, diagnostic);
@@ -243,12 +246,28 @@ export class BackgroundAssistantStateServer {
       return;
     }
 
-    if (!this.state.selectedTargetId) {
+    if (isChatSendDisabled(this.state, text)) {
+      if (!this.state.selectedTargetId) {
+        this.applyState({
+          kind: "chat_event",
+          event: {
+            kind: "error",
+            message: "Выберите цель Pi для отправки сообщения.",
+            timestamp: this.runtimeClock(),
+          },
+        });
+        return;
+      }
+
+      if (this.state.chat.sending || this.state.chat.agentBusy) {
+        return;
+      }
+
       this.applyState({
         kind: "chat_event",
         event: {
           kind: "error",
-          message: "Выберите цель Pi для отправки сообщения.",
+          message: "Pi недоступен",
           timestamp: this.runtimeClock(),
         },
       });
@@ -305,6 +324,28 @@ export class BackgroundAssistantStateServer {
     }
 
     this.broadcastSnapshot();
+  }
+
+  private applyBrokerConnectionState(connectionState: BrokerConnectionState): void {
+    const isConnecting = connectionState.statusText === "Подключаемся к Pi…";
+    const isBrowserAuthError = connectionState.statusText.startsWith("Браузер не авторизован");
+    const connection = connectionState.online
+      ? {
+          brokerOnline: true,
+          bridgeOnline: true,
+          connecting: false,
+          browserAuthorized: true,
+          lastError: undefined,
+        }
+      : {
+          brokerOnline: false,
+          bridgeOnline: false,
+          connecting: isConnecting,
+          ...(isBrowserAuthError ? { browserAuthorized: false } : {}),
+          lastError: isConnecting ? undefined : connectionState.statusText,
+        };
+
+    this.applyState({ kind: "connection_updated", connection });
   }
 
   private async refreshBrowserToken(): Promise<void> {
@@ -406,6 +447,13 @@ export class BackgroundAssistantStateServer {
           }
 
           this.applyState({ kind: "chat_event", event });
+        },
+        onConnectionState: (connectionState) => {
+          if (this.brokerGeneration !== brokerGeneration) {
+            return;
+          }
+
+          this.applyBrokerConnectionState(connectionState);
         },
       });
       this.brokerClient.connect();

@@ -149,6 +149,17 @@ async function flushAsyncWork(): Promise<void> {
   await Promise.resolve();
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  return { promise, resolve, reject };
+}
+
 describe("BackgroundAssistantStateServer", () => {
   it("loads or creates a browser token on startup and connects broker with it", async () => {
     const { server, brokerClients, tokenHelpers } = createServer();
@@ -239,6 +250,76 @@ describe("BackgroundAssistantStateServer", () => {
     expect(brokerClients[0]?.close).not.toHaveBeenCalled();
     expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
     expect(server.getSnapshot().epoch).toBe(epochBefore);
+  });
+
+  it.each([
+    ["assistant.auth.refresh", "getBrowserAuthState", "Не удалось обновить токен браузера. Попробуйте ещё раз."],
+    ["assistant.auth.regenerateToken", "regenerateBrowserToken", "Не удалось сгенерировать новый токен браузера. Попробуйте ещё раз."],
+    ["assistant.auth.clearToken", "clearBrowserToken", "Не удалось удалить токен браузера. Попробуйте ещё раз."],
+  ] as const)("handles %s token helper rejection without unhandled command rejection", async (commandType, helperName, expectedError) => {
+    const { server, tokenHelpers, diagnostics } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    tokenHelpers[helperName].mockRejectedValueOnce(new Error("storage offline"));
+
+    expect(() => port.emitMessage({ type: commandType })).not.toThrow();
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().auth).toMatchObject({
+      mutationPending: false,
+      error: expectedError,
+    });
+    expect(diagnostics).toEqual([
+      {
+        phase: commandType,
+        message: `${expectedError} storage offline`,
+      },
+    ]);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("allows retrying start after ensureBrowserToken fails", async () => {
+    const { server, brokerClients, tokenHelpers, diagnostics } = createServer();
+    tokenHelpers.ensureBrowserToken
+      .mockRejectedValueOnce(new Error("vault locked"))
+      .mockResolvedValueOnce("token-after-retry");
+
+    await expect(server.start()).rejects.toThrow("vault locked");
+
+    expect(server.getSnapshot().auth).toMatchObject({
+      mutationPending: false,
+      error: "Не удалось подготовить токен браузера. Попробуйте ещё раз.",
+    });
+    expect(diagnostics).toEqual([
+      {
+        phase: "assistant.start",
+        message: "Не удалось подготовить токен браузера. Попробуйте ещё раз. vault locked",
+      },
+    ]);
+    expect(brokerClients).toHaveLength(0);
+
+    await server.start();
+
+    expect(tokenHelpers.ensureBrowserToken).toHaveBeenCalledTimes(2);
+    expect(server.getSnapshot().auth).toMatchObject({ browserToken: "token-after-retry", tokenConfigured: true });
+    expect(brokerClients).toHaveLength(1);
+    expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not create or connect a broker when stopped before delayed startup completes", async () => {
+    const startup = createDeferred<string>();
+    const { server, brokerClients, tokenHelpers } = createServer();
+    tokenHelpers.ensureBrowserToken.mockReturnValueOnce(startup.promise);
+
+    const startPromise = server.start();
+    server.stop();
+    startup.resolve("late-token");
+    await startPromise;
+
+    expect(brokerClients).toHaveLength(0);
+    expect(server.getSnapshot().auth.browserToken).toBeUndefined();
+    expect(server.getSnapshot().auth.tokenConfigured).toBe(false);
   });
 
   it("immediately posts an assistant snapshot when a port connects", () => {

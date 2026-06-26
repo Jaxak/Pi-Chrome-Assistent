@@ -84,6 +84,7 @@ export class BackgroundAssistantStateServer {
   private state: BackgroundAssistantState = createInitialAssistantState();
   private brokerClient: BackgroundStateServerBrokerClient | undefined;
   private started = false;
+  private startupGeneration = 0;
 
   constructor(dependencies: BackgroundAssistantStateServerDependencies = {}) {
     this.storage = dependencies.storage ?? chromeStorageAdapter();
@@ -124,12 +125,33 @@ export class BackgroundAssistantStateServer {
     }
 
     this.started = true;
-    const browserToken = await this.tokenHelpers.ensureBrowserToken(this.storage);
-    this.applyBrowserToken(browserToken);
+    const startupGeneration = ++this.startupGeneration;
+
+    try {
+      const browserToken = await this.tokenHelpers.ensureBrowserToken(this.storage);
+
+      if (!this.started || startupGeneration !== this.startupGeneration) {
+        return;
+      }
+
+      this.applyBrowserToken(browserToken);
+    } catch (error) {
+      if (startupGeneration === this.startupGeneration) {
+        this.started = false;
+        await this.handleAuthCommandError(
+          "assistant.start",
+          "Не удалось подготовить токен браузера. Попробуйте ещё раз.",
+          error,
+        );
+      }
+
+      throw error;
+    }
   }
 
   stop(): void {
     this.started = false;
+    this.startupGeneration += 1;
     this.applyBrowserToken(undefined);
 
     for (const { port } of this.ports.values()) {
@@ -147,17 +169,35 @@ export class BackgroundAssistantStateServer {
       : undefined;
 
     if (command?.type === "assistant.auth.refresh") {
-      void this.refreshBrowserToken();
+      void this.refreshBrowserToken().catch((error) => {
+        void this.handleAuthCommandError(
+          "assistant.auth.refresh",
+          "Не удалось обновить токен браузера. Попробуйте ещё раз.",
+          error,
+        );
+      });
       return;
     }
 
     if (command?.type === "assistant.auth.regenerateToken") {
-      void this.regenerateBrowserToken();
+      void this.regenerateBrowserToken().catch((error) => {
+        void this.handleAuthCommandError(
+          "assistant.auth.regenerateToken",
+          "Не удалось сгенерировать новый токен браузера. Попробуйте ещё раз.",
+          error,
+        );
+      });
       return;
     }
 
     if (command?.type === "assistant.auth.clearToken") {
-      void this.clearBrowserToken();
+      void this.clearBrowserToken().catch((error) => {
+        void this.handleAuthCommandError(
+          "assistant.auth.clearToken",
+          "Не удалось удалить токен браузера. Попробуйте ещё раз.",
+          error,
+        );
+      });
       return;
     }
 
@@ -199,6 +239,22 @@ export class BackgroundAssistantStateServer {
   private async clearBrowserToken(): Promise<void> {
     await this.tokenHelpers.clearBrowserToken(this.storage);
     this.applyBrowserToken(undefined);
+  }
+
+  private async handleAuthCommandError(phase: string, userMessage: string, error: unknown): Promise<void> {
+    this.state = reduceAssistantState(
+      reduceAssistantState(this.state, {
+        kind: "auth_updated",
+        auth: {
+          mutationPending: false,
+          error: userMessage,
+        },
+      }),
+      { kind: "epoch_incremented" },
+    );
+    this.broadcastSnapshot();
+
+    await this.recordDiagnostic(phase, `${userMessage} ${getErrorMessage(error)}`);
   }
 
   private applyBrowserToken(nextToken: string | undefined): void {

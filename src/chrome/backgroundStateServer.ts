@@ -329,38 +329,127 @@ export class BackgroundAssistantStateServer {
   private applyBrokerConnectionState(connectionState: BrokerConnectionState): void {
     const isConnecting = connectionState.statusText === "Подключаемся к Pi…";
     const isBrowserAuthError = connectionState.statusText.startsWith("Браузер не авторизован");
+    const tokenConfigured = this.state.auth.tokenConfigured;
     const connection = connectionState.online
       ? {
           brokerOnline: true,
           bridgeOnline: true,
           connecting: false,
+          tokenConfigured,
           browserAuthorized: true,
           lastError: undefined,
         }
-      : {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: isConnecting,
-          ...(isBrowserAuthError ? { browserAuthorized: false } : {}),
-          lastError: isConnecting ? undefined : connectionState.statusText,
-        };
+      : isConnecting
+        ? {
+            brokerOnline: false,
+            bridgeOnline: false,
+            connecting: true,
+            tokenConfigured,
+            browserAuthorized: undefined,
+            lastError: undefined,
+          }
+        : isBrowserAuthError
+          ? {
+              brokerOnline: false,
+              bridgeOnline: false,
+              connecting: false,
+              tokenConfigured,
+              browserAuthorized: false,
+              lastError: connectionState.statusText,
+            }
+          : {
+              brokerOnline: false,
+              bridgeOnline: false,
+              connecting: false,
+              tokenConfigured,
+              browserAuthorized: undefined,
+              lastError: connectionState.statusText,
+            };
 
     this.applyState({ kind: "connection_updated", connection });
   }
 
   private async refreshBrowserToken(): Promise<void> {
-    const authState = await this.tokenHelpers.getBrowserAuthState(this.storage);
-    this.applyBrowserToken(authState.browserToken);
+    await this.runAuthMutation(
+      "assistant.auth.refresh",
+      "Не удалось обновить токен браузера. Попробуйте ещё раз.",
+      async () => {
+        const authState = await this.tokenHelpers.getBrowserAuthState(this.storage);
+        this.applyBrowserToken(authState.browserToken);
+      },
+    );
   }
 
   private async regenerateBrowserToken(): Promise<void> {
-    const browserToken = await this.tokenHelpers.regenerateBrowserToken(this.storage);
-    this.applyBrowserToken(browserToken);
+    await this.runAuthMutation(
+      "assistant.auth.regenerateToken",
+      "Не удалось сгенерировать новый токен браузера. Попробуйте ещё раз.",
+      async () => {
+        const browserToken = await this.tokenHelpers.regenerateBrowserToken(this.storage);
+        this.applyBrowserToken(browserToken);
+      },
+    );
   }
 
   private async clearBrowserToken(): Promise<void> {
-    await this.tokenHelpers.clearBrowserToken(this.storage);
-    this.applyBrowserToken(undefined);
+    await this.runAuthMutation(
+      "assistant.auth.clearToken",
+      "Не удалось удалить токен браузера. Попробуйте ещё раз.",
+      async () => {
+        await this.tokenHelpers.clearBrowserToken(this.storage);
+        this.applyBrowserToken(undefined);
+      },
+    );
+  }
+
+  private async runAuthMutation(phase: string, userMessage: string, operation: () => Promise<void>): Promise<void> {
+    if (!this.beginAuthMutation()) {
+      return;
+    }
+
+    try {
+      await operation();
+      this.finishAuthMutationSuccessIfNeeded();
+    } catch (error) {
+      await this.handleAuthCommandError(phase, userMessage, error);
+    }
+  }
+
+  private beginAuthMutation(): boolean {
+    if (this.state.auth.mutationPending) {
+      return false;
+    }
+
+    this.state = reduceAssistantState(
+      reduceAssistantState(this.state, {
+        kind: "auth_updated",
+        auth: {
+          mutationPending: true,
+          error: undefined,
+        },
+      }),
+      { kind: "epoch_incremented" },
+    );
+    this.broadcastSnapshot();
+    return true;
+  }
+
+  private finishAuthMutationSuccessIfNeeded(): void {
+    if (!this.state.auth.mutationPending) {
+      return;
+    }
+
+    this.state = reduceAssistantState(
+      reduceAssistantState(this.state, {
+        kind: "auth_updated",
+        auth: {
+          mutationPending: false,
+          error: undefined,
+        },
+      }),
+      { kind: "epoch_incremented" },
+    );
+    this.broadcastSnapshot();
   }
 
   private async handleAuthCommandError(phase: string, userMessage: string, error: unknown): Promise<void> {
@@ -409,8 +498,11 @@ export class BackgroundAssistantStateServer {
       kind: "connection_updated",
       connection: tokenConfigured
         ? {
-            tokenConfigured: true,
+            brokerOnline: false,
+            bridgeOnline: false,
             connecting: true,
+            tokenConfigured: true,
+            browserAuthorized: undefined,
             lastError: undefined,
           }
         : {

@@ -219,11 +219,107 @@ describe("BackgroundAssistantStateServer", () => {
     await flushAsyncWork();
 
     expect(tokenHelpers.regenerateBrowserToken).toHaveBeenCalledTimes(1);
-    expect(server.getSnapshot().epoch).toBe(epochBefore + 1);
+    expect(server.getSnapshot().epoch).toBe(epochBefore + 2);
     expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
     expect(brokerClients).toHaveLength(2);
     expect(brokerClients[1]?.options.browserToken).toBe("token-regenerated");
     expect(brokerClients[1]?.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores duplicate regenerate commands while auth mutation is pending", async () => {
+    const regenerate = createDeferred<string>();
+    const { server, brokerClients, tokenHelpers } = createServer();
+    const port = new FakePort();
+    tokenHelpers.regenerateBrowserToken.mockReturnValueOnce(regenerate.promise);
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    await flushAsyncWork();
+
+    expect(tokenHelpers.regenerateBrowserToken).toHaveBeenCalledTimes(1);
+    expect(server.getSnapshot().auth.mutationPending).toBe(true);
+    expect(brokerClients).toHaveLength(1);
+    expect(brokerClients[0]?.close).not.toHaveBeenCalled();
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+
+    regenerate.resolve("token-regenerated");
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().auth.mutationPending).toBe(false);
+    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
+    expect(brokerClients).toHaveLength(2);
+    expect(brokerClients[1]?.options.browserToken).toBe("token-regenerated");
+  });
+
+  it("ignores regenerate while clear token mutation is pending", async () => {
+    const clear = createDeferred<void>();
+    const { server, brokerClients, tokenHelpers } = createServer();
+    const port = new FakePort();
+    tokenHelpers.clearBrowserToken.mockReturnValueOnce(clear.promise);
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.auth.clearToken" });
+    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    await flushAsyncWork();
+
+    expect(tokenHelpers.clearBrowserToken).toHaveBeenCalledTimes(1);
+    expect(tokenHelpers.regenerateBrowserToken).not.toHaveBeenCalled();
+    expect(server.getSnapshot().auth.mutationPending).toBe(true);
+    expect(brokerClients[0]?.close).not.toHaveBeenCalled();
+
+    clear.resolve(undefined);
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().auth.mutationPending).toBe(false);
+    expect(server.getSnapshot().auth.browserToken).toBeUndefined();
+    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
+    expect(brokerClients).toHaveLength(1);
+  });
+
+  it("resets auth-error connection fields to connecting baseline after token regeneration", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitConnectionState({
+      online: false,
+      statusText: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.",
+    });
+
+    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().connection).toEqual({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: true,
+      tokenConfigured: true,
+      browserAuthorized: undefined,
+      lastError: undefined,
+    });
+  });
+
+  it("resets online connection fields to connecting baseline after token regeneration", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+
+    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().connection).toEqual({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: true,
+      tokenConfigured: true,
+      browserAuthorized: undefined,
+      lastError: undefined,
+    });
   });
 
   it("clears token, closes broker, clears targets and selection, and disables chat", async () => {
@@ -264,7 +360,8 @@ describe("BackgroundAssistantStateServer", () => {
     expect(brokerClients).toHaveLength(1);
     expect(brokerClients[0]?.close).not.toHaveBeenCalled();
     expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
-    expect(server.getSnapshot().epoch).toBe(epochBefore);
+    expect(server.getSnapshot().epoch).toBe(epochBefore + 2);
+    expect(server.getSnapshot().auth.mutationPending).toBe(false);
   });
 
   it.each([
@@ -434,6 +531,16 @@ describe("BackgroundAssistantStateServer", () => {
       lastError: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.",
     });
 
+    staleClient?.emitConnectionState({ online: false, statusText: "Pi недоступен" });
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: false,
+      browserAuthorized: undefined,
+      lastError: "Pi недоступен",
+    });
+
+    staleClient?.emitConnectionState({ online: false, statusText: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале." });
     port.emitMessage({ type: "assistant.auth.regenerateToken" });
     await flushAsyncWork();
     staleClient?.emitConnectionState({ online: true, statusText: "Pi подключён" });
@@ -443,7 +550,7 @@ describe("BackgroundAssistantStateServer", () => {
       brokerOnline: false,
       bridgeOnline: false,
       connecting: true,
-      browserAuthorized: false,
+      browserAuthorized: undefined,
     });
   });
 

@@ -22,9 +22,12 @@ vi.mock("./sidepanelBrokerClient", () => ({
 
 type PortListener = (message: unknown) => void;
 
+type DisconnectListener = () => void;
+
 type MockPort = {
   postMessage: ReturnType<typeof vi.fn>;
   emit(message: unknown): void;
+  disconnect(): void;
 };
 
 function loadSidePanelHtml(): void {
@@ -86,11 +89,17 @@ function createSnapshot(overrides: Partial<BackgroundAssistantState> = {}): Back
 
 function mockChrome(): { connect: ReturnType<typeof vi.fn>; port: MockPort } {
   const listeners: PortListener[] = [];
+  const disconnectListeners: DisconnectListener[] = [];
   const port: MockPort = {
     postMessage: vi.fn(),
     emit(message: unknown) {
       for (const listener of listeners) {
         listener(message);
+      }
+    },
+    disconnect() {
+      for (const listener of disconnectListeners) {
+        listener();
       }
     },
   };
@@ -103,7 +112,9 @@ function mockChrome(): { connect: ReturnType<typeof vi.fn>; port: MockPort } {
       }),
     },
     onDisconnect: {
-      addListener: vi.fn(),
+      addListener: vi.fn((listener: DisconnectListener) => {
+        disconnectListeners.push(listener);
+      }),
     },
   }));
 
@@ -191,5 +202,37 @@ describe("sidepanel auth lifecycle", () => {
     expect(writeText).toHaveBeenCalledWith("token-1");
     expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.auth.regenerateToken" });
     expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.auth.clearToken" });
+  });
+
+  it("renders unavailable state and keeps commands safe after assistant port disconnects", async () => {
+    loadSidePanelHtml();
+    const { port } = mockChrome();
+    await importInitializedSidePanel();
+    port.emit({ type: "assistant.snapshot", state: createSnapshot({ targets: [createTarget()], selectedTargetId: "target-1" }) });
+    await flush();
+    const staleTargetButton = document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]');
+
+    port.disconnect();
+    await flush();
+
+    expect(document.querySelector("#status-text")?.textContent).toContain("Состояние боковой панели недоступно");
+    expect(document.querySelector("#target-container")?.textContent).toContain("Состояние боковой панели недоступно");
+    expect(document.querySelector<HTMLButtonElement>("#send-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#chat-send-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#copy-browser-token-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#regenerate-browser-token-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#clear-browser-token-button")?.disabled).toBe(true);
+
+    expect(() => {
+      const input = document.querySelector<HTMLTextAreaElement>("#chat-input");
+      if (input) {
+        input.value = "Привет";
+        input.dispatchEvent(new Event("input"));
+      }
+      document.querySelector<HTMLButtonElement>("#chat-send-button")?.click();
+      document.querySelector<HTMLButtonElement>("#regenerate-browser-token-button")?.click();
+      document.querySelector<HTMLButtonElement>("#clear-browser-token-button")?.click();
+      staleTargetButton?.click();
+    }).not.toThrow();
   });
 });

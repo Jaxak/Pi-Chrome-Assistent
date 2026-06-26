@@ -65,6 +65,7 @@ const AUTH_REQUIRED_GUIDANCE = "Браузер не авторизован в Pi
 const START_PICKER_PROMPT = "Выберите элемент на странице, чтобы отправить его в Pi.";
 const START_PICKER_BUTTON_LABEL = "Запустить DOM picker на активной вкладке";
 const NO_TARGET_BUTTON_LABEL = "Выберите цель Pi, чтобы включить кнопку «Отправить в Pi»";
+const SIDEPANEL_UNAVAILABLE_TEXT = "Состояние боковой панели недоступно.";
 const SIDEPANEL_UNAVAILABLE_BUTTON_LABEL = "Сейчас состояние боковой панели недоступно";
 const AUTH_TAB_READY_TEXT = "Скопируйте токен и выполните /chrome-assistent-auth в Pi.";
 const AUTH_TAB_CLEARED_TEXT = "Токен удалён. Нажмите «Сгенерировать новый токен», чтобы создать новый.";
@@ -197,7 +198,15 @@ function findTargetById(targetId: string | undefined, targets: TargetMetadata[])
 }
 
 function postAssistantCommand(message: unknown): void {
-  assistantPort?.postMessage(message);
+  if (!assistantPort) {
+    return;
+  }
+
+  try {
+    assistantPort.postMessage(message);
+  } catch {
+    assistantPort = undefined;
+  }
 }
 
 function renderTargetPlaceholder(elements: SidePanelElements, message: string, tone: "default" | "warning" = "default"): void {
@@ -467,6 +476,24 @@ function renderAssistantSnapshot(elements: SidePanelElements, state: BackgroundA
   updateChatSendButton(elements);
 }
 
+function renderAssistantUnavailable(elements: SidePanelElements): void {
+  currentSnapshot = undefined;
+  currentTargets = [];
+  currentSelectedTargetId = undefined;
+  currentTokenConfigured = undefined;
+  currentBrowserToken = undefined;
+
+  setStatus(elements, SIDEPANEL_UNAVAILABLE_TEXT);
+  setBaseDiagnostics(elements, SIDEPANEL_UNAVAILABLE_TEXT);
+  renderTargetPlaceholder(elements, SIDEPANEL_UNAVAILABLE_TEXT, "warning");
+  renderChat(elements);
+  setAuthStatus(elements, SIDEPANEL_UNAVAILABLE_TEXT);
+  setBrowserTokenOutput(elements, TOKEN_NOT_LOADED_LABEL);
+  setAuthButtonsPending(elements, true);
+  updateSendButton(elements);
+  updateChatSendButton(elements);
+}
+
 function isAssistantSnapshotMessage(message: unknown): message is AssistantSnapshotMessage {
   return Boolean(
     message &&
@@ -478,13 +505,22 @@ function isAssistantSnapshotMessage(message: unknown): message is AssistantSnaps
 }
 
 function connectAssistantPort(elements: SidePanelElements): void {
-  assistantPort = chrome.runtime.connect({ name: "sidepanel" });
-  assistantPort.onMessage.addListener((message: unknown) => {
+  const port = chrome.runtime.connect({ name: "sidepanel" });
+  assistantPort = port;
+  port.onMessage.addListener((message: unknown) => {
     if (!isAssistantSnapshotMessage(message)) {
       return;
     }
 
     renderAssistantSnapshot(elements, message.state);
+  });
+  port.onDisconnect.addListener(() => {
+    if (assistantPort !== port) {
+      return;
+    }
+
+    assistantPort = undefined;
+    renderAssistantUnavailable(elements);
   });
 }
 

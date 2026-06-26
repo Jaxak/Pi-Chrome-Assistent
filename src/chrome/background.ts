@@ -27,8 +27,10 @@ import {
   listDiagnostics,
   type StorageAdapter,
 } from "./diagnostics";
+import { BackgroundAssistantStateServer } from "./backgroundStateServer";
 
 const storage = chromeStorageAdapter();
+const stateServer = new BackgroundAssistantStateServer({ storage });
 const SELECTED_TARGET_STORAGE_KEY = "selectedTargetId";
 const BROKER_URL = `ws://${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`;
 const SOCKET_CONNECTING = 0;
@@ -800,5 +802,10 @@ if (typeof chrome !== "undefined") {
   });
 
   configureSidePanelOnActionClick();
+  chrome.runtime.onConnect.addListener((port) => {
+    if (port.name === "sidepanel") {
+      stateServer.connectPort(port);
+    }
+  });
   chrome.runtime.onMessage.addListener(createBackgroundMessageListener());
 }

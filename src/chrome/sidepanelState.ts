@@ -1,4 +1,62 @@
 const DEFAULT_BUSY_LABEL = "Агент работает в фоне…";
+const BROKER_UNAVAILABLE_STATUS = "Pi не подключён. Выполните /chrome-assistent-connect в терминале.";
+const TOKEN_REQUIRED_STATUS = "Для отправки настройте browserToken в chrome.storage.local.";
+const AUTH_REQUIRED_STATUS = "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.";
+
+export type SidePanelConnectionStatus = {
+  brokerOnline: boolean;
+  bridgeOnline: boolean;
+  tokenConfigured: boolean | undefined;
+  browserAuthorized: boolean | undefined;
+  targetsCount: number;
+  selectedTargetId?: string;
+  selectedTargetAvailable: boolean;
+  lastError?: string;
+  connecting: boolean;
+};
+
+export function chooseSidePanelSelectedTargetId(
+  targets: Array<{ targetId: string }>,
+  preferredTargetIds: Array<string | undefined>,
+): string | undefined {
+  const availableTargetIds = new Set(targets.map((target) => target.targetId));
+
+  for (const candidate of preferredTargetIds) {
+    if (candidate && availableTargetIds.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+export function formatSidePanelStatus(status: SidePanelConnectionStatus): string {
+  if (status.connecting) {
+    return "Подключаемся к Pi…";
+  }
+
+  if (status.tokenConfigured === false) {
+    return TOKEN_REQUIRED_STATUS;
+  }
+
+  if (status.browserAuthorized === false) {
+    return AUTH_REQUIRED_STATUS;
+  }
+
+  if (!status.brokerOnline) {
+    return BROKER_UNAVAILABLE_STATUS;
+  }
+
+  if (status.targetsCount === 0) {
+    return "Pi подключён · нет активных целей";
+  }
+
+  if (status.selectedTargetId && !status.selectedTargetAvailable) {
+    return "Pi подключён · выбранная сессия закрыта";
+  }
+
+  return `Pi подключён · целей: ${status.targetsCount}`;
+}
 
 export type SidepanelChatMessage =
   | { role: "user"; text: string; timestamp: number }

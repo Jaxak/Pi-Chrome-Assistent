@@ -98,6 +98,10 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : String(error);
 }
 
+export function canInjectIntoTabUrl(url: string | undefined): boolean {
+  return typeof url === "string" && /^https?:\/\//i.test(url);
+}
+
 function closeSocket(socket: BrokerSocket): void {
   if (socket.readyState === SOCKET_CONNECTING || socket.readyState === SOCKET_OPEN) {
     socket.close();
@@ -506,6 +510,7 @@ export function createBackgroundMessageListener(
           phase?: unknown;
           message?: unknown;
           url?: unknown;
+          tabId?: unknown;
         })
       : {};
 
@@ -517,11 +522,12 @@ export function createBackgroundMessageListener(
     if (requestMessage.type === "startDomPicker") {
       void (async () => {
         try {
-          const activeTab = await activeTabGetter();
-          const tabId = activeTab?.id;
+          const tabId = typeof requestMessage.tabId === "number" && Number.isInteger(requestMessage.tabId)
+            ? requestMessage.tabId
+            : undefined;
 
           if (tabId === undefined) {
-            sendResponse({ ok: false, error: "No active tab available." });
+            sendResponse({ ok: false, error: "Не удалось определить вкладку для DOM picker." });
             return;
           }
 
@@ -531,14 +537,27 @@ export function createBackgroundMessageListener(
               : undefined;
 
           if (!targetId) {
-            sendResponse({ ok: false, error: "No selected target provided." });
+            sendResponse({ ok: false, error: "Не выбрана цель Pi для DOM picker." });
             return;
           }
 
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            files: ["contentScript.js"],
-          });
+          const tab = await chrome.tabs.get(tabId);
+
+          if (!canInjectIntoTabUrl(tab.url)) {
+            sendResponse({ ok: false, error: "DOM picker можно запускать только на обычных http/https страницах." });
+            return;
+          }
+
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              files: ["contentScript.js"],
+            });
+          } catch (error) {
+            const errorMessage = await recordDiagnostic(backgroundStorage, now, "startDomPicker", error);
+            sendResponse({ ok: false, error: `Не удалось запустить DOM picker: ${errorMessage}` });
+            return;
+          }
 
           const pickerResponse = (await chrome.tabs.sendMessage(tabId, {
             type: "startDomPicker",
@@ -551,7 +570,7 @@ export function createBackgroundMessageListener(
               error:
                 typeof pickerResponse.error === "string" && pickerResponse.error.length > 0
                   ? pickerResponse.error
-                  : "Unable to start DOM picker.",
+                  : "Не удалось запустить DOM picker.",
             });
             return;
           }
@@ -559,7 +578,8 @@ export function createBackgroundMessageListener(
           console.info("DOM picker placeholder requested for tab", tabId);
           sendResponse({ ok: true });
         } catch (error) {
-          sendResponse({ ok: false, error: getErrorMessage(error) });
+          const errorMessage = await recordDiagnostic(backgroundStorage, now, "startDomPicker", error);
+          sendResponse({ ok: false, error: `Не удалось запустить DOM picker: ${errorMessage}` });
         }
       })();
 

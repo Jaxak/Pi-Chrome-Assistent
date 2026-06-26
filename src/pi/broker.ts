@@ -389,6 +389,22 @@ export async function startBrokerServer(
     browserSocketSubscriptions.delete(socket);
   };
 
+  const sendTargetsSnapshotToClient = (socket: WebSocket, requestId?: string) => {
+    sendEnvelope(socket, {
+      type: "client.targets",
+      requestId,
+      payload: {
+        targets: state.listTargets(),
+      },
+    });
+  };
+
+  const broadcastTargetsSnapshot = () => {
+    for (const browserSocket of authenticatedClientSockets) {
+      sendTargetsSnapshotToClient(browserSocket);
+    }
+  };
+
   const forwardChatEvent = (targetId: string, requestId: string | undefined, chatEvent: ChatEvent) => {
     for (const browserSocket of browserSubscriptionsByTargetId.get(targetId) ?? []) {
       sendEnvelope(browserSocket, {
@@ -450,11 +466,11 @@ export async function startBrokerServer(
     }
   };
 
-  const unregisterSocketTarget = (socket: WebSocket) => {
+  const unregisterSocketTarget = (socket: WebSocket): boolean => {
     const targetId = socketToTargetId.get(socket);
 
     if (!targetId) {
-      return;
+      return false;
     }
 
     socketToTargetId.delete(socket);
@@ -464,9 +480,12 @@ export async function startBrokerServer(
 
     if (registeredSocket === socket) {
       targetIdToSocket.delete(targetId);
-      state.unregisterTarget(targetId);
+      const removed = state.unregisterTarget(targetId);
       options.logger.info("broker.target.unregistered", { targetId });
+      return removed;
     }
+
+    return false;
   };
 
   const clearStaleCleanupTimer = () => {
@@ -498,6 +517,7 @@ export async function startBrokerServer(
           targetSocket.close();
         }
 
+        broadcastTargetsSnapshot();
         options.logger.warn("broker.target.stale", {
           targetId: targetMetadata.targetId,
           lastSeenAt: targetMetadata.lastSeenAt,
@@ -608,13 +628,7 @@ export async function startBrokerServer(
             }
           }
 
-          sendEnvelope(socket, {
-            type: "client.targets",
-            requestId: envelope.requestId,
-            payload: {
-              targets: state.listTargets(),
-            },
-          });
+          sendTargetsSnapshotToClient(socket, envelope.requestId);
           return;
         }
 
@@ -818,6 +832,7 @@ export async function startBrokerServer(
             type: "target.registered",
             requestId: envelope.requestId,
           });
+          broadcastTargetsSnapshot();
           options.logger.info("broker.target.registered", { targetId: target.targetId });
           return;
         }
@@ -835,7 +850,9 @@ export async function startBrokerServer(
         }
 
         case "target.unregister": {
-          unregisterSocketTarget(socket);
+          if (unregisterSocketTarget(socket)) {
+            broadcastTargetsSnapshot();
+          }
           socket.close();
           return;
         }
@@ -911,7 +928,9 @@ export async function startBrokerServer(
       clearBrowserSubscriptions(socket);
 
       if (socketToTargetId.has(socket)) {
-        unregisterSocketTarget(socket);
+        if (unregisterSocketTarget(socket)) {
+          broadcastTargetsSnapshot();
+        }
         return;
       }
 

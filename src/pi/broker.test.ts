@@ -384,6 +384,182 @@ describe("startBrokerServer", () => {
     }
   });
 
+  it("pushes targets to an authenticated browser when a target registers", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const clientSocket = createSocket(broker.port);
+    const targetSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(clientSocket);
+      await authenticateBrowserSocket(clientSocket, "hello-push-register");
+
+      await waitForOpen(targetSocket);
+      await registerTargetSocket(targetSocket, target, "register-push-target");
+
+      await expect(waitForProtocolMessage<{ targets: TargetMetadata[] }>(clientSocket, "client.targets")).resolves.toMatchObject({
+        version: PROTOCOL_VERSION,
+        type: "client.targets",
+        payload: {
+          targets: [expect.objectContaining({ targetId: target.targetId })],
+        },
+      });
+    } finally {
+      await Promise.allSettled([
+        closeSocket(clientSocket),
+        closeSocket(targetSocket),
+        broker.close(),
+      ]);
+    }
+  });
+
+  it("pushes targets to an authenticated browser when a target unregisters", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const clientSocket = createSocket(broker.port);
+    const targetSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(clientSocket);
+      await authenticateBrowserSocket(clientSocket, "hello-push-unregister");
+      await waitForOpen(targetSocket);
+      await registerTargetSocket(targetSocket, target, "register-push-unregister");
+      await waitForProtocolMessage<{ targets: TargetMetadata[] }>(clientSocket, "client.targets");
+
+      sendEnvelope(targetSocket, {
+        version: PROTOCOL_VERSION,
+        type: "target.unregister",
+        requestId: "unregister-push-target",
+      });
+
+      await expect(waitForProtocolMessage<{ targets: TargetMetadata[] }>(clientSocket, "client.targets")).resolves.toMatchObject({
+        version: PROTOCOL_VERSION,
+        type: "client.targets",
+        payload: {
+          targets: [],
+        },
+      });
+    } finally {
+      await Promise.allSettled([
+        closeSocket(clientSocket),
+        closeSocket(targetSocket),
+        broker.close(),
+      ]);
+    }
+  });
+
+  it("pushes targets to an authenticated browser when a target socket closes", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const clientSocket = createSocket(broker.port);
+    const targetSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(clientSocket);
+      await authenticateBrowserSocket(clientSocket, "hello-push-close");
+      await waitForOpen(targetSocket);
+      await registerTargetSocket(targetSocket, target, "register-push-close");
+      await waitForProtocolMessage<{ targets: TargetMetadata[] }>(clientSocket, "client.targets");
+
+      targetSocket.close();
+
+      await expect(waitForProtocolMessage<{ targets: TargetMetadata[] }>(clientSocket, "client.targets")).resolves.toMatchObject({
+        version: PROTOCOL_VERSION,
+        type: "client.targets",
+        payload: {
+          targets: [],
+        },
+      });
+    } finally {
+      await Promise.allSettled([
+        closeSocket(clientSocket),
+        closeSocket(targetSocket),
+        broker.close(),
+      ]);
+    }
+  });
+
+  it("does not push targets to an unauthenticated browser socket", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const clientSocket = createSocket(broker.port);
+    const targetSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(clientSocket);
+      await waitForOpen(targetSocket);
+      await registerTargetSocket(targetSocket, target, "register-no-push-unauthenticated");
+
+      await expectNoProtocolMessage(clientSocket, "client.targets");
+    } finally {
+      await Promise.allSettled([
+        closeSocket(clientSocket),
+        closeSocket(targetSocket),
+        broker.close(),
+      ]);
+    }
+  });
+
+  it("pushes targets to an authenticated browser after stale cleanup removes a target", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      staleAfterMs: 10,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const clientSocket = createSocket(broker.port);
+    const targetSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(clientSocket);
+      await authenticateBrowserSocket(clientSocket, "hello-push-stale");
+      await waitForOpen(targetSocket);
+      await registerTargetSocket(targetSocket, target, "register-push-stale");
+      await waitForProtocolMessage<{ targets: TargetMetadata[] }>(clientSocket, "client.targets");
+
+      await expect(waitForProtocolMessage<{ targets: TargetMetadata[] }>(clientSocket, "client.targets", 2_500)).resolves.toMatchObject({
+        version: PROTOCOL_VERSION,
+        type: "client.targets",
+        payload: {
+          targets: [],
+        },
+      });
+    } finally {
+      await Promise.allSettled([
+        closeSocket(clientSocket),
+        closeSocket(targetSocket),
+        broker.close(),
+      ]);
+    }
+  });
+
   it("rejects invalid client.hello and keeps listTargets blocked", async () => {
     const broker = await startBrokerServer({
       host: "127.0.0.1",

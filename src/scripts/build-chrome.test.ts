@@ -62,4 +62,14 @@ describe("build:chrome", () => {
 
     expect(manifest.permissions).toEqual(expect.arrayContaining(["activeTab", "scripting", "sidePanel"]));
   });
+
+  it("allows the sidepanel page to open a persistent local broker WebSocket", async () => {
+    await execFileAsync(process.execPath, [buildScriptPath], {
+      cwd: projectRoot,
+    });
+
+    const manifest = JSON.parse(await readFile(path.join(chromeDistDir, "manifest.json"), "utf8"));
+
+    expect(manifest.content_security_policy?.extension_pages).toContain("connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*");
+  });
 });

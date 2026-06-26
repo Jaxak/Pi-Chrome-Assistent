@@ -41,13 +41,16 @@ export type SidePanelBrokerClientOptions = {
   onChatEvent?: (event: ChatEvent) => void;
   onConnectionState?: (state: SidePanelBrokerConnectionState) => void;
   reconnectDelaysMs?: number[];
+  handshakeTimeoutMs?: number;
 };
 
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const DEFAULT_RECONNECT_DELAYS_MS = [250, 500, 1_000];
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const DEFAULT_BROKER_URL = `ws://${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`;
 const TARGET_UNAVAILABLE_ERROR = "Target is not available";
+const BROWSER_AUTH_ERROR_PREFIX = "Браузер не авторизован";
 
 function createBrowserWebSocket(url: string): SidePanelBrokerSocket {
   return new WebSocket(url) as unknown as SidePanelBrokerSocket;
@@ -103,6 +106,7 @@ export class SidePanelBrokerClient {
   private readonly webSocketFactory: (url: string) => SidePanelBrokerSocket;
   private readonly requestIdFactory: () => string;
   private readonly reconnectDelaysMs: number[];
+  private readonly handshakeTimeoutMs: number;
   private readonly onTargets?: (targets: TargetMetadata[]) => void;
   private readonly onChatEvent?: (event: ChatEvent) => void;
   private readonly onConnectionState?: (state: SidePanelBrokerConnectionState) => void;
@@ -110,6 +114,9 @@ export class SidePanelBrokerClient {
   private closedByClient = false;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+  private fatalAuthError = false;
+  private lastReportedState: SidePanelBrokerConnectionState | undefined;
 
   constructor(options: SidePanelBrokerClientOptions) {
     this.browserToken = options.browserToken;
@@ -118,6 +125,7 @@ export class SidePanelBrokerClient {
     this.webSocketFactory = options.webSocketFactory ?? createBrowserWebSocket;
     this.requestIdFactory = options.requestIdFactory ?? createRequestId;
     this.reconnectDelaysMs = options.reconnectDelaysMs ?? DEFAULT_RECONNECT_DELAYS_MS;
+    this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.onTargets = options.onTargets;
     this.onChatEvent = options.onChatEvent;
     this.onConnectionState = options.onConnectionState;
@@ -125,7 +133,9 @@ export class SidePanelBrokerClient {
 
   connect(): void {
     this.closedByClient = false;
+    this.fatalAuthError = false;
     this.clearReconnectTimer();
+    this.clearHandshakeTimer();
     this.reportState(false, "Подключаемся к Pi…");
     this.openSocket();
   }
@@ -171,6 +181,7 @@ export class SidePanelBrokerClient {
   close(): void {
     this.closedByClient = true;
     this.clearReconnectTimer();
+    this.clearHandshakeTimer();
 
     if (this.socket && (this.socket.readyState === SOCKET_CONNECTING || this.socket.readyState === SOCKET_OPEN)) {
       this.socket.close();
@@ -198,6 +209,7 @@ export class SidePanelBrokerClient {
         type: "client.listTargets",
         requestId: this.requestIdFactory(),
       });
+      this.startHandshakeTimer(socket);
     };
 
     const onMessage = (event?: { data?: string }) => {
@@ -213,7 +225,7 @@ export class SidePanelBrokerClient {
         return;
       }
 
-      this.reportState(false, "Pi недоступен");
+      this.closeCurrentSocketForReconnect("Pi недоступен");
     };
 
     const onClose = () => {
@@ -228,7 +240,11 @@ export class SidePanelBrokerClient {
         this.socket = undefined;
       }
 
-      if (!this.closedByClient && wasCurrentSocket) {
+      if (wasCurrentSocket) {
+        this.clearHandshakeTimer();
+      }
+
+      if (!this.closedByClient && !this.fatalAuthError && wasCurrentSocket) {
         this.reportState(false, "Pi недоступен");
         this.scheduleReconnect();
       }
@@ -248,6 +264,7 @@ export class SidePanelBrokerClient {
     }
 
     if (envelope.type === "client.targets") {
+      this.clearHandshakeTimer();
       const targets = (envelope.payload as { targets?: unknown } | undefined)?.targets;
       const validTargets = Array.isArray(targets) ? targets.filter(isTargetMetadata) : [];
       this.reportState(true, "Pi подключён");
@@ -269,6 +286,7 @@ export class SidePanelBrokerClient {
     }
 
     if (envelope.type === "client.error") {
+      this.clearHandshakeTimer();
       const error = (envelope.payload as { error?: unknown } | undefined)?.error;
       const errorMessage = typeof error === "string" && error.length > 0 ? error : "Pi недоступен";
 
@@ -277,8 +295,38 @@ export class SidePanelBrokerClient {
         return;
       }
 
+      if (errorMessage.startsWith(BROWSER_AUTH_ERROR_PREFIX)) {
+        this.fatalAuthError = true;
+      }
+
       this.reportState(false, errorMessage);
     }
+  }
+
+  private closeCurrentSocketForReconnect(statusText: string): void {
+    const socket = this.socket;
+
+    if (!socket) {
+      return;
+    }
+
+    this.reportState(false, statusText);
+
+    if (socket.readyState === SOCKET_CONNECTING || socket.readyState === SOCKET_OPEN) {
+      socket.close();
+    }
+  }
+
+  private startHandshakeTimer(socket: SidePanelBrokerSocket): void {
+    this.clearHandshakeTimer();
+
+    this.handshakeTimer = setTimeout(() => {
+      if (this.socket !== socket || this.closedByClient) {
+        return;
+      }
+
+      this.closeCurrentSocketForReconnect("Pi недоступен");
+    }, this.handshakeTimeoutMs);
   }
 
   private subscribe(targetId: string): void {
@@ -336,7 +384,24 @@ export class SidePanelBrokerClient {
     }
   }
 
+  private clearHandshakeTimer(): void {
+    if (this.handshakeTimer !== undefined) {
+      clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = undefined;
+    }
+  }
+
   private reportState(online: boolean, statusText: string): void {
-    this.onConnectionState?.({ online, statusText });
+    const nextState = { online, statusText };
+
+    if (
+      this.lastReportedState?.online === nextState.online &&
+      this.lastReportedState.statusText === nextState.statusText
+    ) {
+      return;
+    }
+
+    this.lastReportedState = nextState;
+    this.onConnectionState?.(nextState);
   }
 }

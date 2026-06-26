@@ -485,15 +485,17 @@ describe("background", () => {
     ]);
   });
 
-  it("propagates failed picker startup responses from the content script", async () => {
+  it("starts DOM picker on the explicit tabId from the message", async () => {
     const executeScript = vi.fn(async () => undefined);
-    const sendMessage = vi.fn(async () => ({ ok: false, error: "Picker unavailable" }));
+    const sendMessage = vi.fn(async () => ({ ok: true }));
+    const get = vi.fn(async () => ({ id: 555, url: "https://example.com/page" } as chrome.tabs.Tab));
+    const getActiveTab = vi.fn(async () => ({ id: 321, url: "https://wrong.example" } as chrome.tabs.Tab));
 
     vi.stubGlobal(
       "chrome",
       {
         scripting: { executeScript },
-        tabs: { sendMessage },
+        tabs: { get, sendMessage },
         runtime: {
           onInstalled: { addListener: vi.fn() },
           onMessage: { addListener: vi.fn() },
@@ -501,11 +503,110 @@ describe("background", () => {
       } as unknown as typeof chrome,
     );
 
-    const listener = createBackgroundMessageListener({
-      getActiveTab: async () => ({ id: 321 } as chrome.tabs.Tab),
+    const listener = createBackgroundMessageListener({ getActiveTab });
+
+    await expect(invokeMessageListener(listener, { type: "startDomPicker", targetId: "target-9", tabId: 555 })).resolves.toEqual({
+      ok: true,
     });
 
+    expect(getActiveTab).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledWith(555);
+    expect(executeScript).toHaveBeenCalledWith({
+      target: { tabId: 555 },
+      files: ["contentScript.js"],
+    });
+    expect(sendMessage).toHaveBeenCalledWith(555, { type: "startDomPicker", targetId: "target-9" });
+  });
+
+  it("returns a Russian error when startDomPicker has no explicit tabId", async () => {
+    const listener = createBackgroundMessageListener();
+
     await expect(invokeMessageListener(listener, { type: "startDomPicker", targetId: "target-9" })).resolves.toEqual({
+      ok: false,
+      error: "Не удалось определить вкладку для DOM picker.",
+    });
+  });
+
+  it("returns a Russian error before script injection on restricted tab URLs", async () => {
+    const executeScript = vi.fn(async () => undefined);
+    const get = vi.fn(async () => ({ id: 555, url: "chrome://extensions" } as chrome.tabs.Tab));
+
+    vi.stubGlobal(
+      "chrome",
+      {
+        scripting: { executeScript },
+        tabs: { get, sendMessage: vi.fn() },
+        runtime: {
+          onInstalled: { addListener: vi.fn() },
+          onMessage: { addListener: vi.fn() },
+        },
+      } as unknown as typeof chrome,
+    );
+
+    const listener = createBackgroundMessageListener();
+
+    await expect(invokeMessageListener(listener, { type: "startDomPicker", targetId: "target-9", tabId: 555 })).resolves.toEqual({
+      ok: false,
+      error: "DOM picker можно запускать только на обычных http/https страницах.",
+    });
+
+    expect(executeScript).not.toHaveBeenCalled();
+  });
+
+  it("records diagnostics when script injection for DOM picker fails", async () => {
+    const storage = new FakeStorageAdapter();
+    const executeScript = vi.fn(async () => {
+      throw new Error("Cannot access contents of url");
+    });
+    const get = vi.fn(async () => ({ id: 555, url: "https://example.com/page" } as chrome.tabs.Tab));
+
+    vi.stubGlobal(
+      "chrome",
+      {
+        scripting: { executeScript },
+        tabs: { get, sendMessage: vi.fn() },
+        runtime: {
+          onInstalled: { addListener: vi.fn() },
+          onMessage: { addListener: vi.fn() },
+        },
+      } as unknown as typeof chrome,
+    );
+
+    const listener = createBackgroundMessageListener({ storage, now: () => 1_710_000_000_123 });
+
+    await expect(invokeMessageListener(listener, { type: "startDomPicker", targetId: "target-9", tabId: 555 })).resolves.toEqual({
+      ok: false,
+      error: "Не удалось запустить DOM picker: Cannot access contents of url",
+    });
+    await expect(readDiagnostics(storage)).resolves.toEqual([
+      expect.objectContaining({
+        timestamp: 1_710_000_000_123,
+        phase: "startDomPicker",
+        message: "Cannot access contents of url",
+      }),
+    ]);
+  });
+
+  it("propagates failed picker startup responses from the content script", async () => {
+    const executeScript = vi.fn(async () => undefined);
+    const sendMessage = vi.fn(async () => ({ ok: false, error: "Picker unavailable" }));
+    const get = vi.fn(async () => ({ id: 321, url: "https://example.com/page" } as chrome.tabs.Tab));
+
+    vi.stubGlobal(
+      "chrome",
+      {
+        scripting: { executeScript },
+        tabs: { get, sendMessage },
+        runtime: {
+          onInstalled: { addListener: vi.fn() },
+          onMessage: { addListener: vi.fn() },
+        },
+      } as unknown as typeof chrome,
+    );
+
+    const listener = createBackgroundMessageListener();
+
+    await expect(invokeMessageListener(listener, { type: "startDomPicker", targetId: "target-9", tabId: 321 })).resolves.toEqual({
       ok: false,
       error: "Picker unavailable",
     });

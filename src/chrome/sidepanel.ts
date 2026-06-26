@@ -8,9 +8,12 @@ import {
   isChatSendDisabled,
 } from "./sidepanelRender";
 import {
+  chooseSidePanelSelectedTargetId,
   createInitialSidePanelState,
+  formatSidePanelStatus,
   reduceSidePanelChatEvent,
   startSendingUserMessage,
+  type SidePanelConnectionStatus,
   type SidePanelState,
 } from "./sidepanelState";
 
@@ -44,6 +47,7 @@ type SidePanelTab = "assistant" | "sessions" | "auth";
 type SidePanelElements = {
   assistantTabButton: HTMLButtonElement | null;
   sessionsTabButton: HTMLButtonElement | null;
+  devlogBackButton: HTMLButtonElement | null;
   authorizationTabButton: HTMLButtonElement | null;
   assistantPanel: HTMLElement | null;
   sessionsPanel: HTMLElement | null;
@@ -98,6 +102,16 @@ let currentRefreshRequestId = 0;
 let currentActiveTab: SidePanelTab = "assistant";
 let currentBrowserAuthState: BrowserAuthStateResponse | undefined;
 let currentChatState: SidePanelState = createInitialSidePanelState();
+let currentBrokerClientToken: string | undefined;
+let currentConnectionStatus: SidePanelConnectionStatus = {
+  brokerOnline: false,
+  bridgeOnline: false,
+  tokenConfigured: undefined,
+  browserAuthorized: undefined,
+  targetsCount: 0,
+  selectedTargetAvailable: false,
+  connecting: true,
+};
 let currentBrokerClient: SidePanelBrokerClient | undefined;
 let authStateLoaded = false;
 let authRequestId = 0;
@@ -107,6 +121,7 @@ function getSidePanelElements(): SidePanelElements {
   return {
     assistantTabButton: document.querySelector<HTMLButtonElement>("#tab-assistant"),
     sessionsTabButton: document.querySelector<HTMLButtonElement>("#tab-sessions"),
+    devlogBackButton: document.querySelector<HTMLButtonElement>("#devlog-back-button"),
     authorizationTabButton: document.querySelector<HTMLButtonElement>("#tab-auth"),
     assistantPanel: document.querySelector<HTMLElement>("#panel-assistant"),
     sessionsPanel: document.querySelector<HTMLElement>("#panel-sessions"),
@@ -139,6 +154,18 @@ function setStatus(elements: SidePanelElements, message: string): void {
   if (elements.statusText) {
     elements.statusText.textContent = message;
   }
+}
+
+function renderConnectionStatus(elements: SidePanelElements): void {
+  setStatus(elements, formatSidePanelStatus(currentConnectionStatus));
+}
+
+function updateConnectionStatus(elements: SidePanelElements, patch: Partial<SidePanelConnectionStatus>): void {
+  currentConnectionStatus = {
+    ...currentConnectionStatus,
+    ...patch,
+  };
+  renderConnectionStatus(elements);
 }
 
 function setDiagnostics(elements: SidePanelElements, message: string): void {
@@ -176,9 +203,36 @@ function setBrowserTokenOutput(elements: SidePanelElements, message: string): vo
   }
 }
 
+function disconnectPersistentBrokerClient(): void {
+  currentBrokerClient?.close();
+  currentBrokerClient = undefined;
+  currentBrokerClientToken = undefined;
+  currentChatState = {
+    ...currentChatState,
+    bridgeOnline: false,
+    sending: false,
+    agentBusy: false,
+  };
+}
+
 function connectPersistentBrokerClient(elements: SidePanelElements, browserToken: string): void {
   currentTokenConfigured = true;
-  currentBrokerClient?.close();
+
+  if (currentBrokerClient && currentBrokerClientToken === browserToken) {
+    currentBrokerClient.setSelectedTargetId(currentSelectedTargetId);
+    updateChatSendButton(elements);
+    return;
+  }
+
+  updateConnectionStatus(elements, {
+    brokerOnline: false,
+    bridgeOnline: false,
+    tokenConfigured: true,
+    browserAuthorized: undefined,
+    connecting: true,
+  });
+  disconnectPersistentBrokerClient();
+  currentBrokerClientToken = browserToken;
   currentBrokerClient = new SidePanelBrokerClient({
     browserToken,
     selectedTargetId: currentSelectedTargetId,
@@ -187,16 +241,36 @@ function connectPersistentBrokerClient(elements: SidePanelElements, browserToken
         ...currentChatState,
         bridgeOnline: state.online,
       };
-      setStatus(elements, state.statusText);
+
+      updateConnectionStatus(elements, {
+        brokerOnline: state.online,
+        bridgeOnline: state.online,
+        browserAuthorized: isBrowserAuthorizationError(state.statusText) ? false : state.online ? true : currentConnectionStatus.browserAuthorized,
+        lastError: state.online ? undefined : state.statusText,
+        connecting: state.statusText === "Подключаемся к Pi…",
+      });
       updateChatSendButton(elements);
     },
     onTargets: (targets) => {
+      const previousSelectedTargetId = currentSelectedTargetId;
       currentTargets = targets;
-      currentSelectedTargetId = chooseSelectedTargetId(currentTargets, [currentSelectedTargetId]);
+      currentSelectedTargetId = chooseSelectedTargetId(currentTargets, [previousSelectedTargetId]);
+
+      if (previousSelectedTargetId !== currentSelectedTargetId) {
+        currentBrokerClient?.setSelectedTargetId(currentSelectedTargetId);
+      }
+
       currentChatState = {
         ...currentChatState,
         selectedTargetId: currentSelectedTargetId,
+        sending: currentSelectedTargetId ? currentChatState.sending : false,
+        agentBusy: currentSelectedTargetId ? currentChatState.agentBusy : false,
       };
+      updateConnectionStatus(elements, {
+        targetsCount: currentTargets.length,
+        selectedTargetId: currentSelectedTargetId,
+        selectedTargetAvailable: findTargetById(currentSelectedTargetId, currentTargets) !== undefined,
+      });
       renderTargetList(elements);
       updateSendButton(elements);
       updateChatSendButton(elements);
@@ -256,13 +330,7 @@ function chooseSelectedTargetId(
   targets: TargetMetadata[],
   preferredTargetIds: Array<string | undefined>,
 ): string | undefined {
-  for (const candidate of preferredTargetIds) {
-    if (candidate && findTargetById(candidate, targets)) {
-      return candidate;
-    }
-  }
-
-  return undefined;
+  return chooseSidePanelSelectedTargetId(targets, preferredTargetIds);
 }
 
 async function loadStoredSelectedTargetId(): Promise<string | undefined> {
@@ -497,22 +565,17 @@ function appendBrokerError(diagnostics: DiagnosticEntry[], brokerError: string):
 }
 
 function updateConnectedStatus(elements: SidePanelElements, response: ListTargetsResponse): void {
-  if (response.tokenConfigured === false) {
-    setStatus(elements, `${formatConnectionStatus(response)} · ${TOKEN_REQUIRED_GUIDANCE}`);
-    return;
-  }
-
-  if (isBrowserAuthorizationError(response.error)) {
-    setStatus(elements, AUTH_REQUIRED_GUIDANCE);
-    return;
-  }
-
-  if (!findTargetById(currentSelectedTargetId, currentTargets)) {
-    setStatus(elements, `${formatConnectionStatus(response)} · ${SELECT_TARGET_PROMPT}`);
-    return;
-  }
-
-  setStatus(elements, formatConnectionStatus(response));
+  updateConnectionStatus(elements, {
+    brokerOnline: response.ok === true,
+    bridgeOnline: currentChatState.bridgeOnline,
+    tokenConfigured: response.tokenConfigured,
+    browserAuthorized: isBrowserAuthorizationError(response.error) ? false : response.ok === true ? true : currentConnectionStatus.browserAuthorized,
+    targetsCount: currentTargets.length,
+    selectedTargetId: currentSelectedTargetId,
+    selectedTargetAvailable: findTargetById(currentSelectedTargetId, currentTargets) !== undefined,
+    lastError: response.error,
+    connecting: false,
+  });
 }
 
 function setAuthButtonsPending(elements: SidePanelElements, pending: boolean): void {
@@ -540,6 +603,17 @@ function renderBrowserAuthState(elements: SidePanelElements, response: BrowserAu
   }
 
   if (!response.tokenConfigured || !token) {
+    currentTokenConfigured = false;
+    disconnectPersistentBrokerClient();
+    updateConnectionStatus(elements, {
+      brokerOnline: false,
+      bridgeOnline: false,
+      tokenConfigured: false,
+      browserAuthorized: undefined,
+      connecting: false,
+    });
+    updateSendButton(elements);
+    updateChatSendButton(elements);
     setAuthStatus(elements, AUTH_TAB_CLEARED_TEXT);
     setBrowserTokenOutput(elements, TOKEN_REMOVED_LABEL);
     setButtonDisabled(elements.copyBrowserTokenButton, true);
@@ -687,6 +761,7 @@ function resetChatState(): void {
   currentChatState = createInitialSidePanelState();
   currentBrokerClient?.close();
   currentBrokerClient = undefined;
+  currentBrokerClientToken = undefined;
 }
 
 function activateTab(elements: SidePanelElements, tab: SidePanelTab): void {
@@ -725,7 +800,7 @@ export async function refreshSidePanelState(elements = getSidePanelElements()): 
     ]);
     currentTokenConfigured = targetsResponse?.tokenConfigured;
 
-    setStatus(elements, formatConnectionStatus(targetsResponse ?? {}));
+    updateConnectedStatus(elements, targetsResponse ?? {});
 
     if (!targetsResponse?.ok) {
       const baseDiagnostics = targetsResponse?.error
@@ -735,7 +810,7 @@ export async function refreshSidePanelState(elements = getSidePanelElements()): 
       if (targetsResponse?.tokenConfigured === false) {
         renderTargetPlaceholder(elements, TOKEN_REQUIRED_GUIDANCE, "warning");
         updateSendButton(elements);
-        setStatus(elements, TOKEN_REQUIRED_GUIDANCE);
+        updateConnectionStatus(elements, { tokenConfigured: false, connecting: false });
         setBaseDiagnostics(elements, appendDiagnosticsNote(baseDiagnostics, TOKEN_REQUIRED_GUIDANCE));
         return;
       }
@@ -743,14 +818,14 @@ export async function refreshSidePanelState(elements = getSidePanelElements()): 
       if (isBrowserAuthorizationError(targetsResponse?.error)) {
         renderTargetPlaceholder(elements, AUTH_REQUIRED_GUIDANCE, "warning");
         updateSendButton(elements);
-        setStatus(elements, AUTH_REQUIRED_GUIDANCE);
+        updateConnectionStatus(elements, { browserAuthorized: false, connecting: false });
         setBaseDiagnostics(elements, appendDiagnosticsNote(baseDiagnostics, AUTH_REQUIRED_GUIDANCE));
         return;
       }
 
       renderTargetPlaceholder(elements, BROKER_UNAVAILABLE_GUIDANCE, "warning");
       updateSendButton(elements);
-      setStatus(elements, BROKER_UNAVAILABLE_GUIDANCE);
+      updateConnectionStatus(elements, { brokerOnline: false, connecting: false, lastError: targetsResponse?.error });
       setBaseDiagnostics(elements, baseDiagnostics);
       return;
     }
@@ -811,7 +886,15 @@ export async function refreshSidePanelState(elements = getSidePanelElements()): 
     currentTokenConfigured = undefined;
     renderTargetPlaceholder(elements, BROKER_UNAVAILABLE_GUIDANCE, "warning");
     updateSendButton(elements);
-    setStatus(elements, "Фоновый скрипт недоступен");
+    updateConnectionStatus(elements, {
+      brokerOnline: false,
+      bridgeOnline: false,
+      targetsCount: 0,
+      selectedTargetId: undefined,
+      selectedTargetAvailable: false,
+      lastError: errorMessage,
+      connecting: false,
+    });
     setBaseDiagnostics(elements, errorMessage);
 
     if (elements.sendButton) {
@@ -836,6 +919,10 @@ function initializeSidePanel(): void {
 
   elements.sessionsTabButton?.addEventListener("click", () => {
     activateTab(elements, "sessions");
+  });
+
+  elements.devlogBackButton?.addEventListener("click", () => {
+    activateTab(elements, "assistant");
   });
 
   elements.authorizationTabButton?.addEventListener("click", () => {
@@ -952,9 +1039,11 @@ function initializeSidePanel(): void {
           return storageWarning;
         });
 
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       const response = (await chrome.runtime.sendMessage({
         type: "startDomPicker",
         targetId: selectedTargetId,
+        tabId: activeTab?.id,
       })) as StartDomPickerResponse | undefined;
 
       if (!response?.ok) {

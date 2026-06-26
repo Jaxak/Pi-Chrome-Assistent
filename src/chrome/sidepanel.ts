@@ -1,6 +1,7 @@
 import { BROWSER_NOT_AUTHORIZED_ERROR } from "../shared/constants";
 import type { TargetMetadata } from "../shared/protocol";
 import type { DiagnosticEntry } from "./diagnostics";
+import { createInitialSidePanelState, type SidePanelState } from "./sidepanelState";
 
 export type ListTargetsResponse = {
   ok?: boolean;
@@ -74,6 +75,7 @@ let currentDiagnosticsBaseText = "Недавних диагностически�
 let currentRefreshRequestId = 0;
 let currentActiveTab: SidePanelTab = "assistant";
 let currentBrowserAuthState: BrowserAuthStateResponse | undefined;
+let currentChatState: SidePanelState = createInitialSidePanelState();
 let authStateLoaded = false;
 let authRequestId = 0;
 let authMutationPending = false;
@@ -564,6 +566,10 @@ async function copyBrowserToken(elements: SidePanelElements): Promise<void> {
   }
 }
 
+function resetChatState(): void {
+  currentChatState = createInitialSidePanelState();
+}
+
 function activateTab(elements: SidePanelElements, tab: SidePanelTab): void {
   currentActiveTab = tab;
 
@@ -698,6 +704,7 @@ export async function refreshSidePanelState(elements = getSidePanelElements()): 
 function initializeSidePanel(): void {
   const elements = getSidePanelElements();
 
+  resetChatState();
   activateTab(elements, "assistant");
   updateSendButton(elements);
   renderBrowserAuthState(elements, { ok: true, tokenConfigured: false });

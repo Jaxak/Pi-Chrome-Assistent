@@ -136,6 +136,14 @@ export class BrokerClient {
     this.fatalAuthError = false;
     this.clearReconnectTimer();
     this.clearHandshakeTimer();
+
+    const currentSocket = this.socket;
+
+    if (currentSocket?.readyState === SOCKET_CONNECTING || currentSocket?.readyState === SOCKET_OPEN) {
+      this.socket = undefined;
+      currentSocket.close();
+    }
+
     this.reportState(false, "Подключаемся к Pi…");
     this.openSocket();
   }

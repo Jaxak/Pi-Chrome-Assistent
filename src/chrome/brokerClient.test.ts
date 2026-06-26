@@ -112,6 +112,38 @@ describe("BrokerClient", () => {
     expect(onChatEvent).not.toHaveBeenCalled();
   });
 
+  it("closes an active socket and ignores stale events when connect is called again", async () => {
+    const sockets = [new FakeWebSocket(), new FakeWebSocket()];
+    const onTargets = vi.fn();
+    const webSocketFactory = vi.fn(() => sockets.shift() ?? new FakeWebSocket());
+    const client = new BrokerClient({
+      browserToken: "browser-token-1",
+      webSocketFactory,
+      onTargets,
+      reconnectDelaysMs: [],
+    });
+
+    client.connect();
+    const firstSocket = webSocketFactory.mock.results[0].value;
+    client.connect();
+    const secondSocket = webSocketFactory.mock.results[1].value;
+
+    firstSocket.emitOpen();
+    firstSocket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "client.targets",
+      payload: { targets: [target] },
+    });
+    secondSocket.emitOpen();
+    await flush();
+
+    expect(webSocketFactory).toHaveBeenCalledTimes(2);
+    expect(firstSocket.closeCalls).toBe(1);
+    expect(firstSocket.sent).toEqual([]);
+    expect(secondSocket.sent).toHaveLength(2);
+    expect(onTargets).not.toHaveBeenCalled();
+  });
+
   it("cancels a pending reconnect timer when closed", async () => {
     vi.useFakeTimers();
     const sockets = [new FakeWebSocket(), new FakeWebSocket()];

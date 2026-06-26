@@ -85,6 +85,7 @@ export class BackgroundAssistantStateServer {
   private brokerClient: BackgroundStateServerBrokerClient | undefined;
   private started = false;
   private startupGeneration = 0;
+  private brokerGeneration = 0;
 
   constructor(dependencies: BackgroundAssistantStateServerDependencies = {}) {
     this.storage = dependencies.storage ?? chromeStorageAdapter();
@@ -238,6 +239,23 @@ export class BackgroundAssistantStateServer {
     void this.persistSelectedTargetId(this.state.selectedTargetId).catch(() => undefined);
   }
 
+  private applyTargets(targets: TargetMetadata[]): void {
+    const previousSelectedTargetId = this.state.selectedTargetId;
+    const nextState = reduceAssistantState(this.state, { kind: "targets_updated", targets });
+
+    this.state = reduceAssistantState(nextState, { kind: "epoch_incremented" });
+
+    if (this.state.selectedTargetId !== undefined || this.state.selectedTargetId !== previousSelectedTargetId) {
+      this.brokerClient?.setSelectedTargetId?.(this.state.selectedTargetId);
+    }
+
+    if (this.state.selectedTargetId !== previousSelectedTargetId) {
+      void this.persistSelectedTargetId(this.state.selectedTargetId).catch(() => undefined);
+    }
+
+    this.broadcastSnapshot();
+  }
+
   private async refreshBrowserToken(): Promise<void> {
     const authState = await this.tokenHelpers.getBrowserAuthState(this.storage);
     this.applyBrowserToken(authState.browserToken);
@@ -282,6 +300,7 @@ export class BackgroundAssistantStateServer {
 
     this.brokerClient?.close();
     this.brokerClient = undefined;
+    this.brokerGeneration += 1;
 
     const tokenConfigured = nextToken !== undefined;
     let nextState = reduceAssistantState(this.state, {
@@ -320,14 +339,22 @@ export class BackgroundAssistantStateServer {
     this.state = reduceAssistantState(nextState, { kind: "epoch_incremented" });
 
     if (nextToken !== undefined) {
+      const brokerGeneration = this.brokerGeneration;
       this.brokerClient = this.brokerClientFactory({
         browserToken: nextToken,
-        selectedTargetId: this.state.selectedTargetId,
         onTargets: (targets) => {
-          this.applyState({ kind: "targets_updated", targets });
+          if (this.brokerGeneration !== brokerGeneration) {
+            return;
+          }
+
+          this.applyTargets(targets);
         },
       });
       this.brokerClient.connect();
+
+      if (this.state.selectedTargetId !== undefined) {
+        this.brokerClient.setSelectedTargetId?.(this.state.selectedTargetId);
+      }
     }
 
     this.broadcastSnapshot();

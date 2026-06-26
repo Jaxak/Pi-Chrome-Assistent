@@ -87,12 +87,11 @@ class FakeBrokerClient {
   readonly connect = vi.fn();
   readonly close = vi.fn();
   selectedTargetId: string | undefined;
+  readonly setSelectedTargetId = vi.fn((targetId: string | undefined): void => {
+    this.selectedTargetId = targetId;
+  });
 
   constructor(readonly options: FakeBrokerClientOptions) {}
-
-  setSelectedTargetId(targetId: string | undefined): void {
-    this.selectedTargetId = targetId;
-  }
 
   emitTargets(targets: TargetMetadata[]): void {
     this.options.onTargets?.(targets);
@@ -340,7 +339,7 @@ describe("BackgroundAssistantStateServer", () => {
     ]);
   });
 
-  it("broadcasts the same snapshot to multiple ports after a state change", async () => {
+  it("broker onTargets updates state and broadcasts the same snapshot to multiple ports", async () => {
     const { server, brokerClients } = createServer();
     const portA = new FakePort();
     const portB = new FakePort();
@@ -350,9 +349,68 @@ describe("BackgroundAssistantStateServer", () => {
 
     brokerClients[0]?.emitTargets([createTarget()]);
 
+    expect(server.getSnapshot().targets).toEqual([createTarget()]);
     const expected = { type: "assistant.snapshot", state: server.getSnapshot() };
     expect(portA.postedMessages.at(-1)).toEqual(expected);
     expect(portB.postedMessages.at(-1)).toEqual(expected);
+  });
+
+  it("keeps selected target when broker targets still include it", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+
+    brokerClients[0]?.emitTargets([
+      createTarget({ alias: "Обновлённая цель", lastSeenAt: 1_710_000_000_200 }),
+      createTarget({ targetId: "target-2", alias: "Beta" }),
+    ]);
+
+    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
+    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenLastCalledWith("target-1");
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("clears selected target and broker subscription when selected target disappears", async () => {
+    const { server, brokerClients, storage } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+    const broadcastsBeforeDisappearance = port.postedMessages.length;
+
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-2", alias: "Beta" })]);
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
+    expect(isChatSendDisabled(server.getSnapshot(), "сообщение")).toBe(true);
+    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenLastCalledWith(undefined);
+    expect(storage.values.get("selectedTargetId")).toBeUndefined();
+    expect(storage.removedKeys).toContain("selectedTargetId");
+    expect(port.postedMessages).toHaveLength(broadcastsBeforeDisappearance + 1);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("ignores late onTargets from stale broker generation", async () => {
+    const { server, brokerClients, tokenHelpers } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    const staleClient = brokerClients[0];
+    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    await flushAsyncWork();
+
+    staleClient?.emitTargets([createTarget({ targetId: "stale-target" })]);
+
+    expect(brokerClients).toHaveLength(2);
+    expect(tokenHelpers.regenerateBrowserToken).toHaveBeenCalledTimes(1);
+    expect(server.getSnapshot().targets).toEqual([]);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
   });
 
   it("removes disconnected ports from future broadcasts", async () => {
@@ -371,7 +429,19 @@ describe("BackgroundAssistantStateServer", () => {
   });
 
   it("updates state and persists selectedTargetId for assistant.selectTarget", async () => {
-    const { server, storage, brokerClients } = createServer();
+    let serverRef: BackgroundAssistantStateServer | undefined;
+    const storage = new FakeStorage();
+    const setOrder: string[] = [];
+    const originalSet = storage.set.bind(storage);
+    storage.set = async <T>(key: string, value: T): Promise<void> => {
+      if (serverRef?.getSnapshot().selectedTargetId === value) {
+        setOrder.push("state-before-storage");
+      }
+      await originalSet(key, value);
+    };
+    const created = createServer({ storage });
+    const { server, brokerClients } = created;
+    serverRef = server;
     const port = new FakePort();
     await server.start();
     server.connectPort(port);
@@ -382,7 +452,24 @@ describe("BackgroundAssistantStateServer", () => {
 
     expect(server.getSnapshot().selectedTargetId).toBe("target-1");
     expect(storage.values.get("selectedTargetId")).toBe("target-1");
+    expect(setOrder).toEqual(["state-before-storage"]);
     expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("calls brokerClient.setSelectedTargetId only after state accepts target", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "missing-target" });
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
+    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenCalledTimes(1);
+    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenCalledWith("target-1");
   });
 
   it("removes persisted selectedTargetId when assistant.selectTarget clears the target", async () => {

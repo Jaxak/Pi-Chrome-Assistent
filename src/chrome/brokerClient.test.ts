@@ -73,6 +73,10 @@ async function flush(): Promise<void> {
   await Promise.resolve();
 }
 
+function sentTypes(socket: FakeWebSocket): string[] {
+  return socket.sent.map((message) => JSON.parse(message).type as string);
+}
+
 describe("BrokerClient", () => {
   it("ignores late open, target and chat events after close", async () => {
     const socket = new FakeWebSocket();
@@ -142,6 +146,30 @@ describe("BrokerClient", () => {
     expect(firstSocket.sent).toEqual([]);
     expect(secondSocket.sent).toHaveLength(2);
     expect(onTargets).not.toHaveBeenCalled();
+  });
+
+  it("does not subscribe from a targets update until background explicitly sets selection", async () => {
+    const socket = new FakeWebSocket();
+    const client = new BrokerClient({
+      browserToken: "browser-token-1",
+      selectedTargetId: "target-1",
+      webSocketFactory: () => socket,
+      reconnectDelaysMs: [],
+    });
+
+    client.connect();
+    socket.emitOpen();
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "client.targets",
+      payload: { targets: [target] },
+    });
+
+    expect(sentTypes(socket)).toEqual(["client.hello", "client.listTargets"]);
+
+    client.setSelectedTargetId("target-1");
+
+    expect(sentTypes(socket)).toEqual(["client.hello", "client.listTargets", "client.subscribeTarget"]);
   });
 
   it("cancels a pending reconnect timer when closed", async () => {

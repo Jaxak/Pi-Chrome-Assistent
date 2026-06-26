@@ -117,6 +117,7 @@ export class BrokerClient {
   private handshakeTimer: ReturnType<typeof setTimeout> | undefined;
   private fatalAuthError = false;
   private lastReportedState: BrokerConnectionState | undefined;
+  private subscribedTargetId: string | undefined;
 
   constructor(options: BrokerClientOptions) {
     this.browserToken = options.browserToken;
@@ -136,6 +137,7 @@ export class BrokerClient {
     this.fatalAuthError = false;
     this.clearReconnectTimer();
     this.clearHandshakeTimer();
+    this.subscribedTargetId = undefined;
 
     const currentSocket = this.socket;
 
@@ -152,16 +154,18 @@ export class BrokerClient {
     const previousTargetId = this.selectedTargetId;
     this.selectedTargetId = targetId;
 
-    if (!isOpen(this.socket) || previousTargetId === targetId) {
+    if (!isOpen(this.socket)) {
       return;
     }
 
-    if (previousTargetId) {
+    if (previousTargetId && previousTargetId !== targetId && this.subscribedTargetId === previousTargetId) {
       this.unsubscribe(previousTargetId);
+      this.subscribedTargetId = undefined;
     }
 
-    if (targetId) {
+    if (targetId && this.subscribedTargetId !== targetId) {
       this.subscribe(targetId);
+      this.subscribedTargetId = targetId;
     }
   }
 
@@ -190,6 +194,7 @@ export class BrokerClient {
     this.closedByClient = true;
     this.clearReconnectTimer();
     this.clearHandshakeTimer();
+    this.subscribedTargetId = undefined;
 
     if (this.socket && (this.socket.readyState === SOCKET_CONNECTING || this.socket.readyState === SOCKET_OPEN)) {
       this.socket.close();
@@ -246,6 +251,7 @@ export class BrokerClient {
 
       if (wasCurrentSocket) {
         this.socket = undefined;
+        this.subscribedTargetId = undefined;
       }
 
       if (wasCurrentSocket) {
@@ -277,10 +283,6 @@ export class BrokerClient {
       const validTargets = Array.isArray(targets) ? targets.filter(isTargetMetadata) : [];
       this.reportState(true, "Pi подключён");
       this.onTargets?.(validTargets);
-
-      if (this.selectedTargetId && validTargets.some((target) => target.targetId === this.selectedTargetId)) {
-        this.subscribe(this.selectedTargetId);
-      }
       return;
     }
 

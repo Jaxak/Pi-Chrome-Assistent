@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { TargetMetadata } from "../shared/protocol";
+import type { ChatEvent, TargetMetadata } from "../shared/protocol";
 import type { BrowserAuthState } from "./browserToken";
 import {
   BackgroundAssistantStateServer,
@@ -81,12 +81,18 @@ class FakeStorage implements BackgroundStateServerStorage {
 type FakeBrokerClientOptions = {
   browserToken?: string;
   onTargets?: (targets: TargetMetadata[]) => void;
+  onChatEvent?: (event: ChatEvent) => void;
 };
 
 class FakeBrokerClient {
   readonly connect = vi.fn();
   readonly close = vi.fn();
   selectedTargetId: string | undefined;
+  sendChatMessageResult = true;
+  readonly sendChatMessage = vi.fn((message: string): boolean => {
+    void message;
+    return this.sendChatMessageResult;
+  });
   readonly setSelectedTargetId = vi.fn((targetId: string | undefined): void => {
     this.selectedTargetId = targetId;
   });
@@ -95,6 +101,10 @@ class FakeBrokerClient {
 
   emitTargets(targets: TargetMetadata[]): void {
     this.options.onTargets?.(targets);
+  }
+
+  emitChatEvent(event: ChatEvent): void {
+    this.options.onChatEvent?.(event);
   }
 }
 
@@ -411,6 +421,100 @@ describe("BackgroundAssistantStateServer", () => {
     expect(tokenHelpers.regenerateBrowserToken).toHaveBeenCalledTimes(1);
     expect(server.getSnapshot().targets).toEqual([]);
     expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("broadcasts a Russian chat error and does not call broker when sending without a selected target", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+    const broadcastsBeforeSend = port.postedMessages.length;
+
+    port.emitMessage({ type: "assistant.sendChatMessage", message: " Привет " });
+    await flushAsyncWork();
+
+    expect(brokerClients[0]?.sendChatMessage).not.toHaveBeenCalled();
+    expect(server.getSnapshot().chat.error).toBe("Выберите цель Pi для отправки сообщения.");
+    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({
+      role: "system",
+      text: "Выберите цель Pi для отправки сообщения.",
+      tone: "error",
+    });
+    expect(port.postedMessages).toHaveLength(broadcastsBeforeSend + 1);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("appends a user chat message immediately and marks chat busy for a valid send", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+
+    port.emitMessage({ type: "assistant.sendChatMessage", message: " Привет Pi " });
+    await flushAsyncWork();
+
+    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledWith("Привет Pi");
+    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "user", text: "Привет Pi" });
+    expect(server.getSnapshot().chat.agentBusy).toBe(true);
+    expect(server.getSnapshot().chat.sending).toBe(true);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("adds a Pi unavailable chat error and clears busy when broker send fails", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+    if (brokerClients[0]) {
+      brokerClients[0].sendChatMessageResult = false;
+    }
+
+    port.emitMessage({ type: "assistant.sendChatMessage", message: "Привет" });
+    await flushAsyncWork();
+
+    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledWith("Привет");
+    expect(server.getSnapshot().chat.error).toBe("Pi недоступен");
+    expect(server.getSnapshot().chat.agentBusy).toBe(false);
+    expect(server.getSnapshot().chat.sending).toBe(false);
+    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "system", text: "Pi недоступен", tone: "error" });
+  });
+
+  it("reduces broker chat events in background and broadcasts snapshots", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+
+    brokerClients[0]?.emitChatEvent({ kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_456 });
+
+    expect(server.getSnapshot().chat.messages).toEqual([
+      { role: "assistant", messageId: "msg-1", text: "", streaming: true, timestamp: 1_710_000_000_456 },
+    ]);
+    expect(server.getSnapshot().chat.agentBusy).toBe(true);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("ignores stale broker chat events after broker generation changes", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    const staleClient = brokerClients[0];
+    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    await flushAsyncWork();
+
+    staleClient?.emitChatEvent({ kind: "error", message: "Старое событие", timestamp: 1_710_000_000_789 });
+
+    expect(brokerClients).toHaveLength(2);
+    expect(server.getSnapshot().chat.messages).toEqual([]);
+    expect(server.getSnapshot().chat.error).toBeUndefined();
   });
 
   it("removes disconnected ports from future broadcasts", async () => {

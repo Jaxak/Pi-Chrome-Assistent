@@ -108,6 +108,21 @@ describe("assistantState", () => {
     expect(isChatSendDisabled(nextState, "Привет")).toBe(true);
   });
 
+  it("trims a user chat message and marks sending busy", () => {
+    const state = createReadyState();
+
+    const nextState = reduceAssistantState(state, {
+      kind: "chat_event",
+      event: { kind: "user_message", text: " Привет Pi ", timestamp: 1_710_000_000_300 },
+    });
+
+    expect(nextState.chat.messages).toEqual([
+      { role: "user", text: "Привет Pi", timestamp: 1_710_000_000_300 },
+    ]);
+    expect(nextState.chat.agentBusy).toBe(true);
+    expect(nextState.chat.sending).toBe(true);
+  });
+
   it("clears agentBusy and sending when a chat error arrives", () => {
     const state = createReadyState({
       chat: {

@@ -1,4 +1,4 @@
-import type { TargetMetadata } from "../shared/protocol";
+import type { ChatEvent, TargetMetadata } from "../shared/protocol";
 import {
   createInitialAssistantState,
   reduceAssistantState,
@@ -45,12 +45,14 @@ export type BackgroundStateServerBrokerClient = {
   connect(): void;
   close(): void;
   setSelectedTargetId?(targetId: string | undefined): void;
+  sendChatMessage?(message: string): boolean;
 };
 
 export type BackgroundStateServerBrokerClientOptions = {
   browserToken: string;
   selectedTargetId?: string;
   onTargets?: (targets: TargetMetadata[]) => void;
+  onChatEvent?: (event: ChatEvent) => void;
 };
 
 export type BackgroundStateServerTokenHelpers = {
@@ -94,6 +96,7 @@ export class BackgroundAssistantStateServer {
       browserToken: options.browserToken,
       selectedTargetId: options.selectedTargetId,
       onTargets: options.onTargets,
+      onChatEvent: options.onChatEvent,
     }));
     this.recordDiagnosticEntry = dependencies.recordDiagnostic ?? (async (diagnostic) => {
       await appendDiagnostic(this.storage, diagnostic);
@@ -214,6 +217,14 @@ export class BackgroundAssistantStateServer {
       return;
     }
 
+    if (command?.type === "assistant.sendChatMessage") {
+      const messageText = typeof (command as { message?: unknown }).message === "string"
+        ? (command as { message: string }).message
+        : "";
+      this.sendChatMessage(messageText);
+      return;
+    }
+
     if (command?.type !== "assistant.selectTarget") {
       return;
     }
@@ -223,6 +234,46 @@ export class BackgroundAssistantStateServer {
       : undefined;
 
     this.selectTarget(targetId);
+  }
+
+  private sendChatMessage(message: string): void {
+    const text = message.trim();
+
+    if (text.length === 0) {
+      return;
+    }
+
+    if (!this.state.selectedTargetId) {
+      this.applyState({
+        kind: "chat_event",
+        event: {
+          kind: "error",
+          message: "Выберите цель Pi для отправки сообщения.",
+          timestamp: this.runtimeClock(),
+        },
+      });
+      return;
+    }
+
+    this.applyState({
+      kind: "chat_event",
+      event: {
+        kind: "user_message",
+        text,
+        timestamp: this.runtimeClock(),
+      },
+    });
+
+    if (this.brokerClient?.sendChatMessage?.(text) !== true) {
+      this.applyState({
+        kind: "chat_event",
+        event: {
+          kind: "error",
+          message: "Pi недоступен",
+          timestamp: this.runtimeClock(),
+        },
+      });
+    }
   }
 
   private selectTarget(targetId: string | undefined): void {
@@ -348,6 +399,13 @@ export class BackgroundAssistantStateServer {
           }
 
           this.applyTargets(targets);
+        },
+        onChatEvent: (event) => {
+          if (this.brokerGeneration !== brokerGeneration) {
+            return;
+          }
+
+          this.applyState({ kind: "chat_event", event });
         },
       });
       this.brokerClient.connect();

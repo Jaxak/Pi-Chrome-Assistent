@@ -30,6 +30,7 @@ describe("build:chrome", () => {
 
     const manifest = JSON.parse(await readFile(path.join(chromeDistDir, "manifest.json"), "utf8"));
     const sidePanelHtml = await readFile(path.join(chromeDistDir, "sidepanel.html"), "utf8");
+    const sidePanelSource = await readFile(path.join(projectRoot, "src", "chrome", "sidepanel.ts"), "utf8");
     const sidePanelScript = await readFile(path.join(chromeDistDir, "sidepanel.js"), "utf8");
     const backgroundScript = await readFile(path.join(chromeDistDir, "background.js"), "utf8");
     const contentScript = await readFile(path.join(chromeDistDir, "contentScript.js"), "utf8");
@@ -45,7 +46,15 @@ describe("build:chrome", () => {
     expect(sidePanelHtml).toContain('Настройки');
     expect(sidePanelHtml).toContain('Авторизация');
     expect(sidePanelHtml).toContain('Dev-журнал');
-    expect(sidePanelScript).toContain('type: "startDomPicker"');
+    expect(sidePanelSource).not.toContain('chrome.runtime.sendMessage({ type: "listTargets" })');
+    expect(sidePanelSource).not.toContain('chrome.runtime.sendMessage({ type: "getBrowserAuthState" })');
+    expect(sidePanelSource).not.toContain("refreshSidePanelState");
+    expect(sidePanelSource).not.toContain("SidePanelBrokerClient");
+    expect(sidePanelScript).toContain('type: "assistant.startDomPicker"');
+    expect(sidePanelScript).not.toContain('type: "listTargets"');
+    expect(sidePanelScript).not.toContain('type: "getBrowserAuthState"');
+    expect(sidePanelScript).not.toContain("refreshSidePanelState");
+    expect(sidePanelScript).not.toContain("SidePanelBrokerClient");
     expect(sidePanelScript).not.toContain("window.close()");
     expect(backgroundScript).toContain("executeScript");
     expect(backgroundScript).toContain('files: ["contentScript.js"]');

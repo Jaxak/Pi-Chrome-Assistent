@@ -550,10 +550,6 @@ function activateTab(elements: SidePanelElements, tab: SidePanelTab): void {
   }
 }
 
-export async function refreshSidePanelState(): Promise<void> {
-  postAssistantCommand({ type: "assistant.diagnostics.refresh" });
-}
-
 function initializeSidePanel(): void {
   const elements = getSidePanelElements();
 
@@ -638,7 +634,7 @@ function initializeSidePanel(): void {
   });
 
   elements.diagnosticsButton?.addEventListener("click", () => {
-    void refreshSidePanelState();
+    postAssistantCommand({ type: "assistant.diagnostics.refresh" });
   });
 
   elements.copyBrowserTokenButton?.addEventListener("click", () => {

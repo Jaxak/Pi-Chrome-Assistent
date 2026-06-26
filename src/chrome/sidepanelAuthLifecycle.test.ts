@@ -7,19 +7,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createInitialAssistantState, type BackgroundAssistantState } from "./assistantState";
 
-const brokerMock = vi.hoisted(() => ({
-  constructed: 0,
-}));
-
-vi.mock("./sidepanelBrokerClient", () => ({
-  SidePanelBrokerClient: class MockSidePanelBrokerClient {
-    constructor() {
-      brokerMock.constructed += 1;
-      throw new Error("Sidepanel не должен создавать broker client");
-    }
-  },
-}));
-
 type PortListener = (message: unknown) => void;
 
 type DisconnectListener = () => void;
@@ -147,11 +134,10 @@ describe("sidepanel auth lifecycle", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.resetModules();
-    brokerMock.constructed = 0;
     document.documentElement.innerHTML = "";
   });
 
-  it("opens exactly one sidepanel port and never constructs a broker client", async () => {
+  it("opens exactly one sidepanel port", async () => {
     loadSidePanelHtml();
     const { connect } = mockChrome();
 
@@ -159,7 +145,6 @@ describe("sidepanel auth lifecycle", () => {
 
     expect(connect).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenCalledWith({ name: "sidepanel" });
-    expect(brokerMock.constructed).toBe(0);
   });
 
   it("renders targets and auth token from assistant snapshots", async () => {

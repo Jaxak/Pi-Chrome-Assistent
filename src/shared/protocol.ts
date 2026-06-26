@@ -4,6 +4,11 @@ export const PROTOCOL_MESSAGE_TYPES = [
   "client.hello",
   "client.listTargets",
   "client.sendSelection",
+  "client.subscribeTarget",
+  "client.unsubscribeTarget",
+  "client.sendChatMessage",
+  "client.chatAccepted",
+  "client.chatEvent",
   "target.register",
   "target.registered",
   "target.heartbeat",
@@ -13,6 +18,8 @@ export const PROTOCOL_MESSAGE_TYPES = [
   "client.sendResult",
   "client.error",
   "target.deliverSelection",
+  "target.deliverChatMessage",
+  "target.chatEvent",
 ] as const;
 
 export type ProtocolMessageType = (typeof PROTOCOL_MESSAGE_TYPES)[number];
@@ -45,6 +52,30 @@ export type BrowserClientSendSelectionPayload = {
   targetId: string;
   selection: SelectionPayload;
 };
+
+export type BrowserClientSubscribeTargetPayload = {
+  token: string;
+  targetId: string;
+};
+
+export type BrowserClientSendChatMessagePayload = {
+  token: string;
+  targetId: string;
+  message: string;
+};
+
+export type TargetDeliverChatMessagePayload = {
+  message: string;
+  sentAt: number;
+};
+
+export type ChatEvent =
+  | { kind: "user_message"; text: string; timestamp: number }
+  | { kind: "agent_busy"; busy: boolean; label: string; timestamp: number }
+  | { kind: "assistant_message_start"; messageId: string; timestamp: number }
+  | { kind: "assistant_text_delta"; messageId: string; delta: string; timestamp: number }
+  | { kind: "assistant_message_end"; messageId: string; timestamp: number }
+  | { kind: "error"; message: string; timestamp: number };
 
 export type TargetMetadata = {
   targetId: string;
@@ -103,9 +134,114 @@ export function parseProtocolEnvelope(raw: string): ProtocolEnvelope | null {
   }
 }
 
-export function validateSelectionPayload(
-  value: unknown,
-): { ok: true } | { ok: false; error: string } {
+type ValidationResult = { ok: true } | { ok: false; error: string };
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasFiniteTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+export function validateSubscribeTargetPayload(value: unknown): ValidationResult {
+  if (!value || typeof value !== "object") {
+    return { ok: false, error: "Payload must be an object" };
+  }
+
+  const payload = value as Partial<BrowserClientSubscribeTargetPayload>;
+
+  if (!isNonEmptyString(payload.token)) {
+    return { ok: false, error: "Missing token" };
+  }
+
+  if (!isNonEmptyString(payload.targetId)) {
+    return { ok: false, error: "Missing targetId" };
+  }
+
+  return { ok: true };
+}
+
+export function validateSendChatMessagePayload(value: unknown): ValidationResult {
+  const subscriptionValidation = validateSubscribeTargetPayload(value);
+
+  if (!subscriptionValidation.ok) {
+    return subscriptionValidation;
+  }
+
+  const payload = value as Partial<BrowserClientSendChatMessagePayload>;
+
+  if (!isNonEmptyString(payload.message)) {
+    return { ok: false, error: "Missing message" };
+  }
+
+  return { ok: true };
+}
+
+export function validateChatEvent(value: unknown): ValidationResult {
+  if (!value || typeof value !== "object") {
+    return { ok: false, error: "Payload must be an object" };
+  }
+
+  const event = value as Partial<ChatEvent> & { kind?: unknown; timestamp?: unknown };
+
+  if (!hasFiniteTimestamp(event.timestamp)) {
+    return { ok: false, error: "Missing timestamp" };
+  }
+
+  switch (event.kind) {
+    case "user_message":
+      return isNonEmptyString((event as Partial<Extract<ChatEvent, { kind: "user_message" }>>).text)
+        ? { ok: true }
+        : { ok: false, error: "Missing text" };
+
+    case "agent_busy": {
+      const busyEvent = event as Partial<Extract<ChatEvent, { kind: "agent_busy" }>>;
+      if (typeof busyEvent.busy !== "boolean") {
+        return { ok: false, error: "Missing busy" };
+      }
+
+      if (typeof busyEvent.label !== "string") {
+        return { ok: false, error: "Missing label" };
+      }
+
+      return { ok: true };
+    }
+
+    case "assistant_message_start":
+    case "assistant_message_end":
+      return isNonEmptyString(
+        (event as Partial<Extract<ChatEvent, { kind: "assistant_message_start" | "assistant_message_end" }>>)
+          .messageId,
+      )
+        ? { ok: true }
+        : { ok: false, error: "Missing messageId" };
+
+    case "assistant_text_delta": {
+      const deltaEvent = event as Partial<Extract<ChatEvent, { kind: "assistant_text_delta" }>>;
+
+      if (!isNonEmptyString(deltaEvent.messageId)) {
+        return { ok: false, error: "Missing messageId" };
+      }
+
+      if (typeof deltaEvent.delta !== "string") {
+        return { ok: false, error: "Missing delta" };
+      }
+
+      return { ok: true };
+    }
+
+    case "error":
+      return isNonEmptyString((event as Partial<Extract<ChatEvent, { kind: "error" }>>).message)
+        ? { ok: true }
+        : { ok: false, error: "Missing message" };
+
+    default:
+      return { ok: false, error: "Unknown chat event kind" };
+  }
+}
+
+export function validateSelectionPayload(value: unknown): ValidationResult {
   if (!value || typeof value !== "object") {
     return { ok: false, error: "Payload must be an object" };
   }

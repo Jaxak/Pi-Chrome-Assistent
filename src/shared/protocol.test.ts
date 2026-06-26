@@ -5,9 +5,15 @@ import {
   createRequestId,
   isProtocolEnvelope,
   parseProtocolEnvelope,
+  validateChatEvent,
   validateSelectionPayload,
+  validateSendChatMessagePayload,
+  validateSubscribeTargetPayload,
   type BrowserClientHelloPayload,
+  type BrowserClientSendChatMessagePayload,
   type BrowserClientSendSelectionPayload,
+  type BrowserClientSubscribeTargetPayload,
+  type ChatEvent,
   type SelectionPayload,
 } from "./protocol";
 import { BROWSER_NOT_AUTHORIZED_ERROR, BROWSER_TOKEN_STORAGE_KEY } from "./constants";
@@ -88,6 +94,65 @@ describe("browser auth protocol helpers", () => {
       token: "browser-token-1",
       targetId: "target-1",
       selection: validSelection,
+    });
+  });
+});
+
+describe("chat protocol validation", () => {
+  it("accepts known chat message types as protocol envelopes", () => {
+    expect(isProtocolEnvelope({ version: 1, type: "client.subscribeTarget", requestId: "sub-1" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "client.unsubscribeTarget", requestId: "sub-2" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "client.sendChatMessage", requestId: "chat-1" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "client.chatAccepted", requestId: "chat-1" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "client.chatEvent" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "target.deliverChatMessage", requestId: "chat-1" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "target.chatEvent" })).toBe(true);
+  });
+
+  it("rejects empty chat messages", () => {
+    const payload: BrowserClientSendChatMessagePayload = {
+      token: "browser-token-1",
+      targetId: "target-1",
+      message: "   ",
+    };
+
+    expect(validateSendChatMessagePayload(payload)).toEqual({ ok: false, error: "Missing message" });
+  });
+
+  it("rejects chat messages without targetId", () => {
+    const payload = {
+      token: "browser-token-1",
+      targetId: "",
+      message: "Привет",
+    } satisfies BrowserClientSendChatMessagePayload;
+
+    expect(validateSendChatMessagePayload(payload)).toEqual({ ok: false, error: "Missing targetId" });
+  });
+
+  it("accepts target subscriptions with token and targetId", () => {
+    const payload: BrowserClientSubscribeTargetPayload = {
+      token: "browser-token-1",
+      targetId: "target-1",
+    };
+
+    expect(validateSubscribeTargetPayload(payload)).toEqual({ ok: true });
+  });
+
+  it("accepts assistant text delta chat events", () => {
+    const event: ChatEvent = {
+      kind: "assistant_text_delta",
+      messageId: "message-1",
+      delta: "Привет",
+      timestamp: 1_710_000_000_000,
+    };
+
+    expect(validateChatEvent(event)).toEqual({ ok: true });
+  });
+
+  it("rejects unknown chat event kinds", () => {
+    expect(validateChatEvent({ kind: "unknown", timestamp: 1_710_000_000_000 })).toEqual({
+      ok: false,
+      error: "Unknown chat event kind",
     });
   });
 });

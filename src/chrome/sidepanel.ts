@@ -18,11 +18,6 @@ export type ListTargetsResponse = {
   tokenConfigured?: boolean;
 };
 
-type StartDomPickerResponse = {
-  ok?: boolean;
-  error?: string;
-};
-
 type AssistantSnapshotMessage = { type: "assistant.snapshot"; state: BackgroundAssistantState };
 
 type SidePanelTab = "assistant" | "sessions" | "auth";
@@ -674,18 +669,10 @@ function initializeSidePanel(): void {
       setStatus(elements, `Запускаем DOM picker · ${formatTargetPrimaryLabel(selectedTarget)}`);
 
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      const response = (await chrome.runtime.sendMessage({
-        type: "startDomPicker",
-        targetId: selectedTarget.targetId,
+      postAssistantCommand({
+        type: "assistant.startDomPicker",
         tabId: activeTab?.id,
-      })) as StartDomPickerResponse | undefined;
-
-      if (!response?.ok) {
-        const errorMessage = response?.error ?? "Не удалось запустить DOM picker.";
-        setStatus(elements, "Не удалось запустить DOM picker");
-        setPickerErrorDiagnostics(elements, errorMessage);
-        return;
-      }
+      });
 
       setStatus(elements, START_PICKER_PROMPT);
       setDiagnostics(elements, currentDiagnosticsBaseText);

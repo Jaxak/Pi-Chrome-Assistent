@@ -30,7 +30,10 @@ import {
 import { BackgroundAssistantStateServer } from "./backgroundStateServer";
 
 const storage = chromeStorageAdapter();
-const stateServer = new BackgroundAssistantStateServer({ storage });
+const stateServer = new BackgroundAssistantStateServer({
+  storage,
+  startDomPicker: (input) => startDomPicker(input, { storage }),
+});
 const SELECTED_TARGET_STORAGE_KEY = "selectedTargetId";
 const BROKER_URL = `ws://${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`;
 const SOCKET_CONNECTING = 0;
@@ -67,6 +70,16 @@ export type BrokerRequestOptions = {
 export type BackgroundMessageListenerDependencies = BrokerRequestOptions & {
   storage?: StorageAdapter;
   getActiveTab?: () => Promise<chrome.tabs.Tab | undefined>;
+  now?: () => number;
+};
+
+export type StartDomPickerInput = {
+  targetId?: string;
+  tabId?: number;
+};
+
+export type StartDomPickerDependencies = {
+  storage?: StorageAdapter;
   now?: () => number;
 };
 
@@ -167,6 +180,75 @@ async function maybePersistBrokerSettings(
 ): Promise<void> {
   if (typeof message.targetId === "string" && message.targetId.trim().length > 0) {
     await diagnosticStorage.set(SELECTED_TARGET_STORAGE_KEY, message.targetId.trim());
+  }
+}
+
+export async function startDomPicker(
+  input: StartDomPickerInput,
+  dependencies: StartDomPickerDependencies = {},
+): Promise<{ ok?: boolean; error?: string }> {
+  const backgroundStorage = dependencies.storage ?? storage;
+  const now = dependencies.now ?? Date.now;
+  const tabId = typeof input.tabId === "number" && Number.isInteger(input.tabId)
+    ? input.tabId
+    : undefined;
+
+  if (tabId === undefined) {
+    return { ok: false, error: "Не удалось определить вкладку для DOM picker." };
+  }
+
+  const targetId = typeof input.targetId === "string" && input.targetId.trim().length > 0
+    ? input.targetId.trim()
+    : undefined;
+
+  if (!targetId) {
+    return { ok: false, error: "Не выбрана цель Pi для DOM picker." };
+  }
+
+  try {
+    const tab = await chrome.tabs.get(tabId);
+
+    if (!canInjectIntoTabUrl(tab.url)) {
+      const userMessage = "DOM picker можно запускать только на обычных http/https страницах.";
+      await recordDiagnostic(
+        backgroundStorage,
+        now,
+        "startDomPicker",
+        `${userMessage} URL: ${tab.url ?? "неизвестен"}`,
+      );
+      return { ok: false, error: userMessage };
+    }
+
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["contentScript.js"],
+      });
+    } catch (error) {
+      const errorMessage = await recordDiagnostic(backgroundStorage, now, "startDomPicker", error);
+      return { ok: false, error: `Не удалось запустить DOM picker: ${errorMessage}` };
+    }
+
+    const pickerResponse = (await chrome.tabs.sendMessage(tabId, {
+      type: "startDomPicker",
+      targetId,
+    })) as { ok?: boolean; error?: unknown } | undefined;
+
+    if (pickerResponse?.ok === false) {
+      return {
+        ok: false,
+        error:
+          typeof pickerResponse.error === "string" && pickerResponse.error.length > 0
+            ? pickerResponse.error
+            : "Не удалось запустить DOM picker.",
+      };
+    }
+
+    console.info("DOM picker placeholder requested for tab", tabId);
+    return { ok: true };
+  } catch (error) {
+    const errorMessage = await recordDiagnostic(backgroundStorage, now, "startDomPicker", error);
+    return { ok: false, error: `Не удалось запустить DOM picker: ${errorMessage}` };
   }
 }
 
@@ -522,68 +604,13 @@ export function createBackgroundMessageListener(
     }
 
     if (requestMessage.type === "startDomPicker") {
-      void (async () => {
-        try {
-          const tabId = typeof requestMessage.tabId === "number" && Number.isInteger(requestMessage.tabId)
-            ? requestMessage.tabId
-            : undefined;
-
-          if (tabId === undefined) {
-            sendResponse({ ok: false, error: "Не удалось определить вкладку для DOM picker." });
-            return;
-          }
-
-          const targetId =
-            typeof requestMessage.targetId === "string" && requestMessage.targetId.trim().length > 0
-              ? requestMessage.targetId.trim()
-              : undefined;
-
-          if (!targetId) {
-            sendResponse({ ok: false, error: "Не выбрана цель Pi для DOM picker." });
-            return;
-          }
-
-          const tab = await chrome.tabs.get(tabId);
-
-          if (!canInjectIntoTabUrl(tab.url)) {
-            sendResponse({ ok: false, error: "DOM picker можно запускать только на обычных http/https страницах." });
-            return;
-          }
-
-          try {
-            await chrome.scripting.executeScript({
-              target: { tabId },
-              files: ["contentScript.js"],
-            });
-          } catch (error) {
-            const errorMessage = await recordDiagnostic(backgroundStorage, now, "startDomPicker", error);
-            sendResponse({ ok: false, error: `Не удалось запустить DOM picker: ${errorMessage}` });
-            return;
-          }
-
-          const pickerResponse = (await chrome.tabs.sendMessage(tabId, {
-            type: "startDomPicker",
-            targetId,
-          })) as { ok?: boolean; error?: unknown } | undefined;
-
-          if (pickerResponse?.ok === false) {
-            sendResponse({
-              ok: false,
-              error:
-                typeof pickerResponse.error === "string" && pickerResponse.error.length > 0
-                  ? pickerResponse.error
-                  : "Не удалось запустить DOM picker.",
-            });
-            return;
-          }
-
-          console.info("DOM picker placeholder requested for tab", tabId);
-          sendResponse({ ok: true });
-        } catch (error) {
-          const errorMessage = await recordDiagnostic(backgroundStorage, now, "startDomPicker", error);
-          sendResponse({ ok: false, error: `Не удалось запустить DOM picker: ${errorMessage}` });
-        }
-      })();
+      void startDomPicker(
+        {
+          targetId: typeof requestMessage.targetId === "string" ? requestMessage.targetId : undefined,
+          tabId: typeof requestMessage.tabId === "number" ? requestMessage.tabId : undefined,
+        },
+        { storage: backgroundStorage, now },
+      ).then(sendResponse);
 
       return true;
     }

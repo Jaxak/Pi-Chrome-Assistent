@@ -64,12 +64,18 @@ export type BackgroundStateServerTokenHelpers = {
   clearBrowserToken(storage: BackgroundStateServerStorage): Promise<void>;
 };
 
+export type BackgroundStateServerStartDomPicker = (input: {
+  targetId: string;
+  tabId?: number;
+}) => Promise<{ ok?: boolean; error?: string }>;
+
 export type BackgroundAssistantStateServerDependencies = {
   storage?: BackgroundStateServerStorage;
   runtimeClock?: () => number;
   brokerClientFactory?: (options: BackgroundStateServerBrokerClientOptions) => BackgroundStateServerBrokerClient;
   recordDiagnostic?: (diagnostic: BackgroundStateServerDiagnostic) => Promise<void> | void;
   tokenHelpers?: BackgroundStateServerTokenHelpers;
+  startDomPicker?: BackgroundStateServerStartDomPicker;
 };
 
 type ConnectedPort = {
@@ -84,6 +90,7 @@ export class BackgroundAssistantStateServer {
   private readonly brokerClientFactory: (options: BackgroundStateServerBrokerClientOptions) => BackgroundStateServerBrokerClient;
   private readonly recordDiagnosticEntry: (diagnostic: BackgroundStateServerDiagnostic) => Promise<void> | void;
   private readonly tokenHelpers: BackgroundStateServerTokenHelpers;
+  private readonly startDomPickerCommand: BackgroundStateServerStartDomPicker | undefined;
   private readonly ports = new Map<ChromeRuntimePortLike, ConnectedPort>();
   private state: BackgroundAssistantState = createInitialAssistantState();
   private brokerClient: BackgroundStateServerBrokerClient | undefined;
@@ -110,6 +117,7 @@ export class BackgroundAssistantStateServer {
       regenerateBrowserToken,
       clearBrowserToken,
     };
+    this.startDomPickerCommand = dependencies.startDomPicker;
   }
 
   connectPort(port: ChromeRuntimePortLike): void {
@@ -228,6 +236,19 @@ export class BackgroundAssistantStateServer {
       return;
     }
 
+    if (command?.type === "assistant.startDomPicker") {
+      const commandTabId = (command as { tabId?: unknown }).tabId;
+      const tabId = typeof commandTabId === "number" && Number.isInteger(commandTabId)
+        ? commandTabId
+        : undefined;
+      void this.startDomPicker(tabId).catch((error) => {
+        void this.handleDomPickerError(
+          `Не удалось запустить DOM picker: ${getErrorMessage(error)}`,
+        );
+      });
+      return;
+    }
+
     if (command?.type !== "assistant.selectTarget") {
       return;
     }
@@ -237,6 +258,40 @@ export class BackgroundAssistantStateServer {
       : undefined;
 
     this.selectTarget(targetId);
+  }
+
+  private async startDomPicker(tabId: number | undefined): Promise<void> {
+    const targetId = this.state.selectedTargetId;
+
+    if (!targetId) {
+      await this.handleDomPickerError("Выберите цель Pi для DOM picker.");
+      return;
+    }
+
+    if (!this.startDomPickerCommand) {
+      await this.handleDomPickerError("DOM picker недоступен в фоновом сервисе.");
+      return;
+    }
+
+    const response = await this.startDomPickerCommand({ targetId, tabId });
+
+    if (response?.ok) {
+      return;
+    }
+
+    await this.handleDomPickerError(response?.error ?? "Не удалось запустить DOM picker.");
+  }
+
+  private async handleDomPickerError(message: string): Promise<void> {
+    this.applyState({
+      kind: "chat_event",
+      event: {
+        kind: "error",
+        message,
+        timestamp: this.runtimeClock(),
+      },
+    });
+    await this.recordDiagnostic("assistant.startDomPicker", message);
   }
 
   private sendChatMessage(message: string): void {

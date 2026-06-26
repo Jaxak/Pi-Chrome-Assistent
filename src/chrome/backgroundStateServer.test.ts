@@ -706,6 +706,82 @@ describe("BackgroundAssistantStateServer", () => {
     expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "system", text: "Pi недоступен", tone: "error" });
   });
 
+  it("rejects DOM picker command without a selected target using a Russian error", async () => {
+    const startDomPicker = vi.fn(async () => ({ ok: true }));
+    const { server, brokerClients, diagnostics } = createServer({ startDomPicker });
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+
+    port.emitMessage({ type: "assistant.startDomPicker", tabId: 77 });
+    await flushAsyncWork();
+
+    expect(startDomPicker).not.toHaveBeenCalled();
+    expect(server.getSnapshot().chat.error).toBe("Выберите цель Pi для DOM picker.");
+    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({
+      role: "system",
+      text: "Выберите цель Pi для DOM picker.",
+      tone: "error",
+    });
+    expect(diagnostics).toEqual([
+      {
+        phase: "assistant.startDomPicker",
+        message: "Выберите цель Pi для DOM picker.",
+      },
+    ]);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("delegates DOM picker command to injected starter with selected target and tab id", async () => {
+    const startDomPicker = vi.fn(async () => ({ ok: true }));
+    const { server, brokerClients, diagnostics } = createServer({ startDomPicker });
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-9" })]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-9" });
+    await flushAsyncWork();
+
+    port.emitMessage({ type: "assistant.startDomPicker", tabId: 555 });
+    await flushAsyncWork();
+
+    expect(startDomPicker).toHaveBeenCalledWith({ targetId: "target-9", tabId: 555 });
+    expect(server.getSnapshot().chat.error).toBeUndefined();
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("records a Russian diagnostic and chat error when DOM picker starter rejects a restricted URL", async () => {
+    const startDomPicker = vi.fn(async () => ({
+      ok: false,
+      error: "DOM picker можно запускать только на обычных http/https страницах.",
+    }));
+    const { server, brokerClients, diagnostics } = createServer({ startDomPicker });
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-9" })]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-9" });
+    await flushAsyncWork();
+
+    port.emitMessage({ type: "assistant.startDomPicker", tabId: 555 });
+    await flushAsyncWork();
+
+    expect(startDomPicker).toHaveBeenCalledWith({ targetId: "target-9", tabId: 555 });
+    expect(server.getSnapshot().chat.error).toBe("DOM picker можно запускать только на обычных http/https страницах.");
+    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({
+      role: "system",
+      text: "DOM picker можно запускать только на обычных http/https страницах.",
+      tone: "error",
+    });
+    expect(diagnostics).toEqual([
+      {
+        phase: "assistant.startDomPicker",
+        message: "DOM picker можно запускать только на обычных http/https страницах.",
+      },
+    ]);
+  });
+
   it("adds a Pi unavailable chat error and clears busy when broker send fails", async () => {
     const { server, brokerClients } = createServer();
     const port = new FakePort();

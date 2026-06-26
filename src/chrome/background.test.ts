@@ -181,6 +181,7 @@ describe("background", () => {
       onDisconnect: { addListener: vi.fn(), removeListener: vi.fn() },
     } as unknown as chrome.runtime.Port);
 
+    await waitFor(() => webSocketFactory.mock.calls.length > 0);
     expect(webSocketFactory).toHaveBeenCalledWith("ws://127.0.0.1:17345");
   });
 
@@ -572,7 +573,8 @@ describe("background", () => {
     });
   });
 
-  it("returns a Russian error before script injection on restricted tab URLs", async () => {
+  it("returns a Russian error and records a diagnostic before script injection on restricted tab URLs", async () => {
+    const storage = new FakeStorageAdapter();
     const executeScript = vi.fn(async () => undefined);
     const get = vi.fn(async () => ({ id: 555, url: "chrome://extensions" } as chrome.tabs.Tab));
 
@@ -588,7 +590,7 @@ describe("background", () => {
       } as unknown as typeof chrome,
     );
 
-    const listener = createBackgroundMessageListener();
+    const listener = createBackgroundMessageListener({ storage, now: () => 1_710_000_000_123 });
 
     await expect(invokeMessageListener(listener, { type: "startDomPicker", targetId: "target-9", tabId: 555 })).resolves.toEqual({
       ok: false,
@@ -596,6 +598,13 @@ describe("background", () => {
     });
 
     expect(executeScript).not.toHaveBeenCalled();
+    await expect(readDiagnostics(storage)).resolves.toEqual([
+      {
+        timestamp: 1_710_000_000_123,
+        phase: "startDomPicker",
+        message: "DOM picker можно запускать только на обычных http/https страницах. URL: chrome://extensions",
+      },
+    ]);
   });
 
   it("records diagnostics when script injection for DOM picker fails", async () => {

@@ -24,6 +24,12 @@ type MockPort = {
   emit(message: unknown): void;
 };
 
+type MockChromeRuntime = {
+  port: MockPort;
+  tabsQuery: ReturnType<typeof vi.fn>;
+  sendMessage: ReturnType<typeof vi.fn>;
+};
+
 function createTarget(overrides: Partial<BackgroundAssistantState["targets"][number]> = {}): BackgroundAssistantState["targets"][number] {
   return {
     targetId: "target-1",
@@ -69,7 +75,7 @@ function createReadySnapshot(overrides: Partial<BackgroundAssistantState> = {}):
   };
 }
 
-function mockChromeRuntime(): MockPort {
+function mockChromeRuntime(): MockChromeRuntime {
   const listeners: PortListener[] = [];
   const port: MockPort = {
     postMessage: vi.fn(),
@@ -79,6 +85,8 @@ function mockChromeRuntime(): MockPort {
       }
     },
   };
+  const tabsQuery = vi.fn(async () => [{ id: 1 }]);
+  const sendMessage = vi.fn(async () => ({ ok: true }));
 
   vi.stubGlobal("chrome", {
     runtime: {
@@ -94,7 +102,7 @@ function mockChromeRuntime(): MockPort {
           addListener: vi.fn(),
         },
       })),
-      sendMessage: vi.fn(async () => ({ ok: true })),
+      sendMessage,
     },
     storage: {
       local: {
@@ -103,11 +111,11 @@ function mockChromeRuntime(): MockPort {
       },
     },
     tabs: {
-      query: vi.fn(async () => [{ id: 1 }]),
+      query: tabsQuery,
     },
   });
 
-  return port;
+  return { port, tabsQuery, sendMessage };
 }
 
 async function importInitializedSidePanel(): Promise<void> {
@@ -148,7 +156,7 @@ describe("sidepanel navigation", () => {
 
   it("posts target selection without mutating selected UI before next snapshot", async () => {
     loadSidePanelHtml();
-    const port = mockChromeRuntime();
+    const { port } = mockChromeRuntime();
     await importInitializedSidePanel();
 
     port.emit({
@@ -169,7 +177,7 @@ describe("sidepanel navigation", () => {
 
   it("posts chat send command instead of sending through a sidepanel broker", async () => {
     loadSidePanelHtml();
-    const port = mockChromeRuntime();
+    const { port } = mockChromeRuntime();
     await importInitializedSidePanel();
 
     port.emit({ type: "assistant.snapshot", state: createReadySnapshot() });
@@ -185,5 +193,21 @@ describe("sidepanel navigation", () => {
 
     expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.sendChatMessage", message: "Привет Pi" });
     expect(input?.value).toBe("");
+  });
+
+  it("posts DOM picker command through assistant port with active tab id", async () => {
+    loadSidePanelHtml();
+    const { port, tabsQuery, sendMessage } = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    port.emit({ type: "assistant.snapshot", state: createReadySnapshot() });
+    await flush();
+
+    document.querySelector<HTMLButtonElement>("#send-button")?.click();
+    await flush();
+
+    expect(tabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true });
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.startDomPicker", tabId: 1 });
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "startDomPicker" }));
   });
 });

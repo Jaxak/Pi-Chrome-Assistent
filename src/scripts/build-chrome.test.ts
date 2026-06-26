@@ -39,7 +39,14 @@ describe("build:chrome", () => {
     expect(manifest.side_panel.default_path).toBe("sidepanel.html");
     expect(sidePanelHtml).toContain('href="./sidepanel.css"');
     expect(sidePanelHtml).toContain('src="./sidepanel.js"');
+    expect(sidePanelHtml).toContain('id="composer-menu"');
+    expect(sidePanelHtml).toContain('id="send-button"');
+    expect(sidePanelHtml).toContain('DOM picker');
+    expect(sidePanelHtml).toContain('Настройки');
+    expect(sidePanelHtml).toContain('Авторизация');
+    expect(sidePanelHtml).toContain('Dev-журнал');
     expect(sidePanelScript).toContain('type: "startDomPicker"');
+    expect(sidePanelScript).not.toContain("window.close()");
     expect(backgroundScript).toContain("executeScript");
     expect(backgroundScript).toContain('files: ["contentScript.js"]');
     expect(contentScript).toContain("startDomPicker");

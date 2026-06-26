@@ -21,24 +21,25 @@ describe("build:chrome", () => {
 
     await Promise.all([
       access(path.join(chromeDistDir, "manifest.json")),
-      access(path.join(chromeDistDir, "popup.html")),
-      access(path.join(chromeDistDir, "popup.css")),
-      access(path.join(chromeDistDir, "popup.js")),
+      access(path.join(chromeDistDir, "sidepanel.html")),
+      access(path.join(chromeDistDir, "sidepanel.css")),
+      access(path.join(chromeDistDir, "sidepanel.js")),
       access(path.join(chromeDistDir, "background.js")),
       access(path.join(chromeDistDir, "contentScript.js")),
     ]);
 
     const manifest = JSON.parse(await readFile(path.join(chromeDistDir, "manifest.json"), "utf8"));
-    const popupHtml = await readFile(path.join(chromeDistDir, "popup.html"), "utf8");
-    const popupScript = await readFile(path.join(chromeDistDir, "popup.js"), "utf8");
+    const sidePanelHtml = await readFile(path.join(chromeDistDir, "sidepanel.html"), "utf8");
+    const sidePanelScript = await readFile(path.join(chromeDistDir, "sidepanel.js"), "utf8");
     const backgroundScript = await readFile(path.join(chromeDistDir, "background.js"), "utf8");
     const contentScript = await readFile(path.join(chromeDistDir, "contentScript.js"), "utf8");
 
     expect(manifest.background.service_worker).toBe("background.js");
-    expect(manifest.action.default_popup).toBe("popup.html");
-    expect(popupHtml).toContain('href="./popup.css"');
-    expect(popupHtml).toContain('src="./popup.js"');
-    expect(popupScript).toContain('type: "startDomPicker"');
+    expect(manifest.action.default_popup).toBeUndefined();
+    expect(manifest.side_panel.default_path).toBe("sidepanel.html");
+    expect(sidePanelHtml).toContain('href="./sidepanel.css"');
+    expect(sidePanelHtml).toContain('src="./sidepanel.js"');
+    expect(sidePanelScript).toContain('type: "startDomPicker"');
     expect(backgroundScript).toContain("executeScript");
     expect(backgroundScript).toContain('files: ["contentScript.js"]');
     expect(contentScript).toContain("startDomPicker");
@@ -52,6 +53,6 @@ describe("build:chrome", () => {
 
     const manifest = JSON.parse(await readFile(path.join(chromeDistDir, "manifest.json"), "utf8"));
 
-    expect(manifest.permissions).toEqual(expect.arrayContaining(["activeTab", "scripting"]));
+    expect(manifest.permissions).toEqual(expect.arrayContaining(["activeTab", "scripting", "sidePanel"]));
   });
 });

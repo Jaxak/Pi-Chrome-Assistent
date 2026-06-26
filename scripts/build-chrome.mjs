@@ -10,10 +10,10 @@ const projectRoot = path.resolve(__dirname, "..");
 const chromeSrcDir = path.join(projectRoot, "src", "chrome");
 const chromeDistDir = path.join(projectRoot, "dist", "chrome");
 
-const staticFiles = ["manifest.json", "popup.html", "popup.css", "crosshair.js", "icon.svg"];
+const staticFiles = ["manifest.json", "sidepanel.html", "sidepanel.css", "crosshair.js", "icon.svg"];
 const scriptEntries = [
   { fileName: "background", globalName: "PiChromeBackground" },
-  { fileName: "popup", globalName: "PiChromePopup" },
+  { fileName: "sidepanel", globalName: "PiChromeSidePanel" },
   { fileName: "contentScript", globalName: "PiChromeContentScript" },
 ];
 

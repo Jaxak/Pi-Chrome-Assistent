@@ -74,6 +74,18 @@ export type BackgroundMessageListener = (
   sendResponse: (response?: unknown) => void,
 ) => boolean;
 
+type SidePanelChromeApi = {
+  action: {
+    onClicked: {
+      addListener(listener: (tab: chrome.tabs.Tab) => void): void;
+    };
+  };
+  sidePanel: {
+    setPanelBehavior(options: { openPanelOnActionClick: boolean }): Promise<void>;
+    open(options: { windowId: number }): Promise<void>;
+  };
+};
+
 function createBrowserWebSocket(url: string): BrokerSocket {
   return new WebSocket(url) as unknown as BrokerSocket;
 }
@@ -448,6 +460,24 @@ function isTargetMetadata(value: unknown): value is TargetMetadata {
   );
 }
 
+export function configureSidePanelOnActionClick(chromeApi: SidePanelChromeApi = chrome): void {
+  void chromeApi.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((error: unknown) => {
+      console.warn("Не удалось настроить открытие side panel по клику на иконку", error);
+    });
+
+  chromeApi.action.onClicked.addListener((tab) => {
+    const windowId = tab.windowId;
+
+    if (typeof windowId !== "number") {
+      return;
+    }
+
+    void chromeApi.sidePanel.open({ windowId });
+  });
+}
+
 export function createBackgroundMessageListener(
   dependencies: BackgroundMessageListenerDependencies = {},
 ): BackgroundMessageListener {
@@ -749,5 +779,6 @@ if (typeof chrome !== "undefined") {
     console.info("Pi Chrome Assistent background service worker installed");
   });
 
+  configureSidePanelOnActionClick();
   chrome.runtime.onMessage.addListener(createBackgroundMessageListener());
 }

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StorageAdapter, DiagnosticEntry } from "./diagnostics";
-import { createBackgroundMessageListener, brokerRequest } from "./background";
+import { configureSidePanelOnActionClick, createBackgroundMessageListener, brokerRequest } from "./background";
 import { BROWSER_TOKEN_STORAGE_KEY } from "./browserToken";
 import { PROTOCOL_VERSION } from "../shared/constants";
 import type { TargetMetadata } from "../shared/protocol";
@@ -139,6 +139,24 @@ async function readDiagnostics(storage: StorageAdapter): Promise<DiagnosticEntry
 }
 
 describe("background", () => {
+  it("configures Chrome action clicks to open the side panel", async () => {
+    const addListener = vi.fn();
+    const setPanelBehavior = vi.fn(async () => undefined);
+    const open = vi.fn(async () => undefined);
+    configureSidePanelOnActionClick({
+      action: { onClicked: { addListener } },
+      sidePanel: { setPanelBehavior, open },
+    });
+
+    expect(setPanelBehavior).toHaveBeenCalledWith({ openPanelOnActionClick: true });
+    expect(addListener).toHaveBeenCalledOnce();
+
+    const onClicked = addListener.mock.calls[0]?.[0] as (tab: chrome.tabs.Tab) => Promise<void>;
+    await onClicked({ windowId: 42 } as chrome.tabs.Tab);
+
+    expect(open).toHaveBeenCalledWith({ windowId: 42 });
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
   });

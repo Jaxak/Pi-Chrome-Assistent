@@ -29,6 +29,7 @@ import {
   buildTargetMetadata,
   connectTargetToBroker,
   getTargetDisplayLabel,
+  handleDeliveredChatMessage,
   handleDeliveredSelection,
   type ConnectedTargetClient,
 } from "./targetClient";
@@ -267,6 +268,36 @@ function isAddressInUseError(error: unknown): boolean {
   return /eaddrinuse|address already in use/i.test(errorMessage);
 }
 
+function getAssistantMessageId(event: unknown): string | undefined {
+  const message = (event as { message?: { id?: unknown; messageId?: unknown; role?: unknown } } | undefined)?.message;
+
+  if (message?.role !== "assistant") {
+    return undefined;
+  }
+
+  const id = message.id ?? message.messageId;
+  return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+function getAssistantTextDelta(event: unknown): string | undefined {
+  const assistantMessageEvent = (event as {
+    assistantMessageEvent?: {
+      type?: unknown;
+      text_delta?: unknown;
+      delta?: unknown;
+      textDelta?: unknown;
+      text?: unknown;
+    };
+  } | undefined)?.assistantMessageEvent;
+
+  const delta = assistantMessageEvent?.text_delta
+    ?? assistantMessageEvent?.delta
+    ?? assistantMessageEvent?.textDelta
+    ?? assistantMessageEvent?.text;
+
+  return typeof delta === "string" ? delta : undefined;
+}
+
 export async function activateBrowserConnectConnection(options: {
   connection: ConnectedTargetClient;
   disconnectedBeforeActivation: boolean;
@@ -379,6 +410,56 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   let ownedBroker: BrowserConnectBrokerServer | undefined;
   let closingOwnedBroker: Promise<void> | undefined;
 
+  pi.on("message_start", (event) => {
+    const messageId = getAssistantMessageId(event);
+
+    if (!messageId) {
+      return;
+    }
+
+    activeTargetConnection?.emitChatEvent({
+      kind: "assistant_message_start",
+      messageId,
+      timestamp: Date.now(),
+    });
+  });
+
+  pi.on("message_update", (event) => {
+    const messageId = getAssistantMessageId(event);
+    const delta = getAssistantTextDelta(event);
+
+    if (!messageId || delta === undefined) {
+      return;
+    }
+
+    activeTargetConnection?.emitChatEvent({
+      kind: "assistant_text_delta",
+      messageId,
+      delta,
+      timestamp: Date.now(),
+    });
+  });
+
+  pi.on("message_end", (event) => {
+    const messageId = getAssistantMessageId(event);
+
+    if (!messageId) {
+      return;
+    }
+
+    activeTargetConnection?.emitChatEvent({
+      kind: "assistant_message_end",
+      messageId,
+      timestamp: Date.now(),
+    });
+    activeTargetConnection?.emitChatEvent({
+      kind: "agent_busy",
+      busy: false,
+      label: "Агент работает в фоне…",
+      timestamp: Date.now(),
+    });
+  });
+
   const closeTargetConnection = async () => {
     if (!activeTargetConnection) {
       return;
@@ -468,6 +549,14 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
               selection,
               isIdle: () => ctx.isIdle(),
               sendUserMessage: (content, options) => pi.sendUserMessage(content, options),
+              logger,
+            }),
+          onDeliveredChatMessage: (message: string) =>
+            handleDeliveredChatMessage({
+              message,
+              isIdle: () => ctx.isIdle(),
+              sendUserMessage: (content, options) => pi.sendUserMessage(content, options),
+              emitChatEvent: (event) => activeTargetConnection?.emitChatEvent(event),
               logger,
             }),
         } as const;

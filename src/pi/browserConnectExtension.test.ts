@@ -819,6 +819,178 @@ describe("browserConnectExtension", () => {
     }
   });
 
+  it("wires delivered chat messages to pi.sendUserMessage with followUp when busy", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-command-"));
+    const originalCwd = process.cwd();
+    const connectedTarget: ConnectedTargetClient = {
+      port: DEFAULT_BROKER_PORT,
+      url: `ws://${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`,
+      metadata: {
+        targetId: "target-1",
+        alias: "frontend",
+        cwd: "/repo/project",
+        pid: 123,
+        connectedAt: 1,
+        lastSeenAt: 1,
+      },
+      isOpen: () => true,
+      emitChatEvent: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    let deliveredChatHandler: ((message: string) => Promise<unknown>) | undefined;
+    const connectTargetToBroker = vi.fn(async (options: { onDeliveredChatMessage?: (message: string) => Promise<unknown> }) => {
+      deliveredChatHandler = options.onDeliveredChatMessage;
+      return connectedTarget;
+    });
+
+    vi.doMock("./targetClient", async () => {
+      const actual = await vi.importActual<typeof import("./targetClient")>("./targetClient");
+
+      return {
+        ...actual,
+        buildTargetMetadata: vi.fn(async () => connectedTarget.metadata),
+        getTargetDisplayLabel: vi.fn(() => "frontend"),
+        connectTargetToBroker,
+      };
+    });
+
+    process.chdir(tempDir);
+
+    try {
+      const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
+      let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const sendUserMessage = vi.fn();
+      const pi = {
+        registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
+          if (name === "chrome-assistent-connect") {
+            commandHandler = options.handler;
+          }
+        }),
+        on: vi.fn(),
+        getSessionName: vi.fn(() => "session"),
+        sendUserMessage,
+      } as unknown as ExtensionAPI;
+      const ctx = {
+        cwd: "/repo/project",
+        isIdle: () => false,
+        ui: {
+          setStatus: vi.fn(),
+          notify: vi.fn(),
+        },
+      };
+
+      browserConnectExtension(pi);
+      await expect(commandHandler?.("frontend", ctx)).resolves.toBeUndefined();
+      await expect(deliveredChatHandler?.("Привет")).resolves.toEqual({ ok: true });
+
+      expect(sendUserMessage).toHaveBeenCalledWith("Привет", { deliverAs: "followUp" });
+      expect(connectedTarget.emitChatEvent).toHaveBeenCalledWith(expect.objectContaining({
+        kind: "agent_busy",
+        busy: true,
+        label: "Агент работает в фоне…",
+      }));
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards assistant message lifecycle events through the active target connection", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-command-"));
+    const originalCwd = process.cwd();
+    const emitChatEvent = vi.fn();
+    const connectedTarget: ConnectedTargetClient = {
+      port: DEFAULT_BROKER_PORT,
+      url: `ws://${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`,
+      metadata: {
+        targetId: "target-1",
+        alias: "frontend",
+        cwd: "/repo/project",
+        pid: 123,
+        connectedAt: 1,
+        lastSeenAt: 1,
+      },
+      isOpen: () => true,
+      emitChatEvent,
+      close: vi.fn(async () => undefined),
+    };
+    const connectTargetToBroker = vi.fn(async () => connectedTarget);
+
+    vi.doMock("./targetClient", async () => {
+      const actual = await vi.importActual<typeof import("./targetClient")>("./targetClient");
+
+      return {
+        ...actual,
+        buildTargetMetadata: vi.fn(async () => connectedTarget.metadata),
+        getTargetDisplayLabel: vi.fn(() => "frontend"),
+        connectTargetToBroker,
+      };
+    });
+
+    process.chdir(tempDir);
+
+    try {
+      const { default: browserConnectExtension } = await importBrowserConnectExtensionModule();
+      let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const eventHandlers = new Map<string, (event: any, ctx: any) => void | Promise<void>>();
+      const pi = {
+        registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
+          if (name === "chrome-assistent-connect") {
+            commandHandler = options.handler;
+          }
+        }),
+        on: vi.fn((eventName: string, handler: (event: any, ctx: any) => void | Promise<void>) => {
+          eventHandlers.set(eventName, handler);
+        }),
+        getSessionName: vi.fn(() => "session"),
+        sendUserMessage: vi.fn(),
+      } as unknown as ExtensionAPI;
+      const ctx = {
+        cwd: "/repo/project",
+        isIdle: () => true,
+        ui: {
+          setStatus: vi.fn(),
+          notify: vi.fn(),
+        },
+      };
+
+      browserConnectExtension(pi);
+      await expect(commandHandler?.("frontend", ctx)).resolves.toBeUndefined();
+
+      await eventHandlers.get("message_start")?.({
+        message: { role: "assistant", id: "message-1" },
+      }, ctx);
+      await eventHandlers.get("message_update")?.({
+        message: { role: "assistant", id: "message-1" },
+        assistantMessageEvent: { type: "text_delta", text_delta: "Привет" },
+      }, ctx);
+      await eventHandlers.get("message_end")?.({
+        message: { role: "assistant", id: "message-1" },
+      }, ctx);
+
+      expect(emitChatEvent).toHaveBeenCalledWith(expect.objectContaining({
+        kind: "assistant_message_start",
+        messageId: "message-1",
+      }));
+      expect(emitChatEvent).toHaveBeenCalledWith(expect.objectContaining({
+        kind: "assistant_text_delta",
+        messageId: "message-1",
+        delta: "Привет",
+      }));
+      expect(emitChatEvent).toHaveBeenCalledWith(expect.objectContaining({
+        kind: "assistant_message_end",
+        messageId: "message-1",
+      }));
+      expect(emitChatEvent).toHaveBeenCalledWith(expect.objectContaining({
+        kind: "agent_busy",
+        busy: false,
+      }));
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("retries with a fresh activation state when the first attempt disconnects before activation", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-command-"));
     const originalCwd = process.cwd();
@@ -834,6 +1006,7 @@ describe("browserConnectExtension", () => {
         lastSeenAt: 1,
       },
       isOpen: () => false,
+      emitChatEvent: vi.fn(),
       close: vi.fn(async () => undefined),
     };
     const secondConnection: ConnectedTargetClient = {
@@ -848,6 +1021,7 @@ describe("browserConnectExtension", () => {
         lastSeenAt: 2,
       },
       isOpen: () => true,
+      emitChatEvent: vi.fn(),
       close: vi.fn(async () => undefined),
     };
     const connectTargetToBroker = vi.fn()
@@ -959,6 +1133,7 @@ describe("browserConnectExtension", () => {
         lastSeenAt: 2,
       },
       isOpen: () => true,
+      emitChatEvent: vi.fn(),
       close: vi.fn(async () => undefined),
     };
     const connectTargetToBroker = vi.fn()
@@ -1199,6 +1374,7 @@ describe("browserConnectExtension", () => {
         lastSeenAt: 1,
       },
       isOpen: () => true,
+      emitChatEvent: vi.fn(),
       close: vi.fn(async () => undefined),
     };
     const secondOwnedBrokerConnection: ConnectedTargetClient = {
@@ -1213,6 +1389,7 @@ describe("browserConnectExtension", () => {
         lastSeenAt: 2,
       },
       isOpen: () => true,
+      emitChatEvent: vi.fn(),
       close: vi.fn(async () => undefined),
     };
     const connectTargetToBroker = vi.fn()
@@ -1336,6 +1513,7 @@ describe("activateBrowserConnectConnection", () => {
         lastSeenAt: 1,
       },
       isOpen: () => false,
+      emitChatEvent: vi.fn(),
       close,
     };
 

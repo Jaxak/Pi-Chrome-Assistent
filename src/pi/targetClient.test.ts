@@ -4,12 +4,13 @@ import WebSocket from "ws";
 import { describe, expect, it, vi } from "vitest";
 
 import { PROTOCOL_VERSION } from "../shared/constants";
-import type { ProtocolEnvelope, TargetMetadata } from "../shared/protocol";
+import type { ChatEvent, ProtocolEnvelope, TargetMetadata } from "../shared/protocol";
 import { createMemoryLogger } from "./logging";
 import {
   buildTargetMetadata,
   connectTargetToBroker,
   getTargetDisplayLabel,
+  handleDeliveredChatMessage,
   handleDeliveredSelection,
 } from "./targetClient";
 
@@ -91,6 +92,70 @@ describe("buildTargetMetadata", () => {
       sessionName: "session",
       connectedAt: 1_710_000_000_000,
       lastSeenAt: 1_710_000_000_000,
+    });
+  });
+});
+
+describe("handleDeliveredChatMessage", () => {
+  it("sends chat text immediately when Pi is idle and emits busy events", async () => {
+    const sendUserMessage = vi.fn();
+    const emitChatEvent = vi.fn();
+
+    await expect(handleDeliveredChatMessage({
+      message: "Привет",
+      isIdle: () => true,
+      sendUserMessage,
+      emitChatEvent,
+      now: () => 1_710_000_000_000,
+    })).resolves.toEqual({ ok: true });
+
+    expect(sendUserMessage).toHaveBeenCalledWith("Привет", undefined);
+    expect(emitChatEvent).toHaveBeenNthCalledWith(1, {
+      kind: "agent_busy",
+      busy: true,
+      label: "Агент работает в фоне…",
+      timestamp: 1_710_000_000_000,
+    });
+  });
+
+  it("queues chat text as followUp when Pi is busy", async () => {
+    const sendUserMessage = vi.fn();
+    const emitChatEvent = vi.fn();
+
+    await expect(handleDeliveredChatMessage({
+      message: "Продолжи",
+      isIdle: () => false,
+      sendUserMessage,
+      emitChatEvent,
+      now: () => 1_710_000_000_000,
+    })).resolves.toEqual({ ok: true });
+
+    expect(sendUserMessage).toHaveBeenCalledWith("Продолжи", { deliverAs: "followUp" });
+  });
+
+  it("emits error and clears busy when chat delivery fails", async () => {
+    const emitChatEvent = vi.fn();
+
+    await expect(handleDeliveredChatMessage({
+      message: "Привет",
+      isIdle: () => true,
+      sendUserMessage: vi.fn(async () => {
+        throw new Error("Pi недоступен");
+      }),
+      emitChatEvent,
+      now: () => 1_710_000_000_000,
+    })).resolves.toEqual({ ok: false, error: "Pi недоступен" });
+
+    expect(emitChatEvent).toHaveBeenCalledWith({
+      kind: "error",
+      message: "Pi недоступен",
+      timestamp: 1_710_000_000_000,
+    });
+    expect(emitChatEvent).toHaveBeenCalledWith({
+      kind: "agent_busy",
+      busy: false,
+      label: "Агент работает в фоне…",
+      timestamp: 1_710_000_000_000,
     });
   });
 });
@@ -263,6 +328,82 @@ describe("connectTargetToBroker", () => {
     socket.close();
 
     expect(connected.isOpen()).toBe(false);
+
+    await connected.close();
+  });
+
+  it("delivers broker chat messages to the chat handler", async () => {
+    const socket = new FakeWebSocket();
+    const onDeliveredChatMessage = vi.fn(async () => ({ ok: true }));
+    const connectPromise = connectTargetToBroker({
+      token: "test-token",
+      metadata: targetMetadata,
+      logger: createMemoryLogger(),
+      onDeliveredSelection: vi.fn(async () => ({ ok: true })),
+      onDeliveredChatMessage,
+      webSocketFactory: () => socket as unknown as WebSocket,
+      heartbeatIntervalMs: 60_000,
+    });
+
+    socket.open();
+
+    const registerEnvelope = JSON.parse(socket.sentMessages[0]) as ProtocolEnvelope;
+    socket.receive({
+      version: PROTOCOL_VERSION,
+      type: "target.registered",
+      requestId: registerEnvelope.requestId,
+    });
+
+    const connected = await connectPromise;
+    socket.receive({
+      version: PROTOCOL_VERSION,
+      type: "target.deliverChatMessage",
+      requestId: "chat-1",
+      payload: {
+        message: "Привет",
+        sentAt: 1_710_000_000_000,
+      },
+    });
+    await Promise.resolve();
+
+    expect(onDeliveredChatMessage).toHaveBeenCalledWith("Привет");
+
+    await connected.close();
+  });
+
+  it("emits chat events to the broker", async () => {
+    const socket = new FakeWebSocket();
+    const connectPromise = connectTargetToBroker({
+      token: "test-token",
+      metadata: targetMetadata,
+      logger: createMemoryLogger(),
+      onDeliveredSelection: vi.fn(async () => ({ ok: true })),
+      webSocketFactory: () => socket as unknown as WebSocket,
+      heartbeatIntervalMs: 60_000,
+    });
+
+    socket.open();
+
+    const registerEnvelope = JSON.parse(socket.sentMessages[0]) as ProtocolEnvelope;
+    socket.receive({
+      version: PROTOCOL_VERSION,
+      type: "target.registered",
+      requestId: registerEnvelope.requestId,
+    });
+
+    const connected = await connectPromise;
+    const chatEvent: ChatEvent = {
+      kind: "assistant_message_start",
+      messageId: "message-1",
+      timestamp: 1_710_000_000_000,
+    };
+    connected.emitChatEvent(chatEvent);
+
+    expect(JSON.parse(socket.sentMessages.at(-1) ?? "{}")).toEqual({
+      version: PROTOCOL_VERSION,
+      type: "target.chatEvent",
+      payload: chatEvent,
+    });
 
     await connected.close();
   });

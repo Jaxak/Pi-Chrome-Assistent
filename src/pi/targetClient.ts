@@ -15,6 +15,7 @@ import {
   createRequestId,
   parseProtocolEnvelope,
   validateSelectionPayload,
+  type ChatEvent,
   type DeliveryResult,
   type SelectionPayload,
   type TargetMetadata,
@@ -22,6 +23,7 @@ import {
 import type { BrowserConnectLogger } from "./logging";
 
 const execFile = promisify(execFileCallback);
+const CHAT_BUSY_LABEL = "Агент работает в фоне…";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : "Unknown error";
@@ -160,6 +162,64 @@ export async function handleDeliveredSelection(
   }
 }
 
+export type HandleDeliveredChatMessageOptions = {
+  message: string;
+  isIdle: () => boolean;
+  sendUserMessage: (
+    content: string,
+    options?: {
+      deliverAs?: "steer" | "followUp";
+    },
+  ) => void | Promise<void>;
+  emitChatEvent: (event: ChatEvent) => void;
+  logger?: BrowserConnectLogger;
+  now?: () => number;
+};
+
+export async function handleDeliveredChatMessage(
+  options: HandleDeliveredChatMessageOptions,
+): Promise<DeliveryResult> {
+  const now = options.now ?? Date.now;
+  const emitBusy = (busy: boolean) => {
+    options.emitChatEvent({
+      kind: "agent_busy",
+      busy,
+      label: CHAT_BUSY_LABEL,
+      timestamp: now(),
+    });
+  };
+
+  try {
+    emitBusy(true);
+    const deliveryOptions = options.isIdle()
+      ? undefined
+      : ({ deliverAs: "followUp" } as const);
+
+    await options.sendUserMessage(options.message, deliveryOptions);
+    options.logger?.info("target.chat.delivered", {
+      idle: deliveryOptions === undefined,
+    });
+
+    return { ok: true };
+  } catch (error) {
+    const errorMessage = toErrorMessage(error);
+    options.emitChatEvent({
+      kind: "error",
+      message: errorMessage,
+      timestamp: now(),
+    });
+    emitBusy(false);
+    options.logger?.error("target.chat.delivery_failed", {
+      error: errorMessage,
+    });
+
+    return {
+      ok: false,
+      error: errorMessage,
+    };
+  }
+}
+
 export type ConnectTargetToBrokerOptions = {
   token: string;
   metadata: TargetMetadata;
@@ -167,6 +227,7 @@ export type ConnectTargetToBrokerOptions = {
   onDeliveredSelection: (
     selection: SelectionPayload,
   ) => DeliveryResult | Promise<DeliveryResult>;
+  onDeliveredChatMessage?: (message: string) => DeliveryResult | Promise<DeliveryResult>;
   onDisconnect?: () => void;
   host?: string;
   port?: number;
@@ -180,6 +241,7 @@ export type ConnectedTargetClient = {
   readonly url: string;
   readonly metadata: TargetMetadata;
   isOpen(): boolean;
+  emitChatEvent(event: ChatEvent): void;
   close(): Promise<void>;
 };
 
@@ -222,6 +284,38 @@ async function handleIncomingDeliveryMessage(
     requestId: envelope.requestId,
     payload: result,
   });
+}
+
+async function handleIncomingChatMessage(
+  envelope: {
+    requestId?: string;
+    payload?: unknown;
+  },
+  options: Pick<ConnectTargetToBrokerOptions, "logger" | "onDeliveredChatMessage">,
+): Promise<void> {
+  if (typeof envelope.requestId !== "string" || envelope.requestId.length === 0) {
+    options.logger.warn("target.chat.invalid_request_id");
+    return;
+  }
+
+  const payload = envelope.payload as { message?: unknown } | undefined;
+
+  if (typeof payload?.message !== "string" || payload.message.trim().length === 0) {
+    options.logger.warn("target.chat.invalid_payload", {
+      requestId: envelope.requestId,
+      error: "Missing message",
+    });
+    return;
+  }
+
+  if (!options.onDeliveredChatMessage) {
+    options.logger.warn("target.chat.handler_missing", {
+      requestId: envelope.requestId,
+    });
+    return;
+  }
+
+  await options.onDeliveredChatMessage(payload.message);
 }
 
 export async function connectTargetToBroker(
@@ -338,27 +432,37 @@ export async function connectTargetToBroker(
       }
     }
 
-    if (envelope.type !== "target.deliverSelection") {
+    if (envelope.type === "target.deliverSelection") {
+      try {
+        await handleIncomingDeliveryMessage(socket, envelope, options);
+      } catch (error) {
+        const errorMessage = toErrorMessage(error);
+        options.logger.error("target.delivery.handler_failed", {
+          requestId: envelope.requestId,
+          error: errorMessage,
+        });
+
+        if (typeof envelope.requestId === "string") {
+          sendEnvelope(socket, {
+            type: "target.sendSelectionResult",
+            requestId: envelope.requestId,
+            payload: {
+              ok: false,
+              error: errorMessage,
+            },
+          });
+        }
+      }
       return;
     }
 
-    try {
-      await handleIncomingDeliveryMessage(socket, envelope, options);
-    } catch (error) {
-      const errorMessage = toErrorMessage(error);
-      options.logger.error("target.delivery.handler_failed", {
-        requestId: envelope.requestId,
-        error: errorMessage,
-      });
-
-      if (typeof envelope.requestId === "string") {
-        sendEnvelope(socket, {
-          type: "target.sendSelectionResult",
+    if (envelope.type === "target.deliverChatMessage") {
+      try {
+        await handleIncomingChatMessage(envelope, options);
+      } catch (error) {
+        options.logger.error("target.chat.handler_failed", {
           requestId: envelope.requestId,
-          payload: {
-            ok: false,
-            error: errorMessage,
-          },
+          error: toErrorMessage(error),
         });
       }
     }
@@ -442,6 +546,12 @@ export async function connectTargetToBroker(
     metadata: options.metadata,
     isOpen() {
       return !hasClosed && socket.readyState === WebSocket.OPEN;
+    },
+    emitChatEvent(event: ChatEvent) {
+      sendEnvelope(socket, {
+        type: "target.chatEvent",
+        payload: event,
+      });
     },
     async close() {
       if (isClosing) {

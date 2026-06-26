@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { TargetMetadata } from "../shared/protocol";
+import type { BrowserAuthState } from "./browserToken";
 import {
   BackgroundAssistantStateServer,
   type BackgroundStateServerStorage,
   type ChromeRuntimePortLike,
 } from "./backgroundStateServer";
+import { isChatSendDisabled } from "./assistantState";
 
 class FakePort implements ChromeRuntimePortLike {
   readonly name = "sidepanel";
@@ -77,14 +79,20 @@ class FakeStorage implements BackgroundStateServerStorage {
 }
 
 type FakeBrokerClientOptions = {
+  browserToken?: string;
   onTargets?: (targets: TargetMetadata[]) => void;
 };
 
 class FakeBrokerClient {
-  constructor(private readonly options: FakeBrokerClientOptions) {}
+  readonly connect = vi.fn();
+  readonly close = vi.fn();
+  selectedTargetId: string | undefined;
 
-  connect(): void {}
-  close(): void {}
+  constructor(readonly options: FakeBrokerClientOptions) {}
+
+  setSelectedTargetId(targetId: string | undefined): void {
+    this.selectedTargetId = targetId;
+  }
 
   emitTargets(targets: TargetMetadata[]): void {
     this.options.onTargets?.(targets);
@@ -109,6 +117,15 @@ function createServer(overrides: Partial<ConstructorParameters<typeof Background
   const storage = new FakeStorage();
   const diagnostics: Array<{ phase: string; message: string }> = [];
   const brokerClients: FakeBrokerClient[] = [];
+  const tokenHelpers = {
+    ensureBrowserToken: vi.fn<() => Promise<string>>(async () => "token-initial"),
+    getBrowserAuthState: vi.fn<() => Promise<BrowserAuthState>>(async () => ({
+      browserToken: "token-initial",
+      tokenConfigured: true,
+    })),
+    regenerateBrowserToken: vi.fn<() => Promise<string>>(async () => "token-regenerated"),
+    clearBrowserToken: vi.fn<() => Promise<void>>(async () => undefined),
+  };
   const server = new BackgroundAssistantStateServer({
     storage,
     runtimeClock: () => 1_710_000_000_123,
@@ -120,10 +137,11 @@ function createServer(overrides: Partial<ConstructorParameters<typeof Background
     recordDiagnostic: async (diagnostic) => {
       diagnostics.push({ phase: diagnostic.phase, message: diagnostic.message });
     },
+    tokenHelpers,
     ...overrides,
   });
 
-  return { server, storage, diagnostics, brokerClients };
+  return { server, storage, diagnostics, brokerClients, tokenHelpers };
 }
 
 async function flushAsyncWork(): Promise<void> {
@@ -132,6 +150,97 @@ async function flushAsyncWork(): Promise<void> {
 }
 
 describe("BackgroundAssistantStateServer", () => {
+  it("loads or creates a browser token on startup and connects broker with it", async () => {
+    const { server, brokerClients, tokenHelpers } = createServer();
+
+    await server.start();
+
+    expect(tokenHelpers.ensureBrowserToken).toHaveBeenCalledTimes(1);
+    expect(brokerClients).toHaveLength(1);
+    expect(brokerClients[0]?.options.browserToken).toBe("token-initial");
+    expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
+    expect(server.getSnapshot().auth).toMatchObject({ browserToken: "token-initial", tokenConfigured: true });
+    expect(server.getSnapshot().connection.tokenConfigured).toBe(true);
+  });
+
+  it("closes the broker client and broadcasts token guidance when auth refresh finds no token", async () => {
+    const { server, brokerClients, tokenHelpers } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    tokenHelpers.getBrowserAuthState.mockResolvedValueOnce({ tokenConfigured: false });
+
+    port.emitMessage({ type: "assistant.auth.refresh" });
+    await flushAsyncWork();
+
+    expect(tokenHelpers.getBrowserAuthState).toHaveBeenCalledTimes(1);
+    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
+    expect(brokerClients).toHaveLength(1);
+    expect(server.getSnapshot().auth).toMatchObject({ tokenConfigured: false });
+    expect(server.getSnapshot().auth.browserToken).toBeUndefined();
+    expect(server.getSnapshot().connection.lastError).toBe("Токен браузера не настроен. Сгенерируйте токен для подключения к Pi.");
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("regenerates token with one epoch increment and recreates broker client once", async () => {
+    const { server, brokerClients, tokenHelpers } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    const epochBefore = server.getSnapshot().epoch;
+
+    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    await flushAsyncWork();
+
+    expect(tokenHelpers.regenerateBrowserToken).toHaveBeenCalledTimes(1);
+    expect(server.getSnapshot().epoch).toBe(epochBefore + 1);
+    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
+    expect(brokerClients).toHaveLength(2);
+    expect(brokerClients[1]?.options.browserToken).toBe("token-regenerated");
+    expect(brokerClients[1]?.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears token, closes broker, clears targets and selection, and disables chat", async () => {
+    const { server, brokerClients, tokenHelpers } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget()]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    await flushAsyncWork();
+
+    port.emitMessage({ type: "assistant.auth.clearToken" });
+    await flushAsyncWork();
+
+    expect(tokenHelpers.clearBrowserToken).toHaveBeenCalledTimes(1);
+    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
+    expect(server.getSnapshot().targets).toEqual([]);
+    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
+    expect(server.getSnapshot().connection.tokenConfigured).toBe(false);
+    expect(server.getSnapshot().connection.brokerOnline).toBe(false);
+    expect(server.getSnapshot().connection.bridgeOnline).toBe(false);
+    expect(server.getSnapshot().connection.browserAuthorized).toBeUndefined();
+    expect(isChatSendDisabled(server.getSnapshot(), "сообщение")).toBe(true);
+  });
+
+  it("does not reconnect the broker client when auth refresh returns the same token", async () => {
+    const { server, brokerClients, tokenHelpers } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+    tokenHelpers.getBrowserAuthState.mockResolvedValueOnce({ browserToken: "token-initial", tokenConfigured: true });
+    const epochBefore = server.getSnapshot().epoch;
+
+    port.emitMessage({ type: "assistant.auth.refresh" });
+    await flushAsyncWork();
+
+    expect(tokenHelpers.getBrowserAuthState).toHaveBeenCalledTimes(1);
+    expect(brokerClients).toHaveLength(1);
+    expect(brokerClients[0]?.close).not.toHaveBeenCalled();
+    expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
+    expect(server.getSnapshot().epoch).toBe(epochBefore);
+  });
+
   it("immediately posts an assistant snapshot when a port connects", () => {
     const { server } = createServer();
     const port = new FakePort();

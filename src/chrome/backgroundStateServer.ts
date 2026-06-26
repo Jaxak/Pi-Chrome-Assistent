@@ -5,6 +5,13 @@ import {
   type BackgroundAssistantState,
 } from "./assistantState";
 import { BrokerClient } from "./brokerClient";
+import {
+  clearBrowserToken,
+  ensureBrowserToken,
+  getBrowserAuthState,
+  regenerateBrowserToken,
+  type BrowserAuthState,
+} from "./browserToken";
 import { appendDiagnostic, chromeStorageAdapter, type DiagnosticEntry } from "./diagnostics";
 
 const SELECTED_TARGET_STORAGE_KEY = "selectedTargetId";
@@ -41,8 +48,16 @@ export type BackgroundStateServerBrokerClient = {
 };
 
 export type BackgroundStateServerBrokerClientOptions = {
+  browserToken: string;
   selectedTargetId?: string;
   onTargets?: (targets: TargetMetadata[]) => void;
+};
+
+export type BackgroundStateServerTokenHelpers = {
+  ensureBrowserToken(storage: BackgroundStateServerStorage): Promise<string>;
+  getBrowserAuthState(storage: BackgroundStateServerStorage): Promise<BrowserAuthState>;
+  regenerateBrowserToken(storage: BackgroundStateServerStorage): Promise<string>;
+  clearBrowserToken(storage: BackgroundStateServerStorage): Promise<void>;
 };
 
 export type BackgroundAssistantStateServerDependencies = {
@@ -50,6 +65,7 @@ export type BackgroundAssistantStateServerDependencies = {
   runtimeClock?: () => number;
   brokerClientFactory?: (options: BackgroundStateServerBrokerClientOptions) => BackgroundStateServerBrokerClient;
   recordDiagnostic?: (diagnostic: BackgroundStateServerDiagnostic) => Promise<void> | void;
+  tokenHelpers?: BackgroundStateServerTokenHelpers;
 };
 
 type ConnectedPort = {
@@ -63,6 +79,7 @@ export class BackgroundAssistantStateServer {
   private readonly runtimeClock: () => number;
   private readonly brokerClientFactory: (options: BackgroundStateServerBrokerClientOptions) => BackgroundStateServerBrokerClient;
   private readonly recordDiagnosticEntry: (diagnostic: BackgroundStateServerDiagnostic) => Promise<void> | void;
+  private readonly tokenHelpers: BackgroundStateServerTokenHelpers;
   private readonly ports = new Map<ChromeRuntimePortLike, ConnectedPort>();
   private state: BackgroundAssistantState = createInitialAssistantState();
   private brokerClient: BackgroundStateServerBrokerClient | undefined;
@@ -72,13 +89,19 @@ export class BackgroundAssistantStateServer {
     this.storage = dependencies.storage ?? chromeStorageAdapter();
     this.runtimeClock = dependencies.runtimeClock ?? Date.now;
     this.brokerClientFactory = dependencies.brokerClientFactory ?? ((options) => new BrokerClient({
-      browserToken: "",
+      browserToken: options.browserToken,
       selectedTargetId: options.selectedTargetId,
       onTargets: options.onTargets,
     }));
     this.recordDiagnosticEntry = dependencies.recordDiagnostic ?? (async (diagnostic) => {
       await appendDiagnostic(this.storage, diagnostic);
     });
+    this.tokenHelpers = dependencies.tokenHelpers ?? {
+      ensureBrowserToken,
+      getBrowserAuthState,
+      regenerateBrowserToken,
+      clearBrowserToken,
+    };
   }
 
   connectPort(port: ChromeRuntimePortLike): void {
@@ -101,19 +124,13 @@ export class BackgroundAssistantStateServer {
     }
 
     this.started = true;
-    this.brokerClient = this.brokerClientFactory({
-      selectedTargetId: this.state.selectedTargetId,
-      onTargets: (targets) => {
-        this.applyState({ kind: "targets_updated", targets });
-      },
-    });
-    this.brokerClient.connect();
+    const browserToken = await this.tokenHelpers.ensureBrowserToken(this.storage);
+    this.applyBrowserToken(browserToken);
   }
 
   stop(): void {
     this.started = false;
-    this.brokerClient?.close();
-    this.brokerClient = undefined;
+    this.applyBrowserToken(undefined);
 
     for (const { port } of this.ports.values()) {
       this.removePort(port);
@@ -128,6 +145,21 @@ export class BackgroundAssistantStateServer {
     const command = message && typeof message === "object"
       ? (message as { type?: unknown; targetId?: unknown })
       : undefined;
+
+    if (command?.type === "assistant.auth.refresh") {
+      void this.refreshBrowserToken();
+      return;
+    }
+
+    if (command?.type === "assistant.auth.regenerateToken") {
+      void this.regenerateBrowserToken();
+      return;
+    }
+
+    if (command?.type === "assistant.auth.clearToken") {
+      void this.clearBrowserToken();
+      return;
+    }
 
     if (command?.type !== "assistant.selectTarget") {
       return;
@@ -152,6 +184,81 @@ export class BackgroundAssistantStateServer {
     this.brokerClient?.setSelectedTargetId?.(this.state.selectedTargetId);
     this.broadcastSnapshot();
     void this.persistSelectedTargetId(this.state.selectedTargetId).catch(() => undefined);
+  }
+
+  private async refreshBrowserToken(): Promise<void> {
+    const authState = await this.tokenHelpers.getBrowserAuthState(this.storage);
+    this.applyBrowserToken(authState.browserToken);
+  }
+
+  private async regenerateBrowserToken(): Promise<void> {
+    const browserToken = await this.tokenHelpers.regenerateBrowserToken(this.storage);
+    this.applyBrowserToken(browserToken);
+  }
+
+  private async clearBrowserToken(): Promise<void> {
+    await this.tokenHelpers.clearBrowserToken(this.storage);
+    this.applyBrowserToken(undefined);
+  }
+
+  private applyBrowserToken(nextToken: string | undefined): void {
+    const currentToken = this.state.auth.browserToken;
+
+    if (currentToken === nextToken) {
+      return;
+    }
+
+    this.brokerClient?.close();
+    this.brokerClient = undefined;
+
+    const tokenConfigured = nextToken !== undefined;
+    let nextState = reduceAssistantState(this.state, {
+      kind: "auth_updated",
+      auth: {
+        browserToken: nextToken,
+        tokenConfigured,
+        mutationPending: false,
+        error: undefined,
+      },
+    });
+
+    nextState = reduceAssistantState(nextState, {
+      kind: "connection_updated",
+      connection: tokenConfigured
+        ? {
+            tokenConfigured: true,
+            connecting: true,
+            lastError: undefined,
+          }
+        : {
+            brokerOnline: false,
+            bridgeOnline: false,
+            connecting: false,
+            tokenConfigured: false,
+            browserAuthorized: undefined,
+            lastError: "Токен браузера не настроен. Сгенерируйте токен для подключения к Pi.",
+          },
+    });
+
+    if (!tokenConfigured) {
+      nextState = reduceAssistantState(nextState, { kind: "targets_updated", targets: [] });
+      nextState = reduceAssistantState(nextState, { kind: "select_target", targetId: undefined });
+    }
+
+    this.state = reduceAssistantState(nextState, { kind: "epoch_incremented" });
+
+    if (nextToken !== undefined) {
+      this.brokerClient = this.brokerClientFactory({
+        browserToken: nextToken,
+        selectedTargetId: this.state.selectedTargetId,
+        onTargets: (targets) => {
+          this.applyState({ kind: "targets_updated", targets });
+        },
+      });
+      this.brokerClient.connect();
+    }
+
+    this.broadcastSnapshot();
   }
 
   private async persistSelectedTargetId(selectedTargetId: string | undefined): Promise<void> {

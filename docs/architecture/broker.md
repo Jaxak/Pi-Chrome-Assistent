@@ -94,7 +94,7 @@ Broker считает цель stale, если heartbeat не обновлялс
 
 ## Доставка chat-сообщений
 
-Side panel держит постоянный WebSocket к broker. После `client.hello` браузер выбирает цель и отправляет `client.subscribeTarget`, чтобы получать только события этой Pi-сессии.
+Background service worker держит постоянный browser WebSocket к broker. После `client.hello` background выбирает цель по команде side panel или сохранённому `selectedTargetId` и отправляет `client.subscribeTarget`, чтобы получать только события этой Pi-сессии.
 
 Когда браузер вызывает `client.sendChatMessage`, broker:
 

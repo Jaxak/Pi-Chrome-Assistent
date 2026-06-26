@@ -10,9 +10,15 @@ import {
 import {
   createRequestId,
   parseProtocolEnvelope,
+  validateChatEvent,
   validateSelectionPayload,
+  validateSendChatMessagePayload,
+  validateSubscribeTargetPayload,
   type BrowserClientHelloPayload,
+  type BrowserClientSendChatMessagePayload,
   type BrowserClientSendSelectionPayload,
+  type BrowserClientSubscribeTargetPayload,
+  type ChatEvent,
   type DeliveryResult,
   type SelectionPayload,
   type TargetMetadata,
@@ -238,6 +244,45 @@ function parseClientSendSelectionPayload(
   };
 }
 
+function parseClientSubscribeTargetPayload(
+  payload: BrokerMessagePayload,
+):
+  | ({ ok: true } & BrowserClientSubscribeTargetPayload)
+  | { ok: false; error: string } {
+  const validation = validateSubscribeTargetPayload(payload);
+
+  if (!validation.ok) {
+    return validation;
+  }
+
+  const candidate = payload as BrowserClientSubscribeTargetPayload;
+  return {
+    ok: true,
+    token: candidate.token,
+    targetId: candidate.targetId,
+  };
+}
+
+function parseClientSendChatMessagePayload(
+  payload: BrokerMessagePayload,
+):
+  | ({ ok: true } & BrowserClientSendChatMessagePayload)
+  | { ok: false; error: string } {
+  const validation = validateSendChatMessagePayload(payload);
+
+  if (!validation.ok) {
+    return validation;
+  }
+
+  const candidate = payload as BrowserClientSendChatMessagePayload;
+  return {
+    ok: true,
+    token: candidate.token,
+    targetId: candidate.targetId,
+    message: candidate.message.trim(),
+  };
+}
+
 export async function startBrokerServer(
   options: StartBrokerServerOptions,
 ): Promise<BrowserConnectBrokerServer> {
@@ -252,6 +297,8 @@ export async function startBrokerServer(
   const authenticatingClientSockets = new Map<WebSocket, Promise<boolean>>();
   const socketToTargetId = new Map<WebSocket, string>();
   const targetIdToSocket = new Map<string, WebSocket>();
+  const browserSubscriptionsByTargetId = new Map<string, Set<WebSocket>>();
+  const browserSocketSubscriptions = new Map<WebSocket, Set<string>>();
   const pendingDeliveries = new Map<string, PendingDelivery>();
   const settledDeliveryTombstones = new Map<string, SettledDeliveryTombstone>();
   let staleCleanupTimer: ReturnType<typeof setInterval> | undefined;
@@ -265,6 +312,90 @@ export async function startBrokerServer(
         error: toErrorMessage(error),
       });
       return false;
+    }
+  };
+
+  const ensureAuthenticatedClient = async (socket: WebSocket, requestId: string | undefined): Promise<boolean> => {
+    if (authenticatedClientSockets.has(socket)) {
+      return true;
+    }
+
+    const authenticationPromise = authenticatingClientSockets.get(socket);
+
+    if (authenticationPromise) {
+      const authenticated = await authenticationPromise;
+      return authenticated && authenticatedClientSockets.has(socket);
+    }
+
+    sendClientError(socket, requestId, "Client is not authenticated");
+    socket.close();
+    return false;
+  };
+
+  const isMatchingBrowserToken = (socket: WebSocket, token: string, requestId: string | undefined): boolean => {
+    const authenticatedBrowserToken = authenticatedBrowserTokens.get(socket);
+
+    if (!authenticatedBrowserToken || token !== authenticatedBrowserToken) {
+      sendClientError(socket, requestId, BROWSER_NOT_AUTHORIZED_ERROR);
+      socket.close();
+      return false;
+    }
+
+    return true;
+  };
+
+  const subscribeBrowserToTarget = (socket: WebSocket, targetId: string) => {
+    const targetSubscriptions = browserSubscriptionsByTargetId.get(targetId) ?? new Set<WebSocket>();
+    targetSubscriptions.add(socket);
+    browserSubscriptionsByTargetId.set(targetId, targetSubscriptions);
+
+    const socketSubscriptions = browserSocketSubscriptions.get(socket) ?? new Set<string>();
+    socketSubscriptions.add(targetId);
+    browserSocketSubscriptions.set(socket, socketSubscriptions);
+  };
+
+  const unsubscribeBrowserFromTarget = (socket: WebSocket, targetId: string) => {
+    const targetSubscriptions = browserSubscriptionsByTargetId.get(targetId);
+    targetSubscriptions?.delete(socket);
+
+    if (targetSubscriptions?.size === 0) {
+      browserSubscriptionsByTargetId.delete(targetId);
+    }
+
+    const socketSubscriptions = browserSocketSubscriptions.get(socket);
+    socketSubscriptions?.delete(targetId);
+
+    if (socketSubscriptions?.size === 0) {
+      browserSocketSubscriptions.delete(socket);
+    }
+  };
+
+  const clearBrowserSubscriptions = (socket: WebSocket) => {
+    const subscribedTargetIds = browserSocketSubscriptions.get(socket);
+
+    if (!subscribedTargetIds) {
+      return;
+    }
+
+    for (const targetId of subscribedTargetIds) {
+      const targetSubscriptions = browserSubscriptionsByTargetId.get(targetId);
+      targetSubscriptions?.delete(socket);
+
+      if (targetSubscriptions?.size === 0) {
+        browserSubscriptionsByTargetId.delete(targetId);
+      }
+    }
+
+    browserSocketSubscriptions.delete(socket);
+  };
+
+  const forwardChatEvent = (targetId: string, requestId: string | undefined, chatEvent: ChatEvent) => {
+    for (const browserSocket of browserSubscriptionsByTargetId.get(targetId) ?? []) {
+      sendEnvelope(browserSocket, {
+        type: "client.chatEvent",
+        requestId,
+        payload: chatEvent,
+      });
     }
   };
 
@@ -529,6 +660,99 @@ export async function startBrokerServer(
           return;
         }
 
+        case "client.subscribeTarget": {
+          const parsedPayload = parseClientSubscribeTargetPayload(payload);
+
+          if (!parsedPayload.ok) {
+            sendClientError(socket, envelope.requestId, parsedPayload.error);
+            return;
+          }
+
+          if (!await ensureAuthenticatedClient(socket, envelope.requestId)) {
+            return;
+          }
+
+          if (!isMatchingBrowserToken(socket, parsedPayload.token, envelope.requestId)) {
+            return;
+          }
+
+          if (!targetIdToSocket.has(parsedPayload.targetId)) {
+            sendClientError(socket, envelope.requestId, "Target is not available");
+            return;
+          }
+
+          subscribeBrowserToTarget(socket, parsedPayload.targetId);
+          return;
+        }
+
+        case "client.unsubscribeTarget": {
+          const parsedPayload = parseClientSubscribeTargetPayload(payload);
+
+          if (!parsedPayload.ok) {
+            sendClientError(socket, envelope.requestId, parsedPayload.error);
+            return;
+          }
+
+          if (!await ensureAuthenticatedClient(socket, envelope.requestId)) {
+            return;
+          }
+
+          if (!isMatchingBrowserToken(socket, parsedPayload.token, envelope.requestId)) {
+            return;
+          }
+
+          unsubscribeBrowserFromTarget(socket, parsedPayload.targetId);
+          return;
+        }
+
+        case "client.sendChatMessage": {
+          const parsedPayload = parseClientSendChatMessagePayload(payload);
+
+          if (!parsedPayload.ok) {
+            sendClientError(socket, envelope.requestId, parsedPayload.error);
+            return;
+          }
+
+          if (!await ensureAuthenticatedClient(socket, envelope.requestId)) {
+            return;
+          }
+
+          if (!isMatchingBrowserToken(socket, parsedPayload.token, envelope.requestId)) {
+            return;
+          }
+
+          const targetSocket = targetIdToSocket.get(parsedPayload.targetId);
+
+          if (!targetSocket || targetSocket.readyState !== WebSocket.OPEN) {
+            const errorMessage = "Target is not available";
+            sendClientError(socket, envelope.requestId, errorMessage);
+            sendEnvelope(socket, {
+              type: "client.chatEvent",
+              requestId: envelope.requestId,
+              payload: {
+                kind: "error",
+                message: errorMessage,
+                timestamp: Date.now(),
+              } satisfies ChatEvent,
+            });
+            return;
+          }
+
+          sendEnvelope(socket, {
+            type: "client.chatAccepted",
+            requestId: envelope.requestId,
+          });
+          sendEnvelope(targetSocket, {
+            type: "target.deliverChatMessage",
+            requestId: envelope.requestId,
+            payload: {
+              message: parsedPayload.message,
+              sentAt: Date.now(),
+            },
+          });
+          return;
+        }
+
         case "target.register": {
           const token = payload?.token;
           const target = payload?.target;
@@ -616,6 +840,25 @@ export async function startBrokerServer(
           return;
         }
 
+        case "target.chatEvent": {
+          const targetId = socketToTargetId.get(socket);
+
+          if (!targetId) {
+            socket.close();
+            return;
+          }
+
+          const validation = validateChatEvent(payload);
+
+          if (!validation.ok) {
+            socket.close();
+            return;
+          }
+
+          forwardChatEvent(targetId, envelope.requestId, payload as ChatEvent);
+          return;
+        }
+
         case "target.sendSelectionResult": {
           if (typeof envelope.requestId !== "string") {
             socket.close();
@@ -665,6 +908,7 @@ export async function startBrokerServer(
       authenticatedClientSockets.delete(socket);
       authenticatedBrowserTokens.delete(socket);
       authenticatingClientSockets.delete(socket);
+      clearBrowserSubscriptions(socket);
 
       if (socketToTargetId.has(socket)) {
         unregisterSocketTarget(socket);

@@ -5,9 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PROTOCOL_VERSION } from "../shared/constants";
 import type {
+  ChatEvent,
   DeliveryResult,
   ProtocolEnvelope,
   SelectionPayload,
+  TargetDeliverChatMessagePayload,
   TargetMetadata,
 } from "../shared/protocol";
 import { startBrokerServer, BrowserConnectBrokerState } from "./broker";
@@ -132,6 +134,34 @@ function authenticateClient(socket: WebSocket, requestId: string, token = browse
       token,
     },
   });
+}
+
+async function registerTargetSocket(socket: WebSocket, registeredTarget: TargetMetadata, requestId: string): Promise<void> {
+  sendEnvelope(socket, {
+    version: PROTOCOL_VERSION,
+    type: "target.register",
+    requestId,
+    payload: {
+      token: targetToken,
+      target: registeredTarget,
+    },
+  });
+
+  await expect(waitForProtocolMessage(socket, "target.registered")).resolves.toEqual({
+    version: PROTOCOL_VERSION,
+    type: "target.registered",
+    requestId,
+  });
+}
+
+async function authenticateBrowserSocket(socket: WebSocket, requestId: string): Promise<void> {
+  authenticateClient(socket, requestId);
+  sendEnvelope(socket, {
+    version: PROTOCOL_VERSION,
+    type: "client.listTargets",
+    requestId: `${requestId}-ready`,
+  });
+  await waitForProtocolMessage(socket, "client.targets");
 }
 
 async function listTargets(socket: WebSocket, requestId: string): Promise<TargetMetadata[]> {
@@ -1373,6 +1403,277 @@ describe("startBrokerServer", () => {
         payload: {
           ok: true,
         },
+      });
+    } finally {
+      await Promise.allSettled([
+        closeSocket(secondClientSocket),
+        closeSocket(firstClientSocket),
+        closeSocket(targetSocket),
+        broker.close(),
+      ]);
+    }
+  });
+
+  it("rejects unauthenticated client.sendChatMessage", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const clientSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(clientSocket);
+      sendEnvelope(clientSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.sendChatMessage",
+        requestId: "chat-unauthenticated",
+        payload: {
+          token: browserToken,
+          targetId: target.targetId,
+          message: "Привет",
+        },
+      });
+
+      await expect(waitForProtocolMessage<{ error: string }>(clientSocket, "client.error")).resolves.toEqual({
+        version: PROTOCOL_VERSION,
+        type: "client.error",
+        requestId: "chat-unauthenticated",
+        payload: {
+          error: "Client is not authenticated",
+        },
+      });
+      await once(clientSocket, "close");
+    } finally {
+      await Promise.allSettled([closeSocket(clientSocket), broker.close()]);
+    }
+  });
+
+  it("forwards target chat events to subscribed browser sockets", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const targetSocket = createSocket(broker.port);
+    const clientSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(targetSocket);
+      await registerTargetSocket(targetSocket, target, "register-chat-events");
+
+      await waitForOpen(clientSocket);
+      await authenticateBrowserSocket(clientSocket, "hello-chat-events");
+      sendEnvelope(clientSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.subscribeTarget",
+        requestId: "subscribe-chat-events",
+        payload: {
+          token: browserToken,
+          targetId: target.targetId,
+        },
+      });
+
+      const chatEvent: ChatEvent = {
+        kind: "assistant_text_delta",
+        messageId: "message-1",
+        delta: "Привет",
+        timestamp: 1_710_000_000_000,
+      };
+      sendEnvelope(targetSocket, {
+        version: PROTOCOL_VERSION,
+        type: "target.chatEvent",
+        requestId: "target-chat-event",
+        payload: chatEvent,
+      });
+
+      await expect(waitForProtocolMessage<ChatEvent>(clientSocket, "client.chatEvent")).resolves.toEqual({
+        version: PROTOCOL_VERSION,
+        type: "client.chatEvent",
+        requestId: "target-chat-event",
+        payload: chatEvent,
+      });
+    } finally {
+      await Promise.allSettled([closeSocket(clientSocket), closeSocket(targetSocket), broker.close()]);
+    }
+  });
+
+  it("does not forward target chat events after browser unsubscribe", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const targetSocket = createSocket(broker.port);
+    const clientSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(targetSocket);
+      await registerTargetSocket(targetSocket, target, "register-chat-unsubscribe");
+
+      await waitForOpen(clientSocket);
+      await authenticateBrowserSocket(clientSocket, "hello-chat-unsubscribe");
+      sendEnvelope(clientSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.subscribeTarget",
+        requestId: "subscribe-chat-unsubscribe",
+        payload: {
+          token: browserToken,
+          targetId: target.targetId,
+        },
+      });
+      sendEnvelope(clientSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.unsubscribeTarget",
+        requestId: "unsubscribe-chat-unsubscribe",
+        payload: {
+          token: browserToken,
+          targetId: target.targetId,
+        },
+      });
+
+      sendEnvelope(targetSocket, {
+        version: PROTOCOL_VERSION,
+        type: "target.chatEvent",
+        requestId: "target-chat-unsubscribed",
+        payload: {
+          kind: "assistant_message_start",
+          messageId: "message-1",
+          timestamp: 1_710_000_000_000,
+        } satisfies ChatEvent,
+      });
+
+      await expectNoProtocolMessage(clientSocket, "client.chatEvent");
+    } finally {
+      await Promise.allSettled([closeSocket(clientSocket), closeSocket(targetSocket), broker.close()]);
+    }
+  });
+
+  it("delivers chat messages only to the selected target socket", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const targetSocketA = createSocket(broker.port);
+    const targetSocketB = createSocket(broker.port);
+    const clientSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(targetSocketA);
+      await registerTargetSocket(targetSocketA, target, "register-chat-target-a");
+      await waitForOpen(targetSocketB);
+      await registerTargetSocket(targetSocketB, otherTarget, "register-chat-target-b");
+
+      await waitForOpen(clientSocket);
+      await authenticateBrowserSocket(clientSocket, "hello-chat-delivery");
+      sendEnvelope(clientSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.sendChatMessage",
+        requestId: "send-chat-selected-target",
+        payload: {
+          token: browserToken,
+          targetId: otherTarget.targetId,
+          message: "Привет",
+        },
+      });
+
+      await expect(waitForProtocolMessage(clientSocket, "client.chatAccepted")).resolves.toEqual({
+        version: PROTOCOL_VERSION,
+        type: "client.chatAccepted",
+        requestId: "send-chat-selected-target",
+      });
+      await expect(
+        waitForProtocolMessage<TargetDeliverChatMessagePayload>(targetSocketB, "target.deliverChatMessage"),
+      ).resolves.toMatchObject({
+        version: PROTOCOL_VERSION,
+        type: "target.deliverChatMessage",
+        requestId: "send-chat-selected-target",
+        payload: {
+          message: "Привет",
+          sentAt: expect.any(Number),
+        },
+      });
+      await expectNoProtocolMessage(targetSocketA, "target.deliverChatMessage");
+    } finally {
+      await Promise.allSettled([
+        closeSocket(clientSocket),
+        closeSocket(targetSocketB),
+        closeSocket(targetSocketA),
+        broker.close(),
+      ]);
+    }
+  });
+
+  it("removes browser chat subscriptions when the browser socket closes", async () => {
+    const broker = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+
+    const targetSocket = createSocket(broker.port);
+    const firstClientSocket = createSocket(broker.port);
+    const secondClientSocket = createSocket(broker.port);
+
+    try {
+      await waitForOpen(targetSocket);
+      await registerTargetSocket(targetSocket, target, "register-chat-cleanup");
+
+      await waitForOpen(firstClientSocket);
+      await authenticateBrowserSocket(firstClientSocket, "hello-chat-cleanup-first");
+      sendEnvelope(firstClientSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.subscribeTarget",
+        requestId: "subscribe-chat-cleanup-first",
+        payload: {
+          token: browserToken,
+          targetId: target.targetId,
+        },
+      });
+      await closeSocket(firstClientSocket);
+
+      await waitForOpen(secondClientSocket);
+      await authenticateBrowserSocket(secondClientSocket, "hello-chat-cleanup-second");
+      sendEnvelope(secondClientSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.subscribeTarget",
+        requestId: "subscribe-chat-cleanup-second",
+        payload: {
+          token: browserToken,
+          targetId: target.targetId,
+        },
+      });
+
+      const chatEvent: ChatEvent = {
+        kind: "assistant_message_end",
+        messageId: "message-1",
+        timestamp: 1_710_000_000_000,
+      };
+      sendEnvelope(targetSocket, {
+        version: PROTOCOL_VERSION,
+        type: "target.chatEvent",
+        requestId: "target-chat-cleanup",
+        payload: chatEvent,
+      });
+
+      await expect(waitForProtocolMessage<ChatEvent>(secondClientSocket, "client.chatEvent")).resolves.toMatchObject({
+        type: "client.chatEvent",
+        payload: chatEvent,
       });
     } finally {
       await Promise.allSettled([

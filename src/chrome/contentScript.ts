@@ -1,9 +1,4 @@
-import {
-  buildSelectionPayload,
-  findBestVisibleChild,
-  findSiblingElements,
-  getParentElement,
-} from "./domPicker";
+import { buildSelectionPayload } from "./domPicker";
 import {
   formatSendSelectionErrorToastMessage,
   SEND_SELECTION_SUCCESS_TOAST_MESSAGE,
@@ -64,191 +59,56 @@ function startDomPicker(targetId: string): void {
 
   let isActive = true;
   let modalOpen = false;
-  let state: 'hover' | 'selected' = 'hover';
   let currentSelection: Element | undefined;
 
-  const overlay = createSelectionOverlay({
-    onNarrow: () => {
-      if (state !== 'selected' || !isActive || modalOpen) {
-        return;
-      }
+  const overlay = createSelectionOverlay();
 
-      const current = getCurrentSelection();
-      if (!current) return;
+  function openCommentModal(logicalSelection: Element): void {
+    if (!isActive || modalOpen) return;
 
-      const child = findBestVisibleChild(current);
-      if (!child) return;
+    modalOpen = true;
+    overlay.update(logicalSelection, true);
 
-      currentSelection = child;
-      updateCurrentSelection();
-    },
-    onChange: () => {
-      if (!isActive) return;
-      state = 'hover';
-      overlay.hidePanel();
-      const current = getCurrentSelection();
-      if (current) overlay.update(current, false);
-    },
-    onWiden: () => {
-      if (state !== 'selected' || !isActive || modalOpen) {
-        return;
-      }
-
-      const current = getCurrentSelection();
-      if (!current) return;
-
-      const parent = getParentElement(current);
-      if (!parent) return;
-
-      currentSelection = parent;
-      updateCurrentSelection();
-    },
-    onConfirm: () => {
-      if (!isActive || modalOpen) {
-        return;
-      }
-
-      const logicalSelection = getCurrentSelection();
-
-      if (!logicalSelection) {
-        return;
-      }
-
-      modalOpen = true;
-      overlay.showCommentModal({
-        onCancel: () => {
-          cleanup();
-        },
-        onSubmit: (comment) => {
-          modalOpen = false;
-
-          void (async () => {
-            try {
-              const activeTargetId = pickerWindow[PICKER_SESSION_KEY]?.targetId;
-
-              if (!activeTargetId) {
-                throw new Error("No selected target configured for picker session");
-              }
-
-              const selection = buildSelectionPayload(logicalSelection, comment);
-              const response = (await chrome.runtime.sendMessage({
-                type: "sendSelection",
-                targetId: activeTargetId,
-                selection,
-              })) as SendSelectionResponse;
-
-              if (response?.ok) {
-                showToast(SEND_SELECTION_SUCCESS_TOAST_MESSAGE, "success");
-              } else {
-                const rawErrorMessage = response?.error ?? "Unable to send selection to Pi.";
-                showToast(formatSendSelectionErrorToastMessage(rawErrorMessage), "error");
-                await reportPickerFailure("sendSelection", rawErrorMessage);
-              }
-            } catch (error) {
-              showToast(formatSendSelectionErrorToastMessage(error), "error");
-              await reportPickerFailure("sendSelection", error);
-            } finally {
-              cleanup();
+    overlay.showCommentModal({
+      onCancel: () => {
+        cleanup();
+      },
+      onSubmit: (comment) => {
+        void (async () => {
+          try {
+            const activeTargetId = pickerWindow[PICKER_SESSION_KEY]?.targetId;
+            if (!activeTargetId) {
+              throw new Error("No selected target configured for picker session");
             }
-          })();
-        },
-      });
-    },
-    onCancel: () => {
-      cleanup();
-    },
-    onUp: () => {
-      if (state !== 'selected' || !isActive || modalOpen) return;
-      tryNavigateToSibling('up');
-    },
-    onDown: () => {
-      if (state !== 'selected' || !isActive || modalOpen) return;
-      tryNavigateToSibling('down');
-    },
-  });
 
-  function getCurrentSelection(): Element | undefined {
-    return currentSelection;
-  }
+            const selection = buildSelectionPayload(logicalSelection, comment);
+            const response = (await chrome.runtime.sendMessage({
+              type: "sendSelection",
+              targetId: activeTargetId,
+              selection,
+            })) as SendSelectionResponse;
 
-  function findSiblingInDomOrder(
-    currentSelection: Element,
-    siblings: Element[],
-    direction: "up" | "down",
-  ): Element | null {
-    const parent = currentSelection.parentElement;
-    if (!parent) return null;
-
-    const allChildren = Array.from(parent.children);
-    const currentDomIndex = allChildren.indexOf(currentSelection);
-
-    if (direction === "up") {
-      for (let i = currentDomIndex - 1; i >= 0; i--) {
-        if (siblings.includes(allChildren[i])) {
-          return allChildren[i];
-        }
-      }
-    } else {
-      for (let i = currentDomIndex + 1; i < allChildren.length; i++) {
-        if (siblings.includes(allChildren[i])) {
-          return allChildren[i];
-        }
-      }
-    }
-    return null;
-  }
-
-  function tryNavigateToSibling(direction: "up" | "down"): boolean {
-    const current = getCurrentSelection();
-    if (!current) return false;
-
-    const siblings = findSiblingElements(current);
-    if (siblings.elements.length === 0) return false;
-
-    const found = findSiblingInDomOrder(current, siblings.elements, direction);
-    if (!found) return false;
-
-    currentSelection = found;
-    updateCurrentSelection();
-    return true;
-  }
-
-  function getSiblingNavigationState(element: Element): { canGoUp: boolean; canGoDown: boolean } {
-    const siblings = findSiblingElements(element);
-    let canGoUp = false;
-    let canGoDown = false;
-
-    if (siblings.elements.length > 0) {
-      canGoUp = findSiblingInDomOrder(element, siblings.elements, "up") !== null;
-      canGoDown = findSiblingInDomOrder(element, siblings.elements, "down") !== null;
-    }
-
-    return { canGoUp, canGoDown };
-  }
-
-  function updateCurrentSelection(): void {
-    const currentSelection = getCurrentSelection();
-
-    if (!currentSelection) {
-      overlay.setNavigationState({ canNarrow: false, canWiden: false, canGoUp: false, canGoDown: false });
-      return;
-    }
-
-    overlay.update(currentSelection, state === 'selected');
-
-    const { canGoUp, canGoDown } = getSiblingNavigationState(currentSelection);
-
-    overlay.setNavigationState({
-      canNarrow: findBestVisibleChild(currentSelection) !== null,
-      canWiden: getParentElement(currentSelection) !== null,
-      canGoUp,
-      canGoDown,
+            if (response?.ok) {
+              showToast(SEND_SELECTION_SUCCESS_TOAST_MESSAGE, "success");
+            } else {
+              const rawErrorMessage = response?.error ?? "Unable to send selection to Pi.";
+              showToast(formatSendSelectionErrorToastMessage(rawErrorMessage), "error");
+              await reportPickerFailure("sendSelection", rawErrorMessage);
+            }
+          } catch (error) {
+            showToast(formatSendSelectionErrorToastMessage(error), "error");
+            await reportPickerFailure("sendSelection", error);
+          } finally {
+            cleanup();
+          }
+        })();
+      },
     });
   }
 
-  function applySelection(target: Element): void {
+  function applySelection(target: Element, selected = false): void {
     currentSelection = target;
-    updateCurrentSelection();
+    overlay.update(target, selected);
   }
 
   const cleanup = () => {
@@ -275,10 +135,6 @@ function startDomPicker(targetId: string): void {
 
     overlay.updatePointer(event.clientX, event.clientY);
 
-    if (state !== 'hover') {
-      return;
-    }
-
     const hovered = event.target instanceof Element
       ? event.target
       : document.elementFromPoint(event.clientX, event.clientY);
@@ -291,16 +147,15 @@ function startDomPicker(targetId: string): void {
   };
 
   const handleClick = (event: MouseEvent) => {
-    if (state !== 'hover' || !isActive || modalOpen) return;
-    const target = event.target instanceof Element ? event.target : null;
+    if (!isActive || modalOpen) return;
+    const target = event.target instanceof Element ? event.target : currentSelection;
     if (!target || isPickerUiElement(target)) return;
 
     event.preventDefault();
     event.stopPropagation();
 
-    state = 'selected';
-    applySelection(target);
-    overlay.showPanel();
+    applySelection(target, true);
+    openCommentModal(target);
   };
 
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -312,19 +167,6 @@ function startDomPicker(targetId: string): void {
       event.preventDefault();
       event.stopPropagation();
       cleanup();
-    }
-
-    // ArrowUp / ArrowDown for sibling navigation
-    if (state === 'selected' && !modalOpen) {
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        event.stopPropagation();
-        tryNavigateToSibling('up');
-      } else if (event.key === "ArrowDown") {
-        event.preventDefault();
-        event.stopPropagation();
-        tryNavigateToSibling('down');
-      }
     }
   };
 

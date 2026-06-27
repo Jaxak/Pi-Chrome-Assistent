@@ -560,6 +560,7 @@ describe("BackgroundAssistantStateServer", () => {
 
     brokerClients[0]?.emitConnectionState({ online: false, statusText: "Pi недоступен" });
     const offlineSnapshot = server.getSnapshot();
+    const epochAfterOffline = offlineSnapshot.epoch;
     const broadcastsAfterOffline = port.postedMessages.length;
     expect(offlineSnapshot.connection).toMatchObject({
       brokerOnline: false,
@@ -573,6 +574,12 @@ describe("BackgroundAssistantStateServer", () => {
     expect(server.getSnapshot()).toEqual(offlineSnapshot);
     expect(server.getSnapshot().connection.connecting).toBe(false);
     expect(server.getSnapshot().connection.lastError).toBe("Pi недоступен");
+    expect(port.postedMessages).toHaveLength(broadcastsAfterOffline);
+
+    brokerClients[0]?.emitConnectionState({ online: false, statusText: "Pi недоступен" });
+
+    expect(server.getSnapshot()).toEqual(offlineSnapshot);
+    expect(server.getSnapshot().epoch).toBe(epochAfterOffline);
     expect(port.postedMessages).toHaveLength(broadcastsAfterOffline);
 
     brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });

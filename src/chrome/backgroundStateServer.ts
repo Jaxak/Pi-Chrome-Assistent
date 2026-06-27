@@ -455,6 +455,18 @@ export class BackgroundAssistantStateServer {
               lastError: connectionState.statusText,
             };
 
+    const currentConnection = this.state.connection;
+    if (
+      currentConnection.brokerOnline === connection.brokerOnline &&
+      currentConnection.bridgeOnline === connection.bridgeOnline &&
+      currentConnection.connecting === connection.connecting &&
+      currentConnection.tokenConfigured === connection.tokenConfigured &&
+      currentConnection.browserAuthorized === connection.browserAuthorized &&
+      currentConnection.lastError === connection.lastError
+    ) {
+      return;
+    }
+
     this.applyState({ kind: "connection_updated", connection });
   }
 

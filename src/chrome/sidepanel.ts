@@ -1,6 +1,5 @@
 import type { TargetMetadata } from "../shared/protocol";
 import {
-  formatAssistantStatus,
   isChatSendDisabled,
   type BackgroundAssistantState,
 } from "./assistantState";
@@ -30,7 +29,6 @@ type SidePanelElements = {
   assistantPanel: HTMLElement | null;
   sessionsPanel: HTMLElement | null;
   authorizationPanel: HTMLElement | null;
-  statusText: HTMLSpanElement | null;
   sendButton: HTMLButtonElement | null;
   chatInput: HTMLTextAreaElement | null;
   chatSendButton: HTMLButtonElement | null;
@@ -88,7 +86,6 @@ function getSidePanelElements(): SidePanelElements {
     assistantPanel: document.querySelector<HTMLElement>("#panel-assistant"),
     sessionsPanel: document.querySelector<HTMLElement>("#panel-sessions"),
     authorizationPanel: document.querySelector<HTMLElement>("#panel-auth"),
-    statusText: document.querySelector<HTMLSpanElement>("#status-text"),
     sendButton: document.querySelector<HTMLButtonElement>("#send-button"),
     chatInput: document.querySelector<HTMLTextAreaElement>("#chat-input"),
     chatSendButton: document.querySelector<HTMLButtonElement>("#chat-send-button"),
@@ -110,12 +107,6 @@ function getSidePanelElements(): SidePanelElements {
     regenerateBrowserTokenButton: document.querySelector<HTMLButtonElement>("#regenerate-browser-token-button"),
     clearBrowserTokenButton: document.querySelector<HTMLButtonElement>("#clear-browser-token-button"),
   };
-}
-
-function setStatus(elements: SidePanelElements, message: string): void {
-  if (elements.statusText) {
-    elements.statusText.textContent = message;
-  }
 }
 
 function setDiagnostics(elements: SidePanelElements, message: string): void {
@@ -462,7 +453,6 @@ function renderAssistantSnapshot(elements: SidePanelElements, state: BackgroundA
   currentSelectedTargetId = state.selectedTargetId;
   currentTokenConfigured = state.connection.tokenConfigured;
 
-  setStatus(elements, formatAssistantStatus(state));
   setBaseDiagnostics(elements, formatDiagnostics(state.diagnostics));
   renderTargetsFromSnapshot(elements, state);
   renderChat(elements);
@@ -478,7 +468,6 @@ function renderAssistantUnavailable(elements: SidePanelElements): void {
   currentTokenConfigured = undefined;
   currentBrowserToken = undefined;
 
-  setStatus(elements, SIDEPANEL_UNAVAILABLE_TEXT);
   setBaseDiagnostics(elements, SIDEPANEL_UNAVAILABLE_TEXT);
   renderTargetPlaceholder(elements, SIDEPANEL_UNAVAILABLE_TEXT, "warning");
   renderChat(elements);
@@ -662,20 +651,16 @@ function initializeSidePanel(): void {
     try {
       sendButton.disabled = true;
       sendButton.setAttribute("aria-disabled", "true");
-      setStatus(elements, `Запускаем DOM picker · ${formatTargetPrimaryLabel(selectedTarget)}`);
-
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       postAssistantCommand({
         type: "assistant.startDomPicker",
         tabId: activeTab?.id,
       });
 
-      setStatus(elements, START_PICKER_PROMPT);
-      setDiagnostics(elements, currentDiagnosticsBaseText);
+      setDiagnostics(elements, appendDiagnosticsNote(currentDiagnosticsBaseText, START_PICKER_PROMPT));
       // Боковая панель остаётся открытой, пока пользователь выбирает DOM-элемент на странице.
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      setStatus(elements, "Не удалось запустить DOM picker");
       setPickerErrorDiagnostics(elements, errorMessage);
     } finally {
       updateSendButton(elements);

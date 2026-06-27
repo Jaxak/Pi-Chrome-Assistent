@@ -147,6 +147,17 @@ describe("sidepanel auth lifecycle", () => {
     expect(connect).toHaveBeenCalledWith({ name: "sidepanel" });
   });
 
+  it("does not render connection status in the header", async () => {
+    loadSidePanelHtml();
+    mockChrome();
+
+    await importInitializedSidePanel();
+
+    expect(document.querySelector("#status-text")).toBeNull();
+    expect(document.querySelector(".ant-badge-status")).toBeNull();
+    expect(document.querySelector(".brand-title")?.textContent).toBe("Ассистент");
+  });
+
   it("renders targets and auth token from assistant snapshots", async () => {
     loadSidePanelHtml();
     const { port } = mockChrome();
@@ -158,7 +169,6 @@ describe("sidepanel auth lifecycle", () => {
     });
     await flush();
 
-    expect(document.querySelector("#status-text")?.textContent).toBe("Pi подключён · целей: 1");
     expect(document.querySelector("#target-container")?.textContent).toContain("Alpha");
     expect(document.querySelector("#target-container")?.textContent).toContain("/tmp/pi-alpha");
     expect(document.querySelector("#browser-token-output")?.textContent).toBe("token-1");
@@ -200,7 +210,7 @@ describe("sidepanel auth lifecycle", () => {
     port.disconnect();
     await flush();
 
-    expect(document.querySelector("#status-text")?.textContent).toContain("Состояние боковой панели недоступно");
+    expect(document.querySelector("#status-text")).toBeNull();
     expect(document.querySelector("#target-container")?.textContent).toContain("Состояние боковой панели недоступно");
     expect(document.querySelector<HTMLButtonElement>("#send-button")?.disabled).toBe(true);
     expect(document.querySelector<HTMLButtonElement>("#chat-send-button")?.disabled).toBe(true);

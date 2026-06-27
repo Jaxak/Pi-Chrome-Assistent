@@ -94,10 +94,6 @@ button:focus-visible, textarea:focus-visible, .target-option:focus-visible {
   font-weight: 600;
 }
 .brand-title { overflow: hidden; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.brand-subtitle { overflow: hidden; color: var(--ant-color-text-tertiary); font-size: 12px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-
-.ant-badge-status { display: inline-flex; align-items: center; gap: 6px; color: var(--ant-color-text-secondary); font-size: 12px; }
-.ant-badge-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ant-color-success); }
 
 .ant-content { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 8px; }
 .ant-card { border: 1px solid var(--ant-color-border-secondary); border-radius: var(--ant-radius-lg); background: var(--ant-color-bg-container); }

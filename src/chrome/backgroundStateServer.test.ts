@@ -544,6 +544,49 @@ describe("BackgroundAssistantStateServer", () => {
     expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
   });
 
+  it("keeps reconnect churn visually offline after an error until broker comes online", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    await server.start();
+    server.connectPort(port);
+
+    brokerClients[0]?.emitConnectionState({ online: false, statusText: "Подключаемся к Pi…" });
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: true,
+      lastError: undefined,
+    });
+
+    brokerClients[0]?.emitConnectionState({ online: false, statusText: "Pi недоступен" });
+    const offlineSnapshot = server.getSnapshot();
+    const broadcastsAfterOffline = port.postedMessages.length;
+    expect(offlineSnapshot.connection).toMatchObject({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: false,
+      lastError: "Pi недоступен",
+    });
+
+    brokerClients[0]?.emitConnectionState({ online: false, statusText: "Подключаемся к Pi…" });
+
+    expect(server.getSnapshot()).toEqual(offlineSnapshot);
+    expect(server.getSnapshot().connection.connecting).toBe(false);
+    expect(server.getSnapshot().connection.lastError).toBe("Pi недоступен");
+    expect(port.postedMessages).toHaveLength(broadcastsAfterOffline);
+
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: true,
+      bridgeOnline: true,
+      connecting: false,
+      browserAuthorized: true,
+      lastError: undefined,
+    });
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
   it("reduces broker connection states and ignores stale generation updates", async () => {
     const { server, brokerClients } = createServer();
     const port = new FakePort();

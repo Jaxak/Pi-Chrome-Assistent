@@ -401,17 +401,17 @@ function renderTargetsFromSnapshot(elements: SidePanelElements, state: Backgroun
     return;
   }
 
+  if (state.targets.length > 0) {
+    renderTargetList(elements);
+    return;
+  }
+
   if (!state.connection.brokerOnline && !state.connection.connecting) {
     renderTargetPlaceholder(elements, BROKER_UNAVAILABLE_GUIDANCE, "warning");
     return;
   }
 
-  if (state.targets.length === 0) {
-    renderTargetPlaceholder(elements, NO_TARGETS_GUIDANCE);
-    return;
-  }
-
-  renderTargetList(elements);
+  renderTargetPlaceholder(elements, NO_TARGETS_GUIDANCE);
 }
 
 function setAuthButtonsPending(elements: SidePanelElements, pending: boolean): void {

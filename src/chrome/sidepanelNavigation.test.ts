@@ -195,6 +195,33 @@ describe("sidepanel navigation", () => {
     expect(input?.value).toBe("");
   });
 
+  it("keeps known targets rendered while broker is temporarily offline", async () => {
+    loadSidePanelHtml();
+    const { port } = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    port.emit({
+      type: "assistant.snapshot",
+      state: createReadySnapshot({
+        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
+        selectedTargetId: "target-1",
+        connection: {
+          brokerOnline: false,
+          bridgeOnline: false,
+          connecting: false,
+          tokenConfigured: true,
+          browserAuthorized: undefined,
+          lastError: "Pi недоступен",
+        },
+      }),
+    });
+    await flush();
+
+    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.textContent).toContain("Alpha");
+    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.textContent).toContain("Beta");
+    expect(document.querySelector("#target-container")?.textContent).not.toContain("Pi не подключён");
+  });
+
   it("posts DOM picker command through assistant port with active tab id", async () => {
     loadSidePanelHtml();
     const { port, tabsQuery, sendMessage } = mockChromeRuntime();

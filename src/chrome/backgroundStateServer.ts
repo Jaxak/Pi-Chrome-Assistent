@@ -406,6 +406,17 @@ export class BackgroundAssistantStateServer {
 
   private applyBrokerConnectionState(connectionState: BrokerConnectionState): void {
     const isConnecting = connectionState.statusText === "Подключаемся к Pi…";
+
+    if (
+      !connectionState.online &&
+      isConnecting &&
+      !this.state.connection.brokerOnline &&
+      !this.state.connection.connecting &&
+      this.state.connection.lastError
+    ) {
+      return;
+    }
+
     const isBrowserAuthError = connectionState.statusText.startsWith("Браузер не авторизован");
     const tokenConfigured = this.state.auth.tokenConfigured;
     const connection = connectionState.online

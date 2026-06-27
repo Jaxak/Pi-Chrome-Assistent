@@ -11,7 +11,9 @@
       <header class="ant-layout-header">
         <div class="header-row">
           <div class="brand">
-            <div class="avatar" aria-hidden="true">π</div>
+            <div class="avatar" aria-hidden="true">
+              <img class="avatar__icon" src="./icon.svg" alt="" />
+            </div>
             <div class="brand-copy">
               <div class="brand-title">Ассистент</div>
             </div>
@@ -32,7 +34,11 @@
       <section id="panel-assistant" class="ant-content" aria-label="Чат ассистента">
         <section class="ant-card session-card" aria-labelledby="target-heading">
           <div class="ant-card-body">
-            <label class="field-label" id="target-heading">Сессия</label>
+            <div class="session-card__header">
+              <label class="field-label" id="target-heading">Сессия</label>
+              <button id="refresh-sessions-button" class="button-secondary button-compact" type="button">Обновить</button>
+            </div>
+            <div id="session-stale-guidance" class="session-stale-guidance" role="status" hidden></div>
             <div id="target-container" class="target-container" role="listbox" aria-label="Сессии Pi">
               <div class="target-placeholder">Цели появятся здесь.</div>
             </div>
@@ -52,12 +58,17 @@
             <div id="message-list" class="message-list" aria-live="polite"></div>
             <div id="agent-working" class="agent-working" role="status" aria-live="polite" hidden>
               <span class="agent-working__dots"><i></i><i></i><i></i></span>
-              Агент работает в фоне…
+              <span class="agent-working__label">Агент работает в фоне…</span>
             </div>
           </div>
 
           <footer class="composer">
             <textarea id="chat-input" class="ant-input" placeholder="Сообщение ассистенту" rows="3"></textarea>
+            <div id="composer-runtime" class="composer-runtime" aria-live="polite">
+              <button id="model-button" class="composer-runtime__model" type="button" aria-haspopup="true" aria-expanded="false">Модель: —</button>
+              <span id="context-usage" class="composer-runtime__context">Контекст: —</span>
+            </div>
+            <div id="model-menu" class="model-menu" hidden></div>
             <div class="composer-actions">
               <div class="kebab-menu">
                 <button id="composer-menu-button" class="ant-btn-icon" type="button" aria-label="Дополнительные действия" aria-expanded="false">⋯</button>

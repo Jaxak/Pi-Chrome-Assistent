@@ -44,8 +44,23 @@ export function createAgentWorkingElement(label: string): HTMLElement {
   dots.className = "agent-working__dots";
   dots.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
 
-  element.append(dots, document.createTextNode(label));
+  const labelSpan = document.createElement("span");
+  labelSpan.className = "agent-working__label";
+  labelSpan.textContent = label;
+
+  element.append(dots, labelSpan);
   return element;
+}
+
+export function updateAgentWorkingElement(element: HTMLElement, label: string, visible: boolean): void {
+  if (element.hidden !== !visible) {
+    element.hidden = !visible;
+  }
+
+  const labelSpan = element.querySelector<HTMLElement>(".agent-working__label");
+  if (labelSpan && labelSpan.textContent !== label) {
+    labelSpan.textContent = label;
+  }
 }
 
 export function isChatSendDisabled(input: ChatSendDisabledInput): boolean {

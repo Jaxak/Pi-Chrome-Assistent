@@ -108,6 +108,27 @@ Background service worker держит постоянный browser WebSocket к
 
 Если цель недоступна, broker возвращает `client.error` и может отправить browser-стороне chat event вида `error`, чтобы UI мог снять индикатор фоновой работы.
 
+## Runtime state и смена модели
+
+После подключения target публикует состояние выбранной Pi-сессии:
+
+- текущая модель (`provider`, `id`, `label`);
+- заполненность контекстного окна (`tokens`, `maxTokens`, `percent`);
+- признак idle/busy;
+- список доступных моделей.
+
+Broker не является владельцем этих данных. Он только пересылает `target.runtimeState` и `target.availableModels` как `client.runtimeState` и `client.availableModels` browser sockets, подписанным на соответствующий `targetId`.
+
+Смена модели идёт через тот же live browser WebSocket:
+
+1. side panel отправляет в background команду `assistant.model.set`;
+2. background вызывает `client.setTargetModel` через live `BrokerClient`;
+3. broker пересылает цель как `target.setModel`;
+4. Pi target ищет модель в `ctx.modelRegistry.getAvailable()`, вызывает `pi.setModel(model)` и отвечает `target.modelSetResult`;
+5. broker возвращает browser-стороне `client.modelSetResult`.
+
+Если target не отвечает, broker завершает команду ошибкой `Model change timed out`.
+
 ## Доставка выделения
 
 Когда браузер вызывает `client.sendSelection`, broker:

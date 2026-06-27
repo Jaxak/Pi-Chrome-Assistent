@@ -8,6 +8,7 @@ import {
   validateChatEvent,
   validateSelectionPayload,
   validateSendChatMessagePayload,
+  validateSetTargetModelPayload,
   validateSubscribeTargetPayload,
   type BrowserClientHelloPayload,
   type BrowserClientSendChatMessagePayload,
@@ -15,6 +16,7 @@ import {
   type BrowserClientSubscribeTargetPayload,
   type ChatEvent,
   type SelectionPayload,
+  type TargetRuntimeState,
 } from "./protocol";
 import { BROWSER_NOT_AUTHORIZED_ERROR, BROWSER_TOKEN_STORAGE_KEY } from "./constants";
 
@@ -154,6 +156,49 @@ describe("chat protocol validation", () => {
       ok: false,
       error: "Unknown chat event kind",
     });
+  });
+});
+
+describe("runtime state and model protocol validation", () => {
+  it("accepts runtime/model message types as protocol envelopes", () => {
+    expect(isProtocolEnvelope({ version: 1, type: "target.runtimeState" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "target.availableModels" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "client.setTargetModel", requestId: "model-1" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "target.setModel", requestId: "model-1" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "target.modelSetResult", requestId: "model-1" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "client.modelSetResult", requestId: "model-1" })).toBe(true);
+  });
+
+  it("exposes runtime state payload shape", () => {
+    const state: TargetRuntimeState = {
+      targetId: "target-1",
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      contextUsage: { tokens: 1234, maxTokens: 200000, percent: 1 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_000,
+    };
+
+    expect(state).toMatchObject({ targetId: "target-1", model: { id: "claude-sonnet" } });
+  });
+
+  it("validates set target model payload", () => {
+    expect(validateSetTargetModelPayload({
+      token: "browser-token-1",
+      targetId: "target-1",
+      provider: "anthropic",
+      modelId: "claude-sonnet",
+    })).toEqual({ ok: true });
+  });
+
+  it("rejects set target model payload with missing fields", () => {
+    expect(validateSetTargetModelPayload({ token: "", targetId: "target-1", provider: "anthropic", modelId: "m" }))
+      .toEqual({ ok: false, error: "Missing token" });
+    expect(validateSetTargetModelPayload({ token: "t", targetId: "", provider: "anthropic", modelId: "m" }))
+      .toEqual({ ok: false, error: "Missing targetId" });
+    expect(validateSetTargetModelPayload({ token: "t", targetId: "target-1", provider: "", modelId: "m" }))
+      .toEqual({ ok: false, error: "Missing provider" });
+    expect(validateSetTargetModelPayload({ token: "t", targetId: "target-1", provider: "anthropic", modelId: "" }))
+      .toEqual({ ok: false, error: "Missing modelId" });
   });
 });
 

@@ -91,7 +91,12 @@ button:focus-visible, textarea:focus-visible, .target-option:focus-visible {
   border-radius: 50%;
   background: var(--ant-color-primary);
   color: #fff;
-  font-weight: 600;
+}
+.avatar__icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
 }
 .brand-title { overflow: hidden; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -99,6 +104,10 @@ button:focus-visible, textarea:focus-visible, .target-option:focus-visible {
 .ant-card { border: 1px solid var(--ant-color-border-secondary); border-radius: var(--ant-radius-lg); background: var(--ant-color-bg-container); }
 .ant-card-body { padding: 8px; }
 .session-card { margin-bottom: 8px; }
+.session-card__header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.session-card__header .field-label { margin-bottom: 0; }
+.session-stale-guidance { margin: 0 0 6px; color: #ad6800; font-size: 12px; }
+@media (prefers-color-scheme: dark) { .session-stale-guidance { color: #ffd591; } }
 .field-label, .panel__label { display: block; margin-bottom: 6px; color: var(--ant-color-text-secondary); font-size: 12px; font-weight: 500; }
 .panel__hint { margin: 0; color: var(--ant-color-text-secondary); font-size: 12px; }
 
@@ -158,6 +167,12 @@ button:focus-visible, textarea:focus-visible, .target-option:focus-visible {
 .composer { border-top: 1px solid var(--ant-color-border-secondary); background: var(--ant-color-bg-container); padding: 8px; }
 .ant-input { width: 100%; min-height: 64px; resize: none; border: 1px solid var(--ant-color-border); border-radius: var(--ant-radius); outline: none; padding: 8px 11px; background: var(--ant-color-bg-container); color: var(--ant-color-text); }
 .ant-input::placeholder { color: var(--ant-color-text-tertiary); }
+.composer-runtime { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--ant-color-text-secondary); font-size: 12px; }
+.composer-runtime__model { min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: var(--ant-color-text-secondary); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.composer-runtime__context { flex: 0 1 auto; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.model-menu { max-height: 160px; margin-top: 6px; overflow: auto; border: 1px solid var(--ant-color-border-secondary); border-radius: var(--ant-radius); background: var(--ant-color-bg-elevated); box-shadow: var(--ant-shadow); }
+.model-menu__item { display: block; width: 100%; padding: 6px 10px; border: 0; background: transparent; color: var(--ant-color-text); text-align: left; }
+.model-menu__item:hover { background: var(--ant-color-fill-quaternary); }
 .composer-actions { margin-top: 8px; }
 
 .ant-btn, .ant-btn-icon, .button-secondary, .button-danger {

@@ -1,4 +1,4 @@
-import type { ChatEvent, TargetMetadata } from "../shared/protocol";
+import type { ChatEvent, DeliveryResult, TargetMetadata, TargetModelSummary, TargetRuntimeState } from "../shared/protocol";
 import {
   createInitialAssistantState,
   isChatSendDisabled,
@@ -47,6 +47,7 @@ export type BackgroundStateServerBrokerClient = {
   close(): void;
   setSelectedTargetId?(targetId: string | undefined): void;
   sendChatMessage?(message: string): boolean;
+  setTargetModel?(input: { targetId?: string; provider: string; modelId: string }): boolean;
 };
 
 export type BackgroundStateServerBrokerClientOptions = {
@@ -54,6 +55,9 @@ export type BackgroundStateServerBrokerClientOptions = {
   selectedTargetId?: string;
   onTargets?: (targets: TargetMetadata[]) => void;
   onChatEvent?: (event: ChatEvent) => void;
+  onRuntimeState?: (state: TargetRuntimeState) => void;
+  onAvailableModels?: (models: TargetModelSummary[], targetId: string) => void;
+  onModelSetResult?: (result: DeliveryResult) => void;
   onConnectionState?: (state: BrokerConnectionState) => void;
 };
 
@@ -69,6 +73,12 @@ export type BackgroundStateServerStartDomPicker = (input: {
   tabId?: number;
 }) => Promise<{ ok?: boolean; error?: string }>;
 
+export type BackgroundStateServerListTargets = (browserToken: string) => Promise<{
+  ok: boolean;
+  targets: TargetMetadata[];
+  error?: string;
+}>;
+
 export type BackgroundAssistantStateServerDependencies = {
   storage?: BackgroundStateServerStorage;
   runtimeClock?: () => number;
@@ -76,6 +86,7 @@ export type BackgroundAssistantStateServerDependencies = {
   recordDiagnostic?: (diagnostic: BackgroundStateServerDiagnostic) => Promise<void> | void;
   tokenHelpers?: BackgroundStateServerTokenHelpers;
   startDomPicker?: BackgroundStateServerStartDomPicker;
+  listTargets?: BackgroundStateServerListTargets;
 };
 
 type ConnectedPort = {
@@ -91,6 +102,7 @@ export class BackgroundAssistantStateServer {
   private readonly recordDiagnosticEntry: (diagnostic: BackgroundStateServerDiagnostic) => Promise<void> | void;
   private readonly tokenHelpers: BackgroundStateServerTokenHelpers;
   private readonly startDomPickerCommand: BackgroundStateServerStartDomPicker | undefined;
+  private readonly listTargetsCommand: BackgroundStateServerListTargets | undefined;
   private readonly ports = new Map<ChromeRuntimePortLike, ConnectedPort>();
   private state: BackgroundAssistantState = createInitialAssistantState();
   private brokerClient: BackgroundStateServerBrokerClient | undefined;
@@ -98,6 +110,7 @@ export class BackgroundAssistantStateServer {
   private started = false;
   private startupGeneration = 0;
   private brokerGeneration = 0;
+  private sessionsRefreshPending = false;
 
   constructor(dependencies: BackgroundAssistantStateServerDependencies = {}) {
     this.storage = dependencies.storage ?? chromeStorageAdapter();
@@ -107,6 +120,9 @@ export class BackgroundAssistantStateServer {
       selectedTargetId: options.selectedTargetId,
       onTargets: options.onTargets,
       onChatEvent: options.onChatEvent,
+      onRuntimeState: options.onRuntimeState,
+      onAvailableModels: options.onAvailableModels,
+      onModelSetResult: options.onModelSetResult,
       onConnectionState: options.onConnectionState,
     }));
     this.recordDiagnosticEntry = dependencies.recordDiagnostic ?? (async (diagnostic) => {
@@ -119,9 +135,11 @@ export class BackgroundAssistantStateServer {
       clearBrowserToken,
     };
     this.startDomPickerCommand = dependencies.startDomPicker;
+    this.listTargetsCommand = dependencies.listTargets;
   }
 
   connectPort(port: ChromeRuntimePortLike): void {
+    const isFirstPort = this.ports.size === 0;
     const onMessage = (message: unknown) => {
       this.handlePortMessage(message);
     };
@@ -133,6 +151,11 @@ export class BackgroundAssistantStateServer {
     port.onMessage.addListener(onMessage);
     port.onDisconnect.addListener(onDisconnect);
     this.postSnapshot(port);
+
+    // Автоматически запрашиваем сессии при открытии панели (если токен уже готов и есть listTargets)
+    if (isFirstPort && this.state.auth.browserToken !== undefined && this.listTargetsCommand) {
+      this.refreshSessionsViaListTargets();
+    }
   }
 
   async start(): Promise<void> {
@@ -243,8 +266,24 @@ export class BackgroundAssistantStateServer {
       return;
     }
 
+    if (command?.type === "assistant.model.set") {
+      const provider = typeof (command as { provider?: unknown }).provider === "string"
+        ? (command as { provider: string }).provider
+        : "";
+      const modelId = typeof (command as { modelId?: unknown }).modelId === "string"
+        ? (command as { modelId: string }).modelId
+        : "";
+      this.setTargetModel(provider, modelId);
+      return;
+    }
+
     if (command?.type === "assistant.diagnostics.refresh") {
       void this.refreshDiagnostics();
+      return;
+    }
+
+    if (command?.type === "assistant.sessions.refresh") {
+      this.handleSessionsRefresh();
       return;
     }
 
@@ -362,6 +401,46 @@ export class BackgroundAssistantStateServer {
     }
   }
 
+  private setTargetModel(provider: string, modelId: string): void {
+    const normalizedProvider = provider.trim();
+    const normalizedModelId = modelId.trim();
+
+    if (!this.state.selectedTargetId || normalizedProvider.length === 0 || normalizedModelId.length === 0) {
+      this.applyState({
+        kind: "runtime_updated",
+        runtime: {
+          modelMutationPending: false,
+          modelError: "Выберите модель и сессию Pi.",
+        },
+      });
+      return;
+    }
+
+    this.applyState({
+      kind: "runtime_updated",
+      runtime: {
+        modelMutationPending: true,
+        modelError: undefined,
+      },
+    });
+
+    const sent = this.brokerClient?.setTargetModel?.({
+      targetId: this.state.selectedTargetId,
+      provider: normalizedProvider,
+      modelId: normalizedModelId,
+    }) === true;
+
+    if (!sent) {
+      this.applyState({
+        kind: "runtime_updated",
+        runtime: {
+          modelMutationPending: false,
+          modelError: "Pi недоступен",
+        },
+      });
+    }
+  }
+
   private selectTarget(targetId: string | undefined): void {
     this.preferredSelectedTargetId = undefined;
     const previousSelectedTargetId = this.state.selectedTargetId;
@@ -391,6 +470,12 @@ export class BackgroundAssistantStateServer {
       this.preferredSelectedTargetId = undefined;
     }
 
+    // Сбрасываем targetsStale и targetsRefreshPending при получении targets
+    nextState = reduceAssistantState(nextState, {
+      kind: "connection_updated",
+      connection: { targetsStale: false, targetsRefreshPending: false },
+    });
+
     this.state = reduceAssistantState(nextState, { kind: "epoch_incremented" });
 
     if (this.state.selectedTargetId !== undefined || this.state.selectedTargetId !== previousSelectedTargetId) {
@@ -419,6 +504,8 @@ export class BackgroundAssistantStateServer {
 
     const isBrowserAuthError = connectionState.statusText.startsWith("Браузер не авторизован");
     const tokenConfigured = this.state.auth.tokenConfigured;
+    const targetsStale = this.state.targets.length > 0;
+    const targetsRefreshPending = this.state.connection.targetsRefreshPending;
     const connection = connectionState.online
       ? {
           brokerOnline: true,
@@ -426,6 +513,8 @@ export class BackgroundAssistantStateServer {
           connecting: false,
           tokenConfigured,
           browserAuthorized: true,
+          targetsStale: this.state.connection.targetsStale && this.state.targets.length > 0,
+          targetsRefreshPending,
           lastError: undefined,
         }
       : isConnecting
@@ -435,6 +524,8 @@ export class BackgroundAssistantStateServer {
             connecting: true,
             tokenConfigured,
             browserAuthorized: undefined,
+            targetsStale,
+            targetsRefreshPending,
             lastError: undefined,
           }
         : isBrowserAuthError
@@ -444,6 +535,8 @@ export class BackgroundAssistantStateServer {
               connecting: false,
               tokenConfigured,
               browserAuthorized: false,
+              targetsStale,
+              targetsRefreshPending: false,
               lastError: connectionState.statusText,
             }
           : {
@@ -452,6 +545,8 @@ export class BackgroundAssistantStateServer {
               connecting: false,
               tokenConfigured,
               browserAuthorized: undefined,
+              targetsStale,
+              targetsRefreshPending: false,
               lastError: connectionState.statusText,
             };
 
@@ -462,6 +557,8 @@ export class BackgroundAssistantStateServer {
       currentConnection.connecting === connection.connecting &&
       currentConnection.tokenConfigured === connection.tokenConfigured &&
       currentConnection.browserAuthorized === connection.browserAuthorized &&
+      currentConnection.targetsStale === connection.targetsStale &&
+      currentConnection.targetsRefreshPending === connection.targetsRefreshPending &&
       currentConnection.lastError === connection.lastError
     ) {
       return;
@@ -494,6 +591,202 @@ export class BackgroundAssistantStateServer {
         "assistant.diagnostics.refresh",
         `Не удалось обновить диагностику: ${getErrorMessage(error)}`,
       );
+    }
+  }
+
+  private handleSessionsRefresh(): void {
+    // Если есть listTargets, используем одноразовый запрос
+    if (this.listTargetsCommand) {
+      this.refreshSessionsViaListTargets();
+      return;
+    }
+    // Иначе используем старый метод через BrokerClient
+    this.refreshSessionsViaBrokerClient();
+  }
+
+  private refreshSessionsViaListTargets(): void {
+    const browserToken = this.state.auth.browserToken;
+
+    if (browserToken === undefined) {
+      this.applyMissingBrowserTokenStateIfNeeded();
+      return;
+    }
+
+    if (this.sessionsRefreshPending) {
+      return;
+    }
+
+    this.sessionsRefreshPending = true;
+    const liveBrokerOnline = this.state.connection.brokerOnline && this.state.connection.bridgeOnline;
+    this.state = reduceAssistantState(
+      reduceAssistantState(this.state, {
+        kind: "connection_updated",
+        connection: {
+          brokerOnline: liveBrokerOnline,
+          bridgeOnline: liveBrokerOnline,
+          connecting: !liveBrokerOnline,
+          tokenConfigured: true,
+          browserAuthorized: liveBrokerOnline ? true : undefined,
+          targetsStale: this.state.targets.length > 0,
+          targetsRefreshPending: true,
+          lastError: undefined,
+        },
+      }),
+      { kind: "epoch_incremented" },
+    );
+    this.broadcastSnapshot();
+
+    void this.executeListTargets(browserToken);
+  }
+
+  private async executeListTargets(browserToken: string): Promise<void> {
+    try {
+      const result = await this.listTargetsCommand!(browserToken);
+      this.sessionsRefreshPending = false;
+
+      if (!result.ok) {
+        const isBrowserAuthError = result.error?.startsWith("Браузер не авторизован") ?? false;
+        this.applyState({
+          kind: "connection_updated",
+          connection: {
+            brokerOnline: false,
+            bridgeOnline: false,
+            connecting: false,
+            tokenConfigured: true,
+            browserAuthorized: isBrowserAuthError ? false : undefined,
+            targetsStale: this.state.targets.length > 0,
+            targetsRefreshPending: false,
+            lastError: result.error ?? "Pi недоступен",
+          },
+        });
+        return;
+      }
+
+      this.applyTargets(result.targets);
+      this.applyState({
+        kind: "connection_updated",
+        connection: {
+          brokerOnline: true,
+          bridgeOnline: true,
+          connecting: false,
+          tokenConfigured: true,
+          browserAuthorized: true,
+          targetsStale: false,
+          targetsRefreshPending: false,
+          lastError: undefined,
+        },
+      });
+    } catch (error) {
+      this.sessionsRefreshPending = false;
+      const errorMessage = getErrorMessage(error);
+      await this.recordDiagnostic("assistant.sessions.refresh", errorMessage);
+      this.applyState({
+        kind: "connection_updated",
+        connection: {
+          brokerOnline: false,
+          bridgeOnline: false,
+          connecting: false,
+          tokenConfigured: true,
+          browserAuthorized: undefined,
+          targetsStale: this.state.targets.length > 0,
+          targetsRefreshPending: false,
+          lastError: "Pi недоступен",
+        },
+      });
+    }
+  }
+
+  private refreshSessionsViaBrokerClient(): void {
+    const browserToken = this.state.auth.browserToken;
+
+    if (browserToken === undefined) {
+      this.applyMissingBrowserTokenStateIfNeeded();
+      return;
+    }
+
+    this.brokerClient?.close();
+    this.brokerClient = undefined;
+    this.brokerGeneration += 1;
+
+    this.state = reduceAssistantState(
+      reduceAssistantState(this.state, {
+        kind: "connection_updated",
+        connection: {
+          brokerOnline: false,
+          bridgeOnline: false,
+          connecting: true,
+          tokenConfigured: true,
+          browserAuthorized: undefined,
+          targetsStale: this.state.targets.length > 0,
+          targetsRefreshPending: true,
+          lastError: undefined,
+        },
+      }),
+      { kind: "epoch_incremented" },
+    );
+
+    this.connectBrokerClient(browserToken);
+    this.broadcastSnapshot();
+  }
+
+  private connectBrokerClient(browserToken: string): void {
+    const brokerGeneration = this.brokerGeneration;
+    this.brokerClient = this.brokerClientFactory({
+      browserToken,
+      selectedTargetId: this.state.selectedTargetId,
+      onTargets: (targets) => {
+        if (this.brokerGeneration !== brokerGeneration) {
+          return;
+        }
+        this.applyTargets(targets);
+      },
+      onChatEvent: (event) => {
+        if (this.brokerGeneration !== brokerGeneration) {
+          return;
+        }
+        this.applyState({ kind: "chat_event", event });
+      },
+      onRuntimeState: (runtimeState) => {
+        if (this.brokerGeneration !== brokerGeneration || runtimeState.targetId !== this.state.selectedTargetId) {
+          return;
+        }
+        this.applyState({
+          kind: "runtime_updated",
+          runtime: { selectedTargetRuntime: runtimeState },
+        });
+      },
+      onAvailableModels: (models, targetId) => {
+        if (this.brokerGeneration !== brokerGeneration || targetId !== this.state.selectedTargetId) {
+          return;
+        }
+        this.applyState({
+          kind: "runtime_updated",
+          runtime: { availableModels: models },
+        });
+      },
+      onModelSetResult: (result) => {
+        if (this.brokerGeneration !== brokerGeneration) {
+          return;
+        }
+        this.applyState({
+          kind: "runtime_updated",
+          runtime: {
+            modelMutationPending: false,
+            modelError: result.ok ? undefined : (result.error ?? "Не удалось сменить модель."),
+          },
+        });
+      },
+      onConnectionState: (connectionState) => {
+        if (this.brokerGeneration !== brokerGeneration) {
+          return;
+        }
+        this.applyBrokerConnectionState(connectionState);
+      },
+    });
+    this.brokerClient.connect();
+
+    if (this.state.selectedTargetId !== undefined) {
+      this.brokerClient.setSelectedTargetId?.(this.state.selectedTargetId);
     }
   }
 
@@ -601,6 +894,7 @@ export class BackgroundAssistantStateServer {
     this.brokerGeneration += 1;
 
     const tokenConfigured = nextToken !== undefined;
+
     let nextState = reduceAssistantState(this.state, {
       kind: "auth_updated",
       auth: {
@@ -620,6 +914,8 @@ export class BackgroundAssistantStateServer {
             connecting: true,
             tokenConfigured: true,
             browserAuthorized: undefined,
+            targetsStale: this.state.targets.length > 0,
+            targetsRefreshPending: this.listTargetsCommand === undefined,
             lastError: undefined,
           }
         : {
@@ -628,6 +924,8 @@ export class BackgroundAssistantStateServer {
             connecting: false,
             tokenConfigured: false,
             browserAuthorized: undefined,
+            targetsStale: false,
+            targetsRefreshPending: false,
             lastError: "Токен браузера не настроен. Сгенерируйте токен для подключения к Pi.",
           },
     });
@@ -640,39 +938,17 @@ export class BackgroundAssistantStateServer {
     this.state = reduceAssistantState(nextState, { kind: "epoch_incremented" });
 
     if (nextToken !== undefined) {
-      const brokerGeneration = this.brokerGeneration;
-      this.brokerClient = this.brokerClientFactory({
-        browserToken: nextToken,
-        onTargets: (targets) => {
-          if (this.brokerGeneration !== brokerGeneration) {
-            return;
-          }
-
-          this.applyTargets(targets);
-        },
-        onChatEvent: (event) => {
-          if (this.brokerGeneration !== brokerGeneration) {
-            return;
-          }
-
-          this.applyState({ kind: "chat_event", event });
-        },
-        onConnectionState: (connectionState) => {
-          if (this.brokerGeneration !== brokerGeneration) {
-            return;
-          }
-
-          this.applyBrokerConnectionState(connectionState);
-        },
-      });
-      this.brokerClient.connect();
-
-      if (this.state.selectedTargetId !== undefined) {
-        this.brokerClient.setSelectedTargetId?.(this.state.selectedTargetId);
-      }
+      this.connectBrokerClient(nextToken);
     }
 
     this.broadcastSnapshot();
+
+    // Автоматически запрашиваем сессии при установке токена, если есть порты и listTargets.
+    // One-shot refresh дополняет live BrokerClient, но не заменяет его: chat/subscription
+    // требуют постоянного канала к broker.
+    if (nextToken !== undefined && this.listTargetsCommand && this.ports.size > 0) {
+      this.refreshSessionsViaListTargets();
+    }
   }
 
   private applyMissingBrowserTokenStateIfNeeded(): void {

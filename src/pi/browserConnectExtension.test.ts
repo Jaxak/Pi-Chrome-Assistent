@@ -31,6 +31,53 @@ afterEach(() => {
   vi.doUnmock("./trustedBrowserStore");
 });
 
+describe("target runtime helpers", () => {
+  it("builds runtime state from Pi extension context", async () => {
+    const { buildTargetRuntimeState } = await importBrowserConnectExtensionModule();
+    const runtime = buildTargetRuntimeState({
+      targetId: "target-1",
+      ctx: {
+        model: { provider: "anthropic", id: "claude-sonnet", name: "Claude Sonnet" },
+        getContextUsage: () => ({ tokens: 1000, contextWindow: 200000, percent: 0.5 }),
+        isIdle: () => true,
+      },
+      now: () => 1_710_000_000_500,
+    });
+
+    expect(runtime).toEqual({
+      targetId: "target-1",
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    });
+  });
+
+  it("sets target model through Pi API when model is available", async () => {
+    const { handleTargetModelSet } = await importBrowserConnectExtensionModule();
+    const model = { provider: "anthropic", id: "claude-sonnet", name: "Claude Sonnet" };
+    const setModel = vi.fn(async () => true);
+
+    await expect(handleTargetModelSet({
+      input: { provider: "anthropic", modelId: "claude-sonnet" },
+      ctx: { modelRegistry: { getAvailable: async () => [model] } },
+      pi: { setModel },
+    })).resolves.toEqual({ ok: true });
+
+    expect(setModel).toHaveBeenCalledWith(model);
+  });
+
+  it("returns model set error when model is unavailable", async () => {
+    const { handleTargetModelSet } = await importBrowserConnectExtensionModule();
+
+    await expect(handleTargetModelSet({
+      input: { provider: "anthropic", modelId: "missing" },
+      ctx: { modelRegistry: { getAvailable: async () => [] } },
+      pi: { setModel: vi.fn() },
+    })).resolves.toEqual({ ok: false, error: "Модель недоступна" });
+  });
+});
+
 describe("readOrCreateSharedToken", () => {
   it("creates new token files with restrictive permissions", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "browser-connect-token-"));

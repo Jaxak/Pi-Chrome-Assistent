@@ -11,6 +11,7 @@ import type {
   SelectionPayload,
   TargetDeliverChatMessagePayload,
   TargetMetadata,
+  TargetRuntimeState,
 } from "../shared/protocol";
 import { startBrokerServer, BrowserConnectBrokerState } from "./broker";
 import { createMemoryLogger } from "./logging";
@@ -205,6 +206,149 @@ async function waitForTargets(
 
   throw new Error(`Timed out waiting for matching targets: ${JSON.stringify(lastTargets)}`);
 }
+
+describe("broker runtime state and model routing", () => {
+  it("broadcasts target runtime state only to subscribed browsers", async () => {
+    const server = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+    const targetSocket = createSocket(server.port);
+    const browserSocket = createSocket(server.port);
+    const otherBrowserSocket = createSocket(server.port);
+    const runtimeState: TargetRuntimeState = {
+      targetId: target.targetId,
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    };
+
+    try {
+      await Promise.all([waitForOpen(targetSocket), waitForOpen(browserSocket), waitForOpen(otherBrowserSocket)]);
+      await registerTargetSocket(targetSocket, target, "target-register-1");
+      await authenticateBrowserSocket(browserSocket, "browser-auth-1");
+      await authenticateBrowserSocket(otherBrowserSocket, "browser-auth-2");
+      sendEnvelope(browserSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.subscribeTarget",
+        requestId: "subscribe-runtime-1",
+        payload: { token: browserToken, targetId: target.targetId },
+      });
+
+      sendEnvelope(targetSocket, {
+        version: PROTOCOL_VERSION,
+        type: "target.runtimeState",
+        payload: runtimeState,
+      });
+
+      await expect(waitForProtocolMessage(browserSocket, "client.runtimeState")).resolves.toMatchObject({
+        version: PROTOCOL_VERSION,
+        type: "client.runtimeState",
+        payload: runtimeState,
+      });
+      await expectNoProtocolMessage(otherBrowserSocket, "client.runtimeState");
+    } finally {
+      await Promise.allSettled([closeSocket(targetSocket), closeSocket(browserSocket), closeSocket(otherBrowserSocket)]);
+      await server.close();
+    }
+  });
+
+  it("returns model set timeout when target does not respond", async () => {
+    const server = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+      deliveryTimeoutMs: 25,
+    });
+    const targetSocket = createSocket(server.port);
+    const browserSocket = createSocket(server.port);
+
+    try {
+      await Promise.all([waitForOpen(targetSocket), waitForOpen(browserSocket)]);
+      await registerTargetSocket(targetSocket, target, "target-register-1");
+      await authenticateBrowserSocket(browserSocket, "browser-auth-1");
+
+      sendEnvelope(browserSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.setTargetModel",
+        requestId: "model-timeout-1",
+        payload: { token: browserToken, targetId: target.targetId, provider: "anthropic", modelId: "claude-sonnet" },
+      });
+
+      await waitForProtocolMessage(targetSocket, "target.setModel");
+      await expect(waitForProtocolMessage(browserSocket, "client.modelSetResult", 500)).resolves.toMatchObject({
+        version: PROTOCOL_VERSION,
+        type: "client.modelSetResult",
+        requestId: "model-timeout-1",
+        payload: { ok: false, error: "Model change timed out" },
+      });
+    } finally {
+      await Promise.allSettled([closeSocket(targetSocket), closeSocket(browserSocket)]);
+      await server.close();
+    }
+  });
+
+  it("routes browser model set command to target and returns result", async () => {
+    const server = await startBrokerServer({
+      host: "127.0.0.1",
+      port: 0,
+      targetToken,
+      isBrowserTokenTrusted: async (token) => token === browserToken,
+      logger: createMemoryLogger(),
+    });
+    const targetSocket = createSocket(server.port);
+    const browserSocket = createSocket(server.port);
+
+    try {
+      await Promise.all([waitForOpen(targetSocket), waitForOpen(browserSocket)]);
+      await registerTargetSocket(targetSocket, target, "target-register-1");
+      await authenticateBrowserSocket(browserSocket, "browser-auth-1");
+
+      sendEnvelope(browserSocket, {
+        version: PROTOCOL_VERSION,
+        type: "client.setTargetModel",
+        requestId: "model-1",
+        payload: {
+          token: browserToken,
+          targetId: target.targetId,
+          provider: "anthropic",
+          modelId: "claude-sonnet",
+        },
+      });
+
+      const targetCommand = await waitForProtocolMessage<{ provider: string; modelId: string }>(targetSocket, "target.setModel");
+      expect(targetCommand).toMatchObject({
+        version: PROTOCOL_VERSION,
+        type: "target.setModel",
+        requestId: "model-1",
+        payload: { provider: "anthropic", modelId: "claude-sonnet" },
+      });
+
+      sendEnvelope(targetSocket, {
+        version: PROTOCOL_VERSION,
+        type: "target.modelSetResult",
+        requestId: "model-1",
+        payload: { ok: false, error: "Модель недоступна" },
+      });
+
+      await expect(waitForProtocolMessage(browserSocket, "client.modelSetResult")).resolves.toMatchObject({
+        version: PROTOCOL_VERSION,
+        type: "client.modelSetResult",
+        requestId: "model-1",
+        payload: { ok: false, error: "Модель недоступна" },
+      });
+    } finally {
+      await Promise.allSettled([closeSocket(targetSocket), closeSocket(browserSocket)]);
+      await server.close();
+    }
+  });
+});
 
 describe("BrowserConnectBrokerState", () => {
   it("registers and lists targets", () => {

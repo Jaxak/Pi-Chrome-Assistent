@@ -9,6 +9,10 @@ export const PROTOCOL_MESSAGE_TYPES = [
   "client.sendChatMessage",
   "client.chatAccepted",
   "client.chatEvent",
+  "client.setTargetModel",
+  "client.modelSetResult",
+  "client.runtimeState",
+  "client.availableModels",
   "target.register",
   "target.registered",
   "target.heartbeat",
@@ -20,6 +24,10 @@ export const PROTOCOL_MESSAGE_TYPES = [
   "target.deliverSelection",
   "target.deliverChatMessage",
   "target.chatEvent",
+  "target.runtimeState",
+  "target.availableModels",
+  "target.setModel",
+  "target.modelSetResult",
 ] as const;
 
 export type ProtocolMessageType = (typeof PROTOCOL_MESSAGE_TYPES)[number];
@@ -63,6 +71,35 @@ export type BrowserClientSendChatMessagePayload = {
   targetId: string;
   message: string;
 };
+
+export type BrowserClientSetTargetModelPayload = {
+  token: string;
+  targetId: string;
+  provider: string;
+  modelId: string;
+};
+
+export type TargetModelSummary = {
+  provider: string;
+  id: string;
+  label?: string;
+};
+
+export type TargetContextUsage = {
+  tokens: number | null;
+  maxTokens: number;
+  percent: number | null;
+};
+
+export type TargetRuntimeState = {
+  targetId: string;
+  model?: TargetModelSummary;
+  contextUsage?: TargetContextUsage;
+  isIdle: boolean;
+  updatedAt: number;
+};
+
+export type TargetModelSetResult = DeliveryResult;
 
 export type TargetDeliverChatMessagePayload = {
   message: string;
@@ -173,6 +210,26 @@ export function validateSendChatMessagePayload(value: unknown): ValidationResult
 
   if (!isNonEmptyString(payload.message)) {
     return { ok: false, error: "Missing message" };
+  }
+
+  return { ok: true };
+}
+
+export function validateSetTargetModelPayload(value: unknown): ValidationResult {
+  const subscriptionValidation = validateSubscribeTargetPayload(value);
+
+  if (!subscriptionValidation.ok) {
+    return subscriptionValidation;
+  }
+
+  const payload = value as Partial<BrowserClientSetTargetModelPayload>;
+
+  if (!isNonEmptyString(payload.provider)) {
+    return { ok: false, error: "Missing provider" };
+  }
+
+  if (!isNonEmptyString(payload.modelId)) {
+    return { ok: false, error: "Missing modelId" };
   }
 
   return { ok: true };

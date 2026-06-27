@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ChatEvent, TargetMetadata } from "../shared/protocol";
+import type { ChatEvent, DeliveryResult, TargetMetadata, TargetModelSummary, TargetRuntimeState } from "../shared/protocol";
 import type { BrokerConnectionState } from "./brokerClient";
 import type { BrowserAuthState } from "./browserToken";
 import {
@@ -88,6 +88,9 @@ type FakeBrokerClientOptions = {
   browserToken?: string;
   onTargets?: (targets: TargetMetadata[]) => void;
   onChatEvent?: (event: ChatEvent) => void;
+  onRuntimeState?: (state: TargetRuntimeState) => void;
+  onAvailableModels?: (models: TargetModelSummary[], targetId: string) => void;
+  onModelSetResult?: (result: DeliveryResult) => void;
   onConnectionState?: (state: BrokerConnectionState) => void;
 };
 
@@ -103,6 +106,7 @@ class FakeBrokerClient {
   readonly setSelectedTargetId = vi.fn((targetId: string | undefined): void => {
     this.selectedTargetId = targetId;
   });
+  readonly setTargetModel = vi.fn((_input: { targetId?: string; provider: string; modelId: string }): boolean => true);
 
   constructor(readonly options: FakeBrokerClientOptions) {}
 
@@ -112,6 +116,18 @@ class FakeBrokerClient {
 
   emitChatEvent(event: ChatEvent): void {
     this.options.onChatEvent?.(event);
+  }
+
+  emitRuntimeState(state: TargetRuntimeState): void {
+    this.options.onRuntimeState?.(state);
+  }
+
+  emitAvailableModels(models: TargetModelSummary[], targetId = "target-1"): void {
+    this.options.onAvailableModels?.(models, targetId);
+  }
+
+  emitModelSetResult(result: DeliveryResult): void {
+    this.options.onModelSetResult?.(result);
   }
 
   emitConnectionState(state: BrokerConnectionState): void {
@@ -192,6 +208,206 @@ describe("BackgroundAssistantStateServer", () => {
     expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
     expect(server.getSnapshot().auth).toMatchObject({ browserToken: "token-initial", tokenConfigured: true });
     expect(server.getSnapshot().connection.tokenConfigured).toBe(true);
+  });
+
+  it("recreates broker client with same token when sessions refresh is requested", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.sessions.refresh" });
+    await flushAsyncWork();
+
+    expect(brokerClients).toHaveLength(2);
+    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
+    expect(brokerClients[1]?.options.browserToken).toBe("token-initial");
+    expect(brokerClients[1]?.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mark broker offline when one-shot session refresh starts after live broker connected", async () => {
+    const listTargets = createDeferred<{ ok: boolean; targets: TargetMetadata[] }>();
+    const { server, brokerClients } = createServer({
+      listTargets: async () => listTargets.promise,
+    });
+    const port = new FakePort();
+
+    await server.start();
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+    server.connectPort(port);
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: true,
+      bridgeOnline: true,
+      connecting: false,
+      targetsRefreshPending: true,
+    });
+
+    listTargets.resolve({ ok: true, targets: [] });
+    await flushAsyncWork();
+  });
+
+  it("keeps a live broker client for chat when one-shot session refresh is configured", async () => {
+    const { server, brokerClients } = createServer({
+      listTargets: async () => ({ ok: true, targets: [createTarget({ targetId: "target-1" })] }),
+    });
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    await flushAsyncWork();
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+
+    port.emitMessage({ type: "assistant.sendChatMessage", message: "привет" });
+
+    expect(brokerClients).toHaveLength(1);
+    expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
+    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenCalledWith("target-1");
+    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledWith("привет");
+    expect(server.getSnapshot().chat.messages.some((message) => "kind" in message && message.kind === "error")).toBe(false);
+  });
+
+  it("stores selected target runtime state and available models in snapshots", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+    const runtime: TargetRuntimeState = {
+      targetId: "target-1",
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    };
+
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+
+    brokerClients[0]?.emitRuntimeState(runtime);
+    brokerClients[0]?.emitAvailableModels([{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }]);
+
+    expect(server.getSnapshot().runtime.selectedTargetRuntime).toEqual(runtime);
+    expect(server.getSnapshot().runtime.availableModels).toEqual([{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }]);
+    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+  });
+
+  it("routes model set commands to the live broker client", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+
+    port.emitMessage({ type: "assistant.model.set", provider: "anthropic", modelId: "claude-sonnet" });
+
+    expect(brokerClients[0]?.setTargetModel).toHaveBeenCalledWith({
+      targetId: "target-1",
+      provider: "anthropic",
+      modelId: "claude-sonnet",
+    });
+    expect(server.getSnapshot().runtime.modelMutationPending).toBe(true);
+  });
+
+  it("clears model mutation pending when broker returns model set result", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+    port.emitMessage({ type: "assistant.model.set", provider: "anthropic", modelId: "claude-sonnet" });
+
+    brokerClients[0]?.emitModelSetResult({ ok: false, error: "Модель недоступна" });
+
+    expect(server.getSnapshot().runtime.modelMutationPending).toBe(false);
+    expect(server.getSnapshot().runtime.modelError).toBe("Модель недоступна");
+  });
+
+  it("keeps known targets while sessions refresh reconnects", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
+    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+
+    port.emitMessage({ type: "assistant.sessions.refresh" });
+    await flushAsyncWork();
+
+    expect(server.getSnapshot().targets.map((target) => target.targetId)).toEqual(["target-1"]);
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: false,
+      bridgeOnline: false,
+      connecting: true,
+      targetsStale: true,
+    });
+  });
+
+  it("keeps targets stale when refresh broker reports online before targets", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
+
+    port.emitMessage({ type: "assistant.sessions.refresh" });
+    await flushAsyncWork();
+    brokerClients[1]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+
+    expect(server.getSnapshot().connection).toMatchObject({
+      brokerOnline: true,
+      connecting: false,
+      targetsStale: true,
+    });
+  });
+
+  it("updates targets and preserves selected target when sessions refresh receives it again", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+
+    port.emitMessage({ type: "assistant.sessions.refresh" });
+    await flushAsyncWork();
+    brokerClients[1]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+    brokerClients[1]?.emitTargets([createTarget({ targetId: "target-1", alias: "Alpha refreshed" })]);
+
+    expect(server.getSnapshot().targets).toMatchObject([{ targetId: "target-1", alias: "Alpha refreshed" }]);
+    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
+    expect(server.getSnapshot().connection.targetsStale).toBe(false);
+    expect(brokerClients[1]?.setSelectedTargetId).toHaveBeenCalledWith("target-1");
+  });
+
+  it("clears selected target when sessions refresh no longer returns it", async () => {
+    const { server, brokerClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
+    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+
+    port.emitMessage({ type: "assistant.sessions.refresh" });
+    await flushAsyncWork();
+    brokerClients[1]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
+    brokerClients[1]?.emitTargets([createTarget({ targetId: "target-2", alias: "Beta" })]);
+
+    expect(server.getSnapshot().targets.map((target) => target.targetId)).toEqual(["target-2"]);
+    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
+    expect(brokerClients[1]?.setSelectedTargetId).toHaveBeenCalledWith(undefined);
   });
 
   it("closes the broker client and broadcasts token guidance when auth refresh finds no token", async () => {
@@ -303,6 +519,8 @@ describe("BackgroundAssistantStateServer", () => {
       connecting: true,
       tokenConfigured: true,
       browserAuthorized: undefined,
+      targetsStale: false,
+      targetsRefreshPending: true,
       lastError: undefined,
     });
   });
@@ -323,6 +541,8 @@ describe("BackgroundAssistantStateServer", () => {
       connecting: true,
       tokenConfigured: true,
       browserAuthorized: undefined,
+      targetsStale: false,
+      targetsRefreshPending: true,
       lastError: undefined,
     });
   });

@@ -211,7 +211,8 @@ describe("sidepanel auth lifecycle", () => {
     await flush();
 
     expect(document.querySelector("#status-text")).toBeNull();
-    expect(document.querySelector("#target-container")?.textContent).toContain("Состояние боковой панели недоступно");
+    expect(document.querySelector("#diagnostics-output")?.textContent).toContain("Переподключаем боковую панель…");
+    expect(document.querySelector("#target-container")?.textContent).toContain("Alpha");
     expect(document.querySelector<HTMLButtonElement>("#send-button")?.disabled).toBe(true);
     expect(document.querySelector<HTMLButtonElement>("#chat-send-button")?.disabled).toBe(true);
     expect(document.querySelector<HTMLButtonElement>("#copy-browser-token-button")?.disabled).toBe(true);

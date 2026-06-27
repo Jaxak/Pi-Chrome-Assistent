@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { TargetMetadata } from "../shared/protocol";
+import type { TargetMetadata, TargetRuntimeState } from "../shared/protocol";
 import {
   createInitialAssistantState,
   formatAssistantStatus,
@@ -32,6 +32,8 @@ function createReadyState(overrides: Partial<BackgroundAssistantState> = {}): Ba
       connecting: false,
       tokenConfigured: true,
       browserAuthorized: true,
+      targetsStale: false,
+      targetsRefreshPending: false,
     },
     auth: {
       tokenConfigured: true,
@@ -121,6 +123,46 @@ describe("assistantState", () => {
     ]);
     expect(nextState.chat.agentBusy).toBe(true);
     expect(nextState.chat.sending).toBe(true);
+  });
+
+  it("stores runtime state and available models independently", () => {
+    const state = createReadyState();
+    const runtime: TargetRuntimeState = {
+      targetId: "target-1",
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    };
+
+    const nextState = reduceAssistantState(state, {
+      kind: "runtime_updated",
+      runtime: {
+        selectedTargetRuntime: runtime,
+        availableModels: [{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }],
+      },
+    });
+
+    expect(nextState.runtime.selectedTargetRuntime).toEqual(runtime);
+    expect(nextState.runtime.availableModels).toEqual([{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }]);
+    expect(nextState.runtime.modelMutationPending).toBe(false);
+  });
+
+  it("tracks model mutation pending and error", () => {
+    const state = createReadyState();
+
+    const pendingState = reduceAssistantState(state, {
+      kind: "runtime_updated",
+      runtime: { modelMutationPending: true, modelError: undefined },
+    });
+    const failedState = reduceAssistantState(pendingState, {
+      kind: "runtime_updated",
+      runtime: { modelMutationPending: false, modelError: "Модель недоступна" },
+    });
+
+    expect(pendingState.runtime.modelMutationPending).toBe(true);
+    expect(failedState.runtime.modelMutationPending).toBe(false);
+    expect(failedState.runtime.modelError).toBe("Модель недоступна");
   });
 
   it("clears agentBusy and sending when a chat error arrives", () => {

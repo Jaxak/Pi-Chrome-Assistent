@@ -30,8 +30,8 @@ Side panel не открывает broker WebSocket и не вычисляет c
 Потоки данных:
 
 - **background → sidepanel:** snapshots состояния `assistant.snapshot` с `BackgroundAssistantState`;
-- **sidepanel → background:** команды `assistant.selectTarget`, `assistant.sendChatMessage`, `assistant.startDomPicker`, `assistant.auth.*`, `assistant.diagnostics.refresh`;
-- **background → broker:** постоянный WebSocket для списка целей, подписки на выбранную цель и chat-доставки;
+- **sidepanel → background:** команды `assistant.selectTarget`, `assistant.sendChatMessage`, `assistant.model.set`, `assistant.startDomPicker`, `assistant.auth.*`, `assistant.diagnostics.refresh`;
+- **background → broker:** постоянный WebSocket для списка целей, подписки на выбранную цель, chat-доставки, runtime state и смены модели;
 - **background → content script:** запуск DOM picker и пересылка выделения в выбранную Pi-цель.
 
 ## Ответственность side panel
@@ -65,7 +65,10 @@ Side panel отображает чат из snapshots background и отправ
 2. получает `assistant.snapshot` с текущими целями, выбранной целью, сообщениями, busy/sending/error и auth-статусом;
 3. при выборе цели отправляет `assistant.selectTarget`;
 4. при отправке текста отправляет `assistant.sendChatMessage`;
-5. при запуске DOM picker отправляет `assistant.startDomPicker`.
+5. при смене модели отправляет `assistant.model.set`;
+6. при запуске DOM picker отправляет `assistant.startDomPicker`.
+
+Под полем ввода side panel показывает текущую модель выбранной Pi-сессии и заполненность контекстного окна. Список моделей приходит из target Pi-сессии через broker, поэтому смена модели применяется именно в выбранной Pi-сессии, а не только в UI.
 
 Сообщения рендерятся только через `textContent`, без `innerHTML`. Markdown, tool calls и tool results в первой версии не отображаются.
 
@@ -93,11 +96,14 @@ Background service worker владеет browser-side state server и посто
 
 - загружает browser token и выбранную цель из `chrome.storage.local`;
 - открывает broker WebSocket, отправляет `client.hello`, получает список целей и подписывается на выбранную цель;
-- принимает chat-события broker и сводит их в `BackgroundAssistantState`;
+- использует one-shot `listTargets` только как refresh/fallback и не заменяет им live `BrokerClient`;
+- принимает chat/runtime/model-события broker и сводит их в `BackgroundAssistantState`;
 - рассылает snapshots всем подключённым sidepanel ports;
 - применяет команды side panel и сохраняет выбранную цель;
 - пишет diagnostics в `chrome.storage.local` и показывает их в snapshots;
 - перезапускает broker client при смене token и игнорирует поздние события старого поколения.
+
+Side panel переживает разрыв `chrome.runtime.Port`: показывает статус **«Переподключаем боковую панель…»**, сохраняет последний snapshot и переподключается к background с коротким backoff. После reconnect background снова отправляет полный authoritative snapshot.
 
 Background также обрабатывает legacy/служебные сообщения:
 

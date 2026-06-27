@@ -30,9 +30,29 @@ import {
 import { BackgroundAssistantStateServer } from "./backgroundStateServer";
 
 const storage = chromeStorageAdapter();
+
+async function listTargetsForStateServer(browserToken: string): Promise<{
+  ok: boolean;
+  targets: TargetMetadata[];
+  error?: string;
+}> {
+  try {
+    const targets = await listBrokerTargets(browserToken);
+    return { ok: true, targets };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      targets: [],
+      error: errorMessage,
+    };
+  }
+}
+
 const stateServer = new BackgroundAssistantStateServer({
   storage,
   startDomPicker: (input) => startDomPicker(input, { storage }),
+  listTargets: listTargetsForStateServer,
 });
 const SELECTED_TARGET_STORAGE_KEY = "selectedTargetId";
 const BROKER_URL = `ws://${DEFAULT_BROKER_HOST}:${DEFAULT_BROKER_PORT}`;

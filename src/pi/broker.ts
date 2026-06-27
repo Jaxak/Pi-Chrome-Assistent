@@ -13,15 +13,19 @@ import {
   validateChatEvent,
   validateSelectionPayload,
   validateSendChatMessagePayload,
+  validateSetTargetModelPayload,
   validateSubscribeTargetPayload,
   type BrowserClientHelloPayload,
   type BrowserClientSendChatMessagePayload,
   type BrowserClientSendSelectionPayload,
+  type BrowserClientSetTargetModelPayload,
   type BrowserClientSubscribeTargetPayload,
   type ChatEvent,
   type DeliveryResult,
   type SelectionPayload,
   type TargetMetadata,
+  type TargetModelSummary,
+  type TargetRuntimeState,
 } from "../shared/protocol";
 import type { BrowserConnectLogger } from "./logging";
 
@@ -129,6 +133,12 @@ type PendingDelivery = {
   targetSocket: WebSocket;
   timeoutId: ReturnType<typeof setTimeout>;
   resolve(result: DeliveryResult): void;
+};
+
+type PendingModelCommand = {
+  clientSocket: WebSocket;
+  targetSocket: WebSocket;
+  timeoutId: ReturnType<typeof setTimeout>;
 };
 
 type SettledDeliveryTombstone = {
@@ -283,6 +293,50 @@ function parseClientSendChatMessagePayload(
   };
 }
 
+function parseClientSetTargetModelPayload(
+  payload: BrokerMessagePayload,
+):
+  | ({ ok: true } & BrowserClientSetTargetModelPayload)
+  | { ok: false; error: string } {
+  const validation = validateSetTargetModelPayload(payload);
+
+  if (!validation.ok) {
+    return validation;
+  }
+
+  const candidate = payload as BrowserClientSetTargetModelPayload;
+  return {
+    ok: true,
+    token: candidate.token,
+    targetId: candidate.targetId,
+    provider: candidate.provider.trim(),
+    modelId: candidate.modelId.trim(),
+  };
+}
+
+function isTargetRuntimeState(value: unknown, targetId: string): value is TargetRuntimeState {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const runtime = value as Partial<TargetRuntimeState>;
+  return runtime.targetId === targetId &&
+    typeof runtime.isIdle === "boolean" &&
+    typeof runtime.updatedAt === "number" &&
+    Number.isFinite(runtime.updatedAt);
+}
+
+function isTargetModelSummary(value: unknown): value is TargetModelSummary {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const model = value as Partial<TargetModelSummary>;
+  return typeof model.provider === "string" && model.provider.length > 0 &&
+    typeof model.id === "string" && model.id.length > 0 &&
+    (model.label === undefined || typeof model.label === "string");
+}
+
 export async function startBrokerServer(
   options: StartBrokerServerOptions,
 ): Promise<BrowserConnectBrokerServer> {
@@ -300,6 +354,7 @@ export async function startBrokerServer(
   const browserSubscriptionsByTargetId = new Map<string, Set<WebSocket>>();
   const browserSocketSubscriptions = new Map<WebSocket, Set<string>>();
   const pendingDeliveries = new Map<string, PendingDelivery>();
+  const pendingModelCommands = new Map<string, PendingModelCommand>();
   const settledDeliveryTombstones = new Map<string, SettledDeliveryTombstone>();
   let staleCleanupTimer: ReturnType<typeof setInterval> | undefined;
   let isClosing = false;
@@ -463,6 +518,20 @@ export async function startBrokerServer(
       if (pending.targetSocket === socket || pending.clientSocket === socket) {
         settlePendingDelivery(requestId, { ok: false, error }, error);
       }
+    }
+
+    for (const [requestId, pending] of pendingModelCommands.entries()) {
+      if (pending.targetSocket !== socket && pending.clientSocket !== socket) {
+        continue;
+      }
+
+      pendingModelCommands.delete(requestId);
+      clearTimeout(pending.timeoutId);
+      sendEnvelope(pending.clientSocket, {
+        type: "client.modelSetResult",
+        requestId,
+        payload: { ok: false, error },
+      });
     }
   };
 
@@ -767,6 +836,61 @@ export async function startBrokerServer(
           return;
         }
 
+        case "client.setTargetModel": {
+          const parsedPayload = parseClientSetTargetModelPayload(payload);
+
+          if (!parsedPayload.ok) {
+            sendClientError(socket, envelope.requestId, parsedPayload.error);
+            return;
+          }
+
+          if (!await ensureAuthenticatedClient(socket, envelope.requestId)) {
+            return;
+          }
+
+          if (!isMatchingBrowserToken(socket, parsedPayload.token, envelope.requestId)) {
+            return;
+          }
+
+          const targetSocket = targetIdToSocket.get(parsedPayload.targetId);
+          const requestId = envelope.requestId ?? createRequestId();
+
+          if (!targetSocket || targetSocket.readyState !== WebSocket.OPEN) {
+            sendEnvelope(socket, {
+              type: "client.modelSetResult",
+              requestId,
+              payload: { ok: false, error: "Target is not available" },
+            });
+            return;
+          }
+
+          const timeoutId = setTimeout(() => {
+            const pending = pendingModelCommands.get(requestId);
+
+            if (!pending) {
+              return;
+            }
+
+            pendingModelCommands.delete(requestId);
+            sendEnvelope(pending.clientSocket, {
+              type: "client.modelSetResult",
+              requestId,
+              payload: { ok: false, error: "Model change timed out" },
+            });
+          }, deliveryTimeoutMs);
+
+          pendingModelCommands.set(requestId, { clientSocket: socket, targetSocket, timeoutId });
+          sendEnvelope(targetSocket, {
+            type: "target.setModel",
+            requestId,
+            payload: {
+              provider: parsedPayload.provider,
+              modelId: parsedPayload.modelId,
+            },
+          });
+          return;
+        }
+
         case "target.register": {
           const token = payload?.token;
           const target = payload?.target;
@@ -873,6 +997,78 @@ export async function startBrokerServer(
           }
 
           forwardChatEvent(targetId, envelope.requestId, payload as ChatEvent);
+          return;
+        }
+
+        case "target.runtimeState": {
+          const targetId = socketToTargetId.get(socket);
+
+          if (!targetId) {
+            socket.close();
+            return;
+          }
+
+          if (!isTargetRuntimeState(payload, targetId)) {
+            socket.close();
+            return;
+          }
+
+          for (const browserSocket of browserSubscriptionsByTargetId.get(targetId) ?? []) {
+            sendEnvelope(browserSocket, {
+              type: "client.runtimeState",
+              requestId: envelope.requestId,
+              payload,
+            });
+          }
+          return;
+        }
+
+        case "target.availableModels": {
+          const targetId = socketToTargetId.get(socket);
+
+          if (!targetId) {
+            socket.close();
+            return;
+          }
+
+          const models = Array.isArray((payload as { models?: unknown } | undefined)?.models)
+            ? ((payload as { models: unknown[] }).models).filter(isTargetModelSummary)
+            : [];
+
+          for (const browserSocket of browserSubscriptionsByTargetId.get(targetId) ?? []) {
+            sendEnvelope(browserSocket, {
+              type: "client.availableModels",
+              requestId: envelope.requestId,
+              payload: { targetId, models },
+            });
+          }
+          return;
+        }
+
+        case "target.modelSetResult": {
+          if (typeof envelope.requestId !== "string") {
+            socket.close();
+            return;
+          }
+
+          const pending = pendingModelCommands.get(envelope.requestId);
+
+          if (!pending || pending.targetSocket !== socket) {
+            socket.close();
+            return;
+          }
+
+          pendingModelCommands.delete(envelope.requestId);
+          clearTimeout(pending.timeoutId);
+          const resultPayload = payload ?? {};
+          sendEnvelope(pending.clientSocket, {
+            type: "client.modelSetResult",
+            requestId: envelope.requestId,
+            payload: {
+              ok: resultPayload.ok === true,
+              ...(typeof resultPayload.error === "string" ? { error: resultPayload.error } : {}),
+            },
+          });
           return;
         }
 
@@ -991,6 +1187,16 @@ export async function startBrokerServer(
 
         for (const requestId of pendingDeliveries.keys()) {
           settlePendingDelivery(requestId, { ok: false, error: "Broker server is closing" }, "Broker server is closing");
+        }
+
+        for (const [requestId, pending] of pendingModelCommands.entries()) {
+          pendingModelCommands.delete(requestId);
+          clearTimeout(pending.timeoutId);
+          sendEnvelope(pending.clientSocket, {
+            type: "client.modelSetResult",
+            requestId,
+            payload: { ok: false, error: "Broker server is closing" },
+          });
         }
 
         for (const socket of sockets) {

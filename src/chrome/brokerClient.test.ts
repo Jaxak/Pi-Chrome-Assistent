@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { PROTOCOL_VERSION } from "../shared/constants";
-import type { ChatEvent, ProtocolEnvelope, TargetMetadata } from "../shared/protocol";
+import type { ChatEvent, ProtocolEnvelope, TargetMetadata, TargetRuntimeState } from "../shared/protocol";
 import { BrokerClient } from "./brokerClient";
 
 type BrokerEventName = "open" | "message" | "error" | "close";
@@ -239,6 +239,90 @@ describe("BrokerClient", () => {
         targetId: "target-2",
       },
     });
+  });
+
+  it("publishes runtime state and available model updates", async () => {
+    const socket = new FakeWebSocket();
+    const onRuntimeState = vi.fn();
+    const onAvailableModels = vi.fn();
+    const runtimeState: TargetRuntimeState = {
+      targetId: "target-1",
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_200,
+    };
+    const client = new BrokerClient({
+      browserToken: "browser-token-1",
+      webSocketFactory: () => socket,
+      onRuntimeState,
+      onAvailableModels,
+      reconnectDelaysMs: [],
+    });
+
+    client.connect();
+    socket.emitOpen();
+    socket.emitMessage({ version: PROTOCOL_VERSION, type: "client.runtimeState" as never, payload: runtimeState });
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "client.availableModels" as never,
+      payload: { targetId: "target-1", models: [{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }] },
+    });
+    await flush();
+
+    expect(onRuntimeState).toHaveBeenCalledWith(runtimeState);
+    expect(onAvailableModels).toHaveBeenCalledWith([{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }], "target-1");
+  });
+
+  it("sends selected target model changes through the broker socket", async () => {
+    const socket = new FakeWebSocket();
+    const client = new BrokerClient({
+      browserToken: "browser-token-1",
+      selectedTargetId: "target-1",
+      webSocketFactory: () => socket,
+      reconnectDelaysMs: [],
+      requestIdFactory: () => "model-request-1",
+    });
+
+    client.connect();
+    socket.emitOpen();
+    const sent = client.setTargetModel({ provider: "anthropic", modelId: "claude-sonnet" });
+
+    expect(sent).toBe(true);
+    expect(readSent(socket, 2)).toEqual({
+      version: PROTOCOL_VERSION,
+      type: "client.setTargetModel",
+      requestId: "model-request-1",
+      payload: {
+        token: "browser-token-1",
+        targetId: "target-1",
+        provider: "anthropic",
+        modelId: "claude-sonnet",
+      },
+    });
+  });
+
+  it("publishes model set results", async () => {
+    const socket = new FakeWebSocket();
+    const onModelSetResult = vi.fn();
+    const client = new BrokerClient({
+      browserToken: "browser-token-1",
+      webSocketFactory: () => socket,
+      onModelSetResult,
+      reconnectDelaysMs: [],
+    });
+
+    client.connect();
+    socket.emitOpen();
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "client.modelSetResult",
+      requestId: "model-request-1",
+      payload: { ok: false, error: "Модель недоступна" },
+    });
+    await flush();
+
+    expect(onModelSetResult).toHaveBeenCalledWith({ ok: false, error: "Модель недоступна" });
   });
 
   it("publishes an updated target list without reporting offline when the selected target disappears", async () => {

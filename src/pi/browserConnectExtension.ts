@@ -16,6 +16,7 @@ import { dirname } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_BROKER_HOST, DEFAULT_BROKER_PORT } from "../shared/constants";
+import type { DeliveryResult, TargetRuntimeState } from "../shared/protocol";
 import { startBrokerServer, type BrowserConnectBrokerServer } from "./broker";
 import {
   getChromeAssistentLogPath,
@@ -279,6 +280,67 @@ function getAssistantMessageId(event: unknown): string | undefined {
   return typeof id === "string" && id.length > 0 ? id : undefined;
 }
 
+type RuntimeContextLike = {
+  model?: { provider?: unknown; id?: unknown; name?: unknown };
+  getContextUsage?: () => { tokens?: number | null; contextWindow?: number; percent?: number | null } | undefined;
+  isIdle: () => boolean;
+};
+
+type ModelRegistryContextLike = {
+  modelRegistry: {
+    getAvailable(): Promise<Array<{ provider?: unknown; id?: unknown; name?: unknown }>> | Array<{ provider?: unknown; id?: unknown; name?: unknown }>;
+  };
+};
+
+export function buildTargetRuntimeState(options: {
+  targetId: string;
+  ctx: RuntimeContextLike;
+  now?: () => number;
+}): TargetRuntimeState {
+  const model = options.ctx.model;
+  const usage = options.ctx.getContextUsage?.();
+
+  return {
+    targetId: options.targetId,
+    ...(typeof model?.provider === "string" && typeof model.id === "string"
+      ? {
+          model: {
+            provider: model.provider,
+            id: model.id,
+            ...(typeof model.name === "string" ? { label: model.name } : {}),
+          },
+        }
+      : {}),
+    ...(usage && typeof usage.contextWindow === "number"
+      ? {
+          contextUsage: {
+            tokens: typeof usage.tokens === "number" || usage.tokens === null ? usage.tokens : null,
+            maxTokens: usage.contextWindow,
+            percent: typeof usage.percent === "number" || usage.percent === null ? usage.percent : null,
+          },
+        }
+      : {}),
+    isIdle: options.ctx.isIdle(),
+    updatedAt: (options.now ?? Date.now)(),
+  };
+}
+
+export async function handleTargetModelSet(options: {
+  input: { provider: string; modelId: string };
+  ctx: ModelRegistryContextLike;
+  pi: { setModel(model: unknown): Promise<boolean> | boolean };
+}): Promise<DeliveryResult> {
+  const models = await options.ctx.modelRegistry.getAvailable();
+  const model = models.find((candidate) => candidate.provider === options.input.provider && candidate.id === options.input.modelId);
+
+  if (!model) {
+    return { ok: false, error: "Модель недоступна" };
+  }
+
+  const changed = await options.pi.setModel(model);
+  return changed ? { ok: true } : { ok: false, error: "Не удалось сменить модель" };
+}
+
 function getAssistantTextDelta(event: unknown): string | undefined {
   const assistantMessageEvent = (event as {
     assistantMessageEvent?: {
@@ -409,6 +471,56 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   let activeTargetConnection: ConnectedTargetClient | undefined;
   let ownedBroker: BrowserConnectBrokerServer | undefined;
   let closingOwnedBroker: Promise<void> | undefined;
+  let latestCtx: ExtensionContext | undefined;
+
+  const emitRuntimeState = (ctx = latestCtx) => {
+    if (!ctx || !activeTargetConnection?.isOpen()) {
+      return;
+    }
+
+    activeTargetConnection.emitRuntimeState?.(buildTargetRuntimeState({ targetId, ctx }));
+  };
+
+  const emitAvailableModels = async (ctx = latestCtx) => {
+    if (!ctx || !activeTargetConnection?.isOpen()) {
+      return;
+    }
+
+    if (!ctx.modelRegistry?.getAvailable) {
+      return;
+    }
+
+    try {
+      const models = await ctx.modelRegistry.getAvailable();
+      activeTargetConnection.emitAvailableModels?.(models
+        .filter((model) => typeof model.provider === "string" && typeof model.id === "string")
+        .map((model) => ({
+          provider: model.provider,
+          id: model.id,
+          ...(typeof model.name === "string" ? { label: model.name } : {}),
+        })));
+    } catch (error) {
+      logger.warn("browser_connect.runtime.available_models_failed", { error: toErrorMessage(error) });
+    }
+  };
+
+  pi.on("model_select", (_event, ctx) => {
+    latestCtx = ctx;
+    emitRuntimeState(ctx);
+    void emitAvailableModels(ctx);
+  });
+
+  pi.on("turn_end", (_event, ctx) => {
+    latestCtx = ctx;
+    emitRuntimeState(ctx);
+    void emitAvailableModels(ctx);
+  });
+
+  pi.on("session_compact", (_event, ctx) => {
+    latestCtx = ctx;
+    emitRuntimeState(ctx);
+    void emitAvailableModels(ctx);
+  });
 
   pi.on("message_start", (event) => {
     const messageId = getAssistantMessageId(event);
@@ -514,6 +626,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   pi.registerCommand("chrome-assistent-connect", {
     description: "Подключить текущую сессию Pi к локальному брокеру Chrome Assistent",
     handler: async (args, ctx) => {
+      latestCtx = ctx;
       const alias = normalizeAlias(args);
       let startedBrokerForThisCommand: BrowserConnectBrokerServer | undefined;
 
@@ -559,6 +672,8 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
               emitChatEvent: (event) => activeTargetConnection?.emitChatEvent(event),
               logger,
             }),
+          onSetModel: (input: { provider: string; modelId: string }) =>
+            handleTargetModelSet({ input, ctx, pi }),
         } as const;
 
         const connectAndActivate = async (port: number) => {
@@ -672,6 +787,9 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
         }
 
         const port = connectedTargetConnection.port;
+
+        emitRuntimeState(ctx);
+        void emitAvailableModels(ctx);
 
         ctx.ui.setStatus(STATUS_KEY, buildStatusText(label, port));
         ctx.ui.notify(`Подключение ${PUBLIC_COMMAND_NAME} активно: ${label} · ${DEFAULT_BROKER_HOST}:${port}`, "info");

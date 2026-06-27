@@ -4,7 +4,7 @@ import WebSocket from "ws";
 import { describe, expect, it, vi } from "vitest";
 
 import { PROTOCOL_VERSION } from "../shared/constants";
-import type { ChatEvent, ProtocolEnvelope, TargetMetadata } from "../shared/protocol";
+import type { ChatEvent, ProtocolEnvelope, TargetMetadata, TargetRuntimeState } from "../shared/protocol";
 import { createMemoryLogger } from "./logging";
 import {
   buildTargetMetadata,
@@ -403,6 +403,83 @@ describe("connectTargetToBroker", () => {
       version: PROTOCOL_VERSION,
       type: "target.chatEvent",
       payload: chatEvent,
+    });
+
+    await connected.close();
+  });
+
+  it("emits runtime state and available models to the broker", async () => {
+    const socket = new FakeWebSocket();
+    const runtimeState: TargetRuntimeState = {
+      targetId: "target-1",
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    };
+    const connectPromise = connectTargetToBroker({
+      token: "test-token",
+      metadata: targetMetadata,
+      logger: createMemoryLogger(),
+      onDeliveredSelection: vi.fn(async () => ({ ok: true })),
+      webSocketFactory: () => socket as unknown as WebSocket,
+      heartbeatIntervalMs: 60_000,
+    });
+
+    socket.open();
+    const registerEnvelope = JSON.parse(socket.sentMessages[0]) as ProtocolEnvelope;
+    socket.receive({ version: PROTOCOL_VERSION, type: "target.registered", requestId: registerEnvelope.requestId });
+
+    const connected = await connectPromise;
+    connected.emitRuntimeState!(runtimeState);
+    connected.emitAvailableModels!([{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }]);
+
+    expect(JSON.parse(socket.sentMessages.at(-2) ?? "{}")).toEqual({
+      version: PROTOCOL_VERSION,
+      type: "target.runtimeState",
+      payload: runtimeState,
+    });
+    expect(JSON.parse(socket.sentMessages.at(-1) ?? "{}")).toEqual({
+      version: PROTOCOL_VERSION,
+      type: "target.availableModels",
+      payload: { models: [{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }] },
+    });
+
+    await connected.close();
+  });
+
+  it("handles target model set commands", async () => {
+    const socket = new FakeWebSocket();
+    const onSetModel = vi.fn(async () => ({ ok: false, error: "Модель недоступна" }));
+    const connectPromise = connectTargetToBroker({
+      token: "test-token",
+      metadata: targetMetadata,
+      logger: createMemoryLogger(),
+      onDeliveredSelection: vi.fn(async () => ({ ok: true })),
+      onSetModel,
+      webSocketFactory: () => socket as unknown as WebSocket,
+      heartbeatIntervalMs: 60_000,
+    });
+
+    socket.open();
+    const registerEnvelope = JSON.parse(socket.sentMessages[0]) as ProtocolEnvelope;
+    socket.receive({ version: PROTOCOL_VERSION, type: "target.registered", requestId: registerEnvelope.requestId });
+
+    const connected = await connectPromise;
+    socket.receive({
+      version: PROTOCOL_VERSION,
+      type: "target.setModel",
+      requestId: "model-1",
+      payload: { provider: "anthropic", modelId: "claude-sonnet" },
+    });
+    await Promise.resolve();
+
+    expect(onSetModel).toHaveBeenCalledWith({ provider: "anthropic", modelId: "claude-sonnet" });
+    expect(JSON.parse(socket.sentMessages.at(-1) ?? "{}")).toEqual({
+      version: PROTOCOL_VERSION,
+      type: "target.modelSetResult",
+      requestId: "model-1",
+      payload: { ok: false, error: "Модель недоступна" },
     });
 
     await connected.close();

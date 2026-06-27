@@ -19,6 +19,8 @@ import {
   type DeliveryResult,
   type SelectionPayload,
   type TargetMetadata,
+  type TargetModelSummary,
+  type TargetRuntimeState,
 } from "../shared/protocol";
 import type { BrowserConnectLogger } from "./logging";
 
@@ -228,6 +230,7 @@ export type ConnectTargetToBrokerOptions = {
     selection: SelectionPayload,
   ) => DeliveryResult | Promise<DeliveryResult>;
   onDeliveredChatMessage?: (message: string) => DeliveryResult | Promise<DeliveryResult>;
+  onSetModel?: (input: { provider: string; modelId: string }) => DeliveryResult | Promise<DeliveryResult>;
   onDisconnect?: () => void;
   host?: string;
   port?: number;
@@ -242,6 +245,8 @@ export type ConnectedTargetClient = {
   readonly metadata: TargetMetadata;
   isOpen(): boolean;
   emitChatEvent(event: ChatEvent): void;
+  emitRuntimeState?(state: TargetRuntimeState): void;
+  emitAvailableModels?(models: TargetModelSummary[]): void;
   close(): Promise<void>;
 };
 
@@ -316,6 +321,49 @@ async function handleIncomingChatMessage(
   }
 
   await options.onDeliveredChatMessage(payload.message);
+}
+
+async function handleIncomingSetModel(
+  socket: WebSocket,
+  envelope: {
+    requestId?: string;
+    payload?: unknown;
+  },
+  options: Pick<ConnectTargetToBrokerOptions, "logger" | "onSetModel">,
+): Promise<void> {
+  if (typeof envelope.requestId !== "string" || envelope.requestId.length === 0) {
+    options.logger.warn("target.model.invalid_request_id");
+    return;
+  }
+
+  const payload = envelope.payload as { provider?: unknown; modelId?: unknown } | undefined;
+  const provider = typeof payload?.provider === "string" ? payload.provider.trim() : "";
+  const modelId = typeof payload?.modelId === "string" ? payload.modelId.trim() : "";
+
+  if (!provider || !modelId) {
+    sendEnvelope(socket, {
+      type: "target.modelSetResult",
+      requestId: envelope.requestId,
+      payload: { ok: false, error: "Missing model" },
+    });
+    return;
+  }
+
+  if (!options.onSetModel) {
+    sendEnvelope(socket, {
+      type: "target.modelSetResult",
+      requestId: envelope.requestId,
+      payload: { ok: false, error: "Model switching is not available" },
+    });
+    return;
+  }
+
+  const result = await options.onSetModel({ provider, modelId });
+  sendEnvelope(socket, {
+    type: "target.modelSetResult",
+    requestId: envelope.requestId,
+    payload: result,
+  });
 }
 
 export async function connectTargetToBroker(
@@ -465,6 +513,26 @@ export async function connectTargetToBroker(
           error: toErrorMessage(error),
         });
       }
+      return;
+    }
+
+    if (envelope.type === "target.setModel") {
+      try {
+        await handleIncomingSetModel(socket, envelope, options);
+      } catch (error) {
+        options.logger.error("target.model.handler_failed", {
+          requestId: envelope.requestId,
+          error: toErrorMessage(error),
+        });
+
+        if (typeof envelope.requestId === "string") {
+          sendEnvelope(socket, {
+            type: "target.modelSetResult",
+            requestId: envelope.requestId,
+            payload: { ok: false, error: toErrorMessage(error) },
+          });
+        }
+      }
     }
   });
 
@@ -551,6 +619,18 @@ export async function connectTargetToBroker(
       sendEnvelope(socket, {
         type: "target.chatEvent",
         payload: event,
+      });
+    },
+    emitRuntimeState(state: TargetRuntimeState) {
+      sendEnvelope(socket, {
+        type: "target.runtimeState",
+        payload: state,
+      });
+    },
+    emitAvailableModels(models: TargetModelSummary[]) {
+      sendEnvelope(socket, {
+        type: "target.availableModels",
+        payload: { models },
       });
     },
     async close() {

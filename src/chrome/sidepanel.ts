@@ -7,6 +7,7 @@ import type { DiagnosticEntry } from "./diagnostics";
 import {
   createAgentWorkingElement,
   createChatMessageElement,
+  updateAgentWorkingElement,
 } from "./sidepanelRender";
 
 export type ListTargetsResponse = {
@@ -43,6 +44,11 @@ type SidePanelElements = {
   composerMenu: HTMLElement | null;
   diagnosticsButton: HTMLButtonElement | null;
   diagnosticsOutput: HTMLElement | null;
+  refreshSessionsButton: HTMLButtonElement | null;
+  sessionStaleGuidance: HTMLElement | null;
+  modelButton: HTMLButtonElement | null;
+  modelMenu: HTMLElement | null;
+  contextUsage: HTMLElement | null;
   targetContainer: HTMLElement | null;
   authStatusText: HTMLElement | null;
   browserTokenOutput: HTMLElement | null;
@@ -53,6 +59,8 @@ type SidePanelElements = {
 
 const BROKER_UNAVAILABLE_GUIDANCE = "Pi не подключён. Выполните /chrome-assistent-connect в терминале.";
 const NO_TARGETS_GUIDANCE = "Нет активных целей. Выполните /chrome-assistent-connect в нужной сессии Pi.";
+const STALE_TARGETS_GUIDANCE = "Список может быть устаревшим. Нажмите «Обновить».";
+const REFRESHING_TARGETS_GUIDANCE = "Обновляем список сессий…";
 const TOKEN_REQUIRED_GUIDANCE = "Для отправки настройте browserToken в chrome.storage.local.";
 const AUTH_REQUIRED_GUIDANCE = "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.";
 const START_PICKER_PROMPT = "Выберите элемент на странице, чтобы отправить его в Pi.";
@@ -67,15 +75,25 @@ const AUTH_TAB_COPY_UNAVAILABLE_TEXT = "Не удалось скопироват
 const AUTH_TAB_ERROR_TEXT = "Не удалось загрузить состояние авторизации браузера.";
 const TOKEN_REMOVED_LABEL = "Токен удалён.";
 const TOKEN_NOT_LOADED_LABEL = "Токен ещё не загружен.";
+const SIDEPANEL_RECONNECTING_TEXT = "Переподключаем боковую панель…";
+const SIDEPANEL_RECONNECT_DELAYS_MS = [250, 1000, 2000] as const;
 
 let assistantPort: chrome.runtime.Port | undefined;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let reconnectAttempt = 0;
 let currentSnapshot: BackgroundAssistantState | undefined;
 let currentTargets: TargetMetadata[] = [];
 let currentSelectedTargetId: string | undefined;
+let localSelectionChanged = false;
+let sessionsRefreshPending = false;
+let targetListUpdateMode: "initial" | "manual" | "availability" | "frozen" = "initial";
 let currentTokenConfigured: boolean | undefined;
 let currentBrowserToken: string | undefined;
 let currentDiagnosticsBaseText = "Недавних диагностических сообщений нет.";
 let currentActiveTab: SidePanelTab = "assistant";
+let lastRenderedConnectionKey = "";
+let lastRenderedTargetIds: string[] = [];
+let forceNextSnapshotTargetRender = false;
 
 function getSidePanelElements(): SidePanelElements {
   return {
@@ -100,6 +118,11 @@ function getSidePanelElements(): SidePanelElements {
     composerMenu: document.querySelector<HTMLElement>("#composer-menu"),
     diagnosticsButton: document.querySelector<HTMLButtonElement>("#diagnostics-button"),
     diagnosticsOutput: document.querySelector<HTMLElement>("#diagnostics-output"),
+    refreshSessionsButton: document.querySelector<HTMLButtonElement>("#refresh-sessions-button"),
+    sessionStaleGuidance: document.querySelector<HTMLElement>("#session-stale-guidance"),
+    modelButton: document.querySelector<HTMLButtonElement>("#model-button"),
+    modelMenu: document.querySelector<HTMLElement>("#model-menu"),
+    contextUsage: document.querySelector<HTMLElement>("#context-usage"),
     targetContainer: document.querySelector<HTMLElement>("#target-container"),
     authStatusText: document.querySelector<HTMLElement>("#auth-status-text"),
     browserTokenOutput: document.querySelector<HTMLElement>("#browser-token-output"),
@@ -200,10 +223,26 @@ function renderTargetPlaceholder(elements: SidePanelElements, message: string, t
     return;
   }
 
-  const placeholder = document.createElement("div");
-  placeholder.className = tone === "warning"
+  const className = tone === "warning"
     ? "target-placeholder target-placeholder--warning"
     : "target-placeholder";
+  const existingPlaceholder = elements.targetContainer.firstElementChild instanceof HTMLElement &&
+    elements.targetContainer.firstElementChild.classList.contains("target-placeholder") &&
+    elements.targetContainer.childElementCount === 1
+    ? elements.targetContainer.firstElementChild
+    : undefined;
+
+  if (existingPlaceholder) {
+    if (existingPlaceholder.className !== className) {
+      existingPlaceholder.className = className;
+    }
+
+    setTextIfChanged(existingPlaceholder, message);
+    return;
+  }
+
+  const placeholder = document.createElement("div");
+  placeholder.className = className;
   placeholder.textContent = message;
 
   elements.targetContainer.replaceChildren(placeholder);
@@ -295,8 +334,10 @@ function updateSendButton(elements: SidePanelElements): void {
   }
 
   const hasSelectedTarget = findTargetById(currentSelectedTargetId, currentTargets) !== undefined;
+  const liveSelectedTargetReady = currentSnapshot?.selectedTargetId === currentSelectedTargetId &&
+    findTargetById(currentSelectedTargetId, currentSnapshot?.targets ?? []) !== undefined;
   const tokenReady = currentTokenConfigured === true;
-  const sendReady = hasSelectedTarget && tokenReady;
+  const sendReady = hasSelectedTarget && liveSelectedTargetReady && tokenReady;
 
   elements.sendButton.disabled = !sendReady;
   elements.sendButton.setAttribute("aria-disabled", String(!sendReady));
@@ -306,7 +347,7 @@ function updateSendButton(elements: SidePanelElements): void {
     return;
   }
 
-  if (!hasSelectedTarget) {
+  if (!hasSelectedTarget || !liveSelectedTargetReady) {
     elements.sendButton.title = NO_TARGET_BUTTON_LABEL;
     return;
   }
@@ -319,30 +360,154 @@ function updateChatSendButton(elements: SidePanelElements): void {
   setButtonDisabled(elements.chatSendButton, disabled);
 }
 
+let lastRenderedMessageCount = 0;
+let lastRenderedMessageTimestamps: number[] = [];
+
+function formatNumberRu(value: number): string {
+  return new Intl.NumberFormat("ru-RU").format(value).replace(/\u00a0/g, " ");
+}
+
+function renderRuntimeInfo(elements: SidePanelElements): void {
+  const runtime = currentSnapshot?.runtime;
+  const selectedRuntime = runtime?.selectedTargetRuntime;
+  const model = selectedRuntime?.model;
+  const modelLabel = model?.label ?? (model ? `${model.provider}/${model.id}` : "—");
+
+  if (elements.modelButton) {
+    elements.modelButton.textContent = runtime?.modelMutationPending ? "Меняем модель…" : `Модель: ${modelLabel}`;
+    elements.modelButton.disabled = !currentSnapshot || runtime?.availableModels.length === 0 || runtime?.modelMutationPending === true;
+    elements.modelButton.setAttribute("aria-disabled", String(elements.modelButton.disabled));
+  }
+
+  const usage = selectedRuntime?.contextUsage;
+  if (elements.contextUsage) {
+    elements.contextUsage.textContent = usage
+      ? `Контекст: ${formatNumberRu(usage.tokens ?? 0)} / ${formatNumberRu(usage.maxTokens)} токенов · ${Math.round(usage.percent ?? 0)}%`
+      : "Контекст: —";
+  }
+
+  if (runtime?.modelError && elements.contextUsage) {
+    elements.contextUsage.textContent = `Ошибка модели: ${runtime.modelError}`;
+  }
+}
+
+function renderModelMenu(elements: SidePanelElements): void {
+  if (!elements.modelMenu) {
+    return;
+  }
+
+  const models = currentSnapshot?.runtime.availableModels ?? [];
+  const fragment = document.createDocumentFragment();
+
+  for (const model of models) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "model-menu__item";
+    button.dataset.provider = model.provider;
+    button.dataset.modelId = model.id;
+    button.textContent = model.label ?? `${model.provider}/${model.id}`;
+    button.addEventListener("click", () => {
+      setMenuOpen(elements.modelButton, elements.modelMenu, false);
+      postAssistantCommand({
+        type: "assistant.model.set",
+        provider: model.provider,
+        modelId: model.id,
+      });
+    });
+    fragment.append(button);
+  }
+
+  elements.modelMenu.replaceChildren(fragment);
+}
+
 function renderChat(elements: SidePanelElements): void {
   const chat = currentSnapshot?.chat;
+  const messages = chat?.messages ?? [];
 
   if (elements.messageList) {
-    const fragment = document.createDocumentFragment();
-    for (const message of chat?.messages ?? []) {
-      fragment.append(createChatMessageElement(message));
+    // Оптимизация: проверяем, изменились ли сообщения
+    const currentTimestamps = messages.map((m) => m.timestamp);
+    const needsFullRender = messages.length !== lastRenderedMessageCount ||
+      !currentTimestamps.every((ts, i) => ts === lastRenderedMessageTimestamps[i]);
+
+    if (needsFullRender) {
+      const fragment = document.createDocumentFragment();
+      for (const message of messages) {
+        fragment.append(createChatMessageElement(message));
+      }
+      elements.messageList.replaceChildren(fragment);
+      lastRenderedMessageCount = messages.length;
+      lastRenderedMessageTimestamps = currentTimestamps;
+
+      // Прокрутка только при изменении сообщений
+      if (elements.messagesScroll) {
+        elements.messagesScroll.scrollTop = elements.messagesScroll.scrollHeight;
+      }
     }
-    elements.messageList.replaceChildren(fragment);
   }
 
   if (elements.agentWorking) {
-    const agentWorking = createAgentWorkingElement(chat?.busyLabel ?? "Агент работает в фоне…");
-    agentWorking.id = "agent-working";
-    agentWorking.hidden = !chat?.agentBusy;
-    elements.agentWorking.replaceWith(agentWorking);
-    elements.agentWorking = agentWorking;
+    const busyLabel = chat?.busyLabel ?? "Агент работает в фоне…";
+    const agentBusy = chat?.agentBusy ?? false;
+    updateAgentWorkingElement(elements.agentWorking, busyLabel, agentBusy);
   }
 
-  if (elements.messagesScroll) {
-    elements.messagesScroll.scrollTop = elements.messagesScroll.scrollHeight;
-  }
-
+  renderRuntimeInfo(elements);
+  renderModelMenu(elements);
   updateChatSendButton(elements);
+}
+
+function renderTargetSelectionOnly(elements: SidePanelElements): void {
+  const selectedTargetId = currentSelectedTargetId;
+  elements.targetContainer?.querySelectorAll<HTMLButtonElement>(".target-option").forEach((option) => {
+    const selected = option.dataset.targetId === selectedTargetId;
+    const selectedText = String(selected);
+
+    if (option.classList.contains("target-option--selected") !== selected) {
+      option.classList.toggle("target-option--selected", selected);
+    }
+
+    if (option.getAttribute("aria-selected") !== selectedText) {
+      option.setAttribute("aria-selected", selectedText);
+    }
+  });
+}
+
+function setTextIfChanged(element: HTMLElement | null, text: string): void {
+  if (element && element.textContent !== text) {
+    element.textContent = text;
+  }
+}
+
+function updateTargetOptionLabels(option: HTMLButtonElement, target: TargetMetadata): void {
+  setTextIfChanged(option.querySelector<HTMLElement>(".target-option__primary"), formatTargetPrimaryLabel(target));
+  setTextIfChanged(option.querySelector<HTMLElement>(".target-option__secondary"), formatTargetSecondaryLabel(target));
+}
+
+function createTargetOption(elements: SidePanelElements, target: TargetMetadata): HTMLButtonElement {
+  const option = document.createElement("button");
+  option.type = "button";
+  option.className = "target-option";
+  option.setAttribute("role", "option");
+  option.dataset.targetId = target.targetId;
+
+  const primary = document.createElement("span");
+  primary.className = "target-option__primary";
+
+  const secondary = document.createElement("span");
+  secondary.className = "target-option__secondary";
+
+  option.append(primary, secondary);
+  updateTargetOptionLabels(option, target);
+  option.addEventListener("click", () => {
+    currentSelectedTargetId = option.dataset.targetId;
+    localSelectionChanged = true;
+    renderTargetSelectionOnly(elements);
+    updateSendButton(elements);
+    postAssistantCommand({ type: "assistant.selectTarget", targetId: option.dataset.targetId });
+  });
+
+  return option;
 }
 
 function renderTargetList(elements: SidePanelElements): void {
@@ -350,38 +515,94 @@ function renderTargetList(elements: SidePanelElements): void {
     return;
   }
 
-  const fragment = document.createDocumentFragment();
+  const existingOptions = Array.from(elements.targetContainer.querySelectorAll<HTMLButtonElement>(".target-option"));
+  const existingIds = existingOptions.map((option) => option.dataset.targetId ?? "");
+  const nextIds = currentTargets.map((target) => target.targetId);
+  const sameTargetOrder = existingIds.length === nextIds.length && existingIds.every((id, index) => id === nextIds[index]);
 
-  currentTargets.forEach((target) => {
-    const option = document.createElement("button");
-    option.type = "button";
-    option.className = target.targetId === currentSelectedTargetId
-      ? "target-option target-option--selected"
-      : "target-option";
-    option.setAttribute("role", "option");
-    option.setAttribute("aria-selected", String(target.targetId === currentSelectedTargetId));
-    option.dataset.targetId = target.targetId;
-
-    const primary = document.createElement("span");
-    primary.className = "target-option__primary";
-    primary.textContent = formatTargetPrimaryLabel(target);
-
-    const secondary = document.createElement("span");
-    secondary.className = "target-option__secondary";
-    secondary.textContent = formatTargetSecondaryLabel(target);
-
-    option.append(primary, secondary);
-    option.addEventListener("click", () => {
-      postAssistantCommand({ type: "assistant.selectTarget", targetId: target.targetId });
+  if (!sameTargetOrder) {
+    const fragment = document.createDocumentFragment();
+    currentTargets.forEach((target) => {
+      fragment.append(createTargetOption(elements, target));
     });
+    elements.targetContainer.replaceChildren(fragment);
+  } else {
+    currentTargets.forEach((target, index) => {
+      const option = existingOptions[index];
+      if (option) {
+        updateTargetOptionLabels(option, target);
+      }
+    });
+  }
 
-    fragment.append(option);
-  });
+  renderTargetSelectionOnly(elements);
+}
 
-  elements.targetContainer.replaceChildren(fragment);
+function renderSessionGuidance(elements: SidePanelElements, state: BackgroundAssistantState): void {
+  if (!elements.sessionStaleGuidance) {
+    return;
+  }
+
+  const message = sessionsRefreshPending
+    ? REFRESHING_TARGETS_GUIDANCE
+    : state.targets.length > 0 && state.connection.targetsStale
+      ? STALE_TARGETS_GUIDANCE
+      : undefined;
+
+  elements.sessionStaleGuidance.hidden = message === undefined;
+  elements.sessionStaleGuidance.textContent = message ?? "";
+}
+
+function requestSessionsRefresh(elements: SidePanelElements): void {
+  if (currentSnapshot?.connection.tokenConfigured === false) {
+    postAssistantCommand({ type: "assistant.sessions.refresh" });
+    return;
+  }
+
+  sessionsRefreshPending = true;
+  targetListUpdateMode = "manual";
+  if (currentSnapshot) {
+    renderSessionGuidance(elements, currentSnapshot);
+  }
+  postAssistantCommand({ type: "assistant.sessions.refresh" });
+}
+
+function getConnectionDisplayKey(state: BackgroundAssistantState): string {
+  // Ключ для определения, изменилось ли отображение состояния подключения
+  if (state.connection.tokenConfigured === false) {
+    return "token-required";
+  }
+  if (state.connection.browserAuthorized === false) {
+    return "auth-required";
+  }
+  if (state.targets.length > 0) {
+    return "has-targets";
+  }
+  if (!state.connection.brokerOnline && !state.connection.connecting) {
+    return "broker-unavailable";
+  }
+  // Подключаемся или нет целей - один и тот же placeholder
+  return "no-targets";
 }
 
 function renderTargetsFromSnapshot(elements: SidePanelElements, state: BackgroundAssistantState): void {
+  const connectionKey = getConnectionDisplayKey(state);
+  const targetIds = state.targets.map((t) => t.targetId);
+  const targetIdsChanged = targetIds.length !== lastRenderedTargetIds.length ||
+    !targetIds.every((id, i) => id === lastRenderedTargetIds[i]);
+
+  // Если визуально ничего не изменилось, пропускаем перерисовку
+  if (connectionKey === lastRenderedConnectionKey && !targetIdsChanged) {
+    renderSessionGuidance(elements, state);
+    renderTargetSelectionOnly(elements);
+    return;
+  }
+
+  lastRenderedConnectionKey = connectionKey;
+  lastRenderedTargetIds = targetIds;
+
+  renderSessionGuidance(elements, state);
+
   if (state.connection.tokenConfigured === false) {
     renderTargetPlaceholder(elements, TOKEN_REQUIRED_GUIDANCE, "warning");
     return;
@@ -448,13 +669,77 @@ function renderBrowserAuthSnapshot(elements: SidePanelElements, state: Backgroun
 }
 
 function renderAssistantSnapshot(elements: SidePanelElements, state: BackgroundAssistantState): void {
+  const previousSnapshot = currentSnapshot;
   currentSnapshot = state;
-  currentTargets = state.targets;
-  currentSelectedTargetId = state.selectedTargetId;
+
+  const recoveringFromUnavailable = previousSnapshot !== undefined &&
+    (previousSnapshot.connection.tokenConfigured === false || previousSnapshot.connection.browserAuthorized === false) &&
+    state.connection.tokenConfigured !== false &&
+    state.connection.browserAuthorized !== false;
+
+  if (recoveringFromUnavailable) {
+    targetListUpdateMode = "availability";
+  }
+
+  const availabilityChanged = previousSnapshot !== undefined && (
+    previousSnapshot.connection.tokenConfigured !== state.connection.tokenConfigured ||
+    previousSnapshot.connection.browserAuthorized !== state.connection.browserAuthorized
+  );
+  const availabilityRequiresRender = availabilityChanged ||
+    state.connection.tokenConfigured === false ||
+    state.connection.browserAuthorized === false;
+  const shouldUpdateTargetList = forceNextSnapshotTargetRender || targetListUpdateMode !== "frozen" || availabilityRequiresRender;
+
+  if (shouldUpdateTargetList) {
+    currentTargets = state.connection.tokenConfigured === false || state.connection.browserAuthorized === false
+      ? []
+      : state.targets;
+
+    const localTargetStillExists = currentSelectedTargetId !== undefined &&
+      currentTargets.some((target) => target.targetId === currentSelectedTargetId);
+
+    if (!localSelectionChanged || !localTargetStillExists) {
+      currentSelectedTargetId = state.connection.tokenConfigured === false || state.connection.browserAuthorized === false
+        ? undefined
+        : state.selectedTargetId;
+      localSelectionChanged = false;
+    } else if (state.selectedTargetId === currentSelectedTargetId) {
+      localSelectionChanged = false;
+    }
+  }
+
+  const manualRefreshFinished = targetListUpdateMode === "manual" && !state.connection.targetsRefreshPending;
+
+  const initialSnapshotFinished = targetListUpdateMode === "initial" &&
+    state.epoch > 0 &&
+    !state.connection.targetsRefreshPending &&
+    (state.targets.length > 0 || !state.connection.connecting);
+  const availabilityRefreshFinished = targetListUpdateMode === "availability" && (
+    state.targets.length > 0 ||
+    state.connection.tokenConfigured === false ||
+    state.connection.browserAuthorized === false ||
+    (!state.connection.connecting && !state.connection.brokerOnline)
+  );
+
+  if (initialSnapshotFinished || manualRefreshFinished || availabilityRefreshFinished) {
+    targetListUpdateMode = "frozen";
+  }
+
+  sessionsRefreshPending = targetListUpdateMode === "manual" && state.connection.connecting;
   currentTokenConfigured = state.connection.tokenConfigured;
 
   setBaseDiagnostics(elements, formatDiagnostics(state.diagnostics));
-  renderTargetsFromSnapshot(elements, state);
+  if (shouldUpdateTargetList) {
+    if (forceNextSnapshotTargetRender) {
+      lastRenderedConnectionKey = "";
+      lastRenderedTargetIds = [];
+    }
+    renderTargetsFromSnapshot(elements, state);
+    forceNextSnapshotTargetRender = false;
+  } else {
+    renderSessionGuidance(elements, state);
+    renderTargetSelectionOnly(elements);
+  }
   renderChat(elements);
   renderBrowserAuthSnapshot(elements, state);
   updateSendButton(elements);
@@ -465,8 +750,16 @@ function renderAssistantUnavailable(elements: SidePanelElements): void {
   currentSnapshot = undefined;
   currentTargets = [];
   currentSelectedTargetId = undefined;
+  localSelectionChanged = false;
+  sessionsRefreshPending = false;
+  targetListUpdateMode = "initial";
   currentTokenConfigured = undefined;
   currentBrowserToken = undefined;
+  lastRenderedMessageCount = 0;
+  lastRenderedMessageTimestamps = [];
+  lastRenderedConnectionKey = "";
+  lastRenderedTargetIds = [];
+  forceNextSnapshotTargetRender = false;
 
   setBaseDiagnostics(elements, SIDEPANEL_UNAVAILABLE_TEXT);
   renderTargetPlaceholder(elements, SIDEPANEL_UNAVAILABLE_TEXT, "warning");
@@ -488,14 +781,58 @@ function isAssistantSnapshotMessage(message: unknown): message is AssistantSnaps
   );
 }
 
+function clearReconnectTimer(): void {
+  if (reconnectTimer === undefined) {
+    return;
+  }
+
+  clearTimeout(reconnectTimer);
+  reconnectTimer = undefined;
+}
+
+function renderAssistantReconnecting(elements: SidePanelElements): void {
+  setBaseDiagnostics(elements, SIDEPANEL_RECONNECTING_TEXT);
+
+  if (!currentSnapshot) {
+    renderTargetPlaceholder(elements, SIDEPANEL_RECONNECTING_TEXT, "warning");
+    renderChat(elements);
+    setAuthStatus(elements, SIDEPANEL_RECONNECTING_TEXT);
+    setBrowserTokenOutput(elements, TOKEN_NOT_LOADED_LABEL);
+  }
+
+  setAuthButtonsPending(elements, true);
+  setButtonDisabled(elements.sendButton, true);
+  setButtonDisabled(elements.chatSendButton, true);
+}
+
+function scheduleAssistantPortReconnect(elements: SidePanelElements): void {
+  if (reconnectTimer !== undefined || assistantPort !== undefined) {
+    return;
+  }
+
+  const delay = SIDEPANEL_RECONNECT_DELAYS_MS[Math.min(reconnectAttempt, SIDEPANEL_RECONNECT_DELAYS_MS.length - 1)];
+  reconnectAttempt += 1;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    connectAssistantPort(elements);
+  }, delay);
+}
+
 function connectAssistantPort(elements: SidePanelElements): void {
+  if (assistantPort !== undefined) {
+    return;
+  }
+
+  clearReconnectTimer();
   const port = chrome.runtime.connect({ name: "sidepanel" });
   assistantPort = port;
   port.onMessage.addListener((message: unknown) => {
-    if (!isAssistantSnapshotMessage(message)) {
+    if (!isAssistantSnapshotMessage(message) || assistantPort !== port) {
       return;
     }
 
+    reconnectAttempt = 0;
+    clearReconnectTimer();
     renderAssistantSnapshot(elements, message.state);
   });
   port.onDisconnect.addListener(() => {
@@ -504,7 +841,9 @@ function connectAssistantPort(elements: SidePanelElements): void {
     }
 
     assistantPort = undefined;
-    renderAssistantUnavailable(elements);
+    forceNextSnapshotTargetRender = true;
+    renderAssistantReconnecting(elements);
+    scheduleAssistantPortReconnect(elements);
   });
 }
 
@@ -545,10 +884,20 @@ function initializeSidePanel(): void {
   currentSnapshot = undefined;
   currentTargets = [];
   currentSelectedTargetId = undefined;
+  localSelectionChanged = false;
+  sessionsRefreshPending = false;
+  targetListUpdateMode = "initial";
   currentTokenConfigured = undefined;
   currentBrowserToken = undefined;
   currentDiagnosticsBaseText = "Недавних диагностических сообщений нет.";
   currentActiveTab = "assistant";
+  lastRenderedMessageCount = 0;
+  lastRenderedMessageTimestamps = [];
+  lastRenderedConnectionKey = "";
+  lastRenderedTargetIds = [];
+  forceNextSnapshotTargetRender = false;
+  clearReconnectTimer();
+  reconnectAttempt = 0;
 
   connectAssistantPort(elements);
   activateTab(elements, "assistant");
@@ -581,6 +930,10 @@ function initializeSidePanel(): void {
 
   elements.composerMenuButton?.addEventListener("click", () => {
     setMenuOpen(elements.composerMenuButton, elements.composerMenu, elements.composerMenu?.hidden !== false);
+  });
+
+  elements.modelButton?.addEventListener("click", () => {
+    setMenuOpen(elements.modelButton, elements.modelMenu, elements.modelMenu?.hidden !== false);
   });
 
   elements.headerAuthButton?.addEventListener("click", () => {
@@ -626,6 +979,10 @@ function initializeSidePanel(): void {
     postAssistantCommand({ type: "assistant.diagnostics.refresh" });
   });
 
+  elements.refreshSessionsButton?.addEventListener("click", () => {
+    requestSessionsRefresh(elements);
+  });
+
   elements.copyBrowserTokenButton?.addEventListener("click", () => {
     void copyBrowserToken(elements);
   });
@@ -642,8 +999,10 @@ function initializeSidePanel(): void {
     setMenuOpen(elements.composerMenuButton, elements.composerMenu, false);
     const sendButton = elements.sendButton;
     const selectedTarget = findTargetById(currentSelectedTargetId, currentTargets);
+    const liveSelectedTargetReady = currentSnapshot?.selectedTargetId === currentSelectedTargetId &&
+      findTargetById(currentSelectedTargetId, currentSnapshot?.targets ?? []) !== undefined;
 
-    if (!sendButton || !selectedTarget || currentTokenConfigured !== true) {
+    if (!sendButton || !selectedTarget || !liveSelectedTargetReady || currentTokenConfigured !== true) {
       updateSendButton(elements);
       return;
     }

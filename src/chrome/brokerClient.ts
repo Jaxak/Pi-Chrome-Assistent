@@ -8,7 +8,10 @@ import {
   parseProtocolEnvelope,
   validateChatEvent,
   type ChatEvent,
+  type DeliveryResult,
   type TargetMetadata,
+  type TargetModelSummary,
+  type TargetRuntimeState,
 } from "../shared/protocol";
 
 export type BrokerConnectionState = {
@@ -39,6 +42,9 @@ export type BrokerClientOptions = {
   requestIdFactory?: () => string;
   onTargets?: (targets: TargetMetadata[]) => void;
   onChatEvent?: (event: ChatEvent) => void;
+  onRuntimeState?: (state: TargetRuntimeState) => void;
+  onAvailableModels?: (models: TargetModelSummary[], targetId: string) => void;
+  onModelSetResult?: (result: DeliveryResult) => void;
   onConnectionState?: (state: BrokerConnectionState) => void;
   reconnectDelaysMs?: number[];
   handshakeTimeoutMs?: number;
@@ -99,6 +105,35 @@ function isTargetMetadata(value: unknown): value is TargetMetadata {
   );
 }
 
+function isTargetModelSummary(value: unknown): value is TargetModelSummary {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const model = value as Partial<TargetModelSummary>;
+  return typeof model.provider === "string" && model.provider.length > 0 &&
+    typeof model.id === "string" && model.id.length > 0 &&
+    (model.label === undefined || typeof model.label === "string");
+}
+
+function isTargetRuntimeState(value: unknown): value is TargetRuntimeState {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const runtime = value as Partial<TargetRuntimeState>;
+  const usage = runtime.contextUsage;
+  return typeof runtime.targetId === "string" && runtime.targetId.length > 0 &&
+    (runtime.model === undefined || isTargetModelSummary(runtime.model)) &&
+    (usage === undefined || (
+      (typeof usage.tokens === "number" || usage.tokens === null) &&
+      typeof usage.maxTokens === "number" && Number.isFinite(usage.maxTokens) &&
+      (typeof usage.percent === "number" || usage.percent === null)
+    )) &&
+    typeof runtime.isIdle === "boolean" &&
+    typeof runtime.updatedAt === "number" && Number.isFinite(runtime.updatedAt);
+}
+
 export class BrokerClient {
   private readonly browserToken: string;
   private readonly brokerUrl: string;
@@ -109,6 +144,9 @@ export class BrokerClient {
   private readonly handshakeTimeoutMs: number;
   private readonly onTargets?: (targets: TargetMetadata[]) => void;
   private readonly onChatEvent?: (event: ChatEvent) => void;
+  private readonly onRuntimeState?: (state: TargetRuntimeState) => void;
+  private readonly onAvailableModels?: (models: TargetModelSummary[], targetId: string) => void;
+  private readonly onModelSetResult?: (result: DeliveryResult) => void;
   private readonly onConnectionState?: (state: BrokerConnectionState) => void;
   private socket: BrokerSocket | undefined;
   private closedByClient = false;
@@ -129,6 +167,9 @@ export class BrokerClient {
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.onTargets = options.onTargets;
     this.onChatEvent = options.onChatEvent;
+    this.onRuntimeState = options.onRuntimeState;
+    this.onAvailableModels = options.onAvailableModels;
+    this.onModelSetResult = options.onModelSetResult;
     this.onConnectionState = options.onConnectionState;
   }
 
@@ -185,6 +226,29 @@ export class BrokerClient {
         token: this.browserToken,
         targetId: this.selectedTargetId,
         message: text,
+      },
+    });
+    return true;
+  }
+
+  setTargetModel(input: { provider: string; modelId: string; targetId?: string }): boolean {
+    const socket = this.socket;
+    const targetId = input.targetId ?? this.selectedTargetId;
+    const provider = input.provider.trim();
+    const modelId = input.modelId.trim();
+
+    if (!targetId || provider.length === 0 || modelId.length === 0 || !isOpen(socket)) {
+      return false;
+    }
+
+    sendEnvelope(socket, {
+      type: "client.setTargetModel",
+      requestId: this.requestIdFactory(),
+      payload: {
+        token: this.browserToken,
+        targetId,
+        provider,
+        modelId,
       },
     });
     return true;
@@ -292,6 +356,32 @@ export class BrokerClient {
       if (validation.ok) {
         this.onChatEvent?.(envelope.payload as ChatEvent);
       }
+      return;
+    }
+
+    if (envelope.type === "client.runtimeState") {
+      if (isTargetRuntimeState(envelope.payload)) {
+        this.onRuntimeState?.(envelope.payload);
+      }
+      return;
+    }
+
+    if (envelope.type === "client.availableModels") {
+      const payload = envelope.payload as { targetId?: unknown; models?: unknown } | undefined;
+      const models = Array.isArray(payload?.models) ? payload.models.filter(isTargetModelSummary) : [];
+
+      if (typeof payload?.targetId === "string" && payload.targetId.length > 0) {
+        this.onAvailableModels?.(models, payload.targetId);
+      }
+      return;
+    }
+
+    if (envelope.type === "client.modelSetResult") {
+      const payload = envelope.payload as { ok?: unknown; error?: unknown } | undefined;
+      this.onModelSetResult?.({
+        ok: payload?.ok === true,
+        ...(typeof payload?.error === "string" ? { error: payload.error } : {}),
+      });
       return;
     }
 

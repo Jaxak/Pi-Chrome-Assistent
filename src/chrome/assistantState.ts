@@ -1,4 +1,4 @@
-import type { ChatEvent, TargetMetadata } from "../shared/protocol";
+import type { ChatEvent, TargetMetadata, TargetModelSummary, TargetRuntimeState } from "../shared/protocol";
 import type { DiagnosticEntry } from "./diagnostics";
 import {
   createInitialSidePanelState,
@@ -16,6 +16,8 @@ export type BackgroundAssistantState = {
     tokenConfigured: boolean;
     browserAuthorized: boolean | undefined;
     lastError?: string;
+    targetsStale: boolean;
+    targetsRefreshPending: boolean;
   };
   targets: TargetMetadata[];
   selectedTargetId?: string;
@@ -32,6 +34,12 @@ export type BackgroundAssistantState = {
     mutationPending: boolean;
     error?: string;
   };
+  runtime: {
+    selectedTargetRuntime?: TargetRuntimeState;
+    availableModels: TargetModelSummary[];
+    modelMutationPending: boolean;
+    modelError?: string;
+  };
   diagnostics: DiagnosticEntry[];
 };
 
@@ -41,6 +49,7 @@ export type AssistantStateEvent =
   | { kind: "select_target"; targetId?: string }
   | { kind: "chat_event"; event: ChatEvent }
   | { kind: "auth_updated"; auth: Partial<BackgroundAssistantState["auth"]> }
+  | { kind: "runtime_updated"; runtime: Partial<BackgroundAssistantState["runtime"]> }
   | { kind: "diagnostics_updated"; diagnostics: DiagnosticEntry[] }
   | { kind: "epoch_incremented" };
 
@@ -55,6 +64,8 @@ export function createInitialAssistantState(): BackgroundAssistantState {
       connecting: true,
       tokenConfigured: false,
       browserAuthorized: undefined,
+      targetsStale: false,
+      targetsRefreshPending: false,
     },
     targets: [],
     chat: {
@@ -67,6 +78,10 @@ export function createInitialAssistantState(): BackgroundAssistantState {
     auth: {
       tokenConfigured: false,
       mutationPending: false,
+    },
+    runtime: {
+      availableModels: [],
+      modelMutationPending: false,
     },
     diagnostics: [],
   };
@@ -134,6 +149,18 @@ export function reduceAssistantState(
         connection: {
           ...state.connection,
           ...(event.auth.tokenConfigured === undefined ? {} : { tokenConfigured: event.auth.tokenConfigured }),
+        },
+      };
+
+    case "runtime_updated":
+      return {
+        ...state,
+        runtime: {
+          ...state.runtime,
+          ...event.runtime,
+          availableModels: event.runtime.availableModels
+            ? [...event.runtime.availableModels]
+            : state.runtime.availableModels,
         },
       };
 

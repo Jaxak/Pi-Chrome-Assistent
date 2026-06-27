@@ -1,0 +1,788 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { PROTOCOL_VERSION } from "../shared/constants";
+import type { DirectSessionSnapshot, ProtocolEnvelope } from "../shared/protocol";
+import { SessionClient, type SessionClientOptions } from "./sessionClient";
+
+type SocketEventName = "open" | "message" | "error" | "close";
+type SocketEventListener = (event?: { data?: string }) => void;
+
+class FakeWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 3;
+
+  readonly url: string | undefined;
+  readonly sent: string[] = [];
+  readonly listeners = new Map<SocketEventName, Set<SocketEventListener>>();
+  readyState = FakeWebSocket.CONNECTING;
+  closeCalls = 0;
+
+  constructor(url?: string) {
+    this.url = url;
+  }
+
+  addEventListener(eventName: SocketEventName, listener: SocketEventListener): void {
+    const listeners = this.listeners.get(eventName) ?? new Set<SocketEventListener>();
+    listeners.add(listener);
+    this.listeners.set(eventName, listeners);
+  }
+
+  removeEventListener(eventName: SocketEventName, listener: SocketEventListener): void {
+    this.listeners.get(eventName)?.delete(listener);
+  }
+
+  send(payload: string): void {
+    this.sent.push(payload);
+  }
+
+  close(): void {
+    this.closeCalls += 1;
+    this.readyState = FakeWebSocket.CLOSED;
+  }
+
+  emitOpen(): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.emit("open");
+  }
+
+  emitMessage(envelope: ProtocolEnvelope): void {
+    this.emit("message", { data: JSON.stringify(envelope) });
+  }
+
+  emitClose(): void {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.emit("close");
+  }
+
+  emitError(): void {
+    this.emit("error");
+  }
+
+  private emit(eventName: SocketEventName, event?: { data?: string }): void {
+    for (const listener of this.listeners.get(eventName) ?? []) {
+      listener(event);
+    }
+  }
+}
+
+function createSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectSessionSnapshot {
+  return {
+    session: {
+      cwd: "/repo",
+      gitBranch: "main",
+      pid: 1234,
+      sessionName: "test-session",
+      alias: "frontend",
+      connectedAt: 1_710_000_000_000,
+    },
+    chat: {
+      events: [],
+      agentBusy: false,
+      busyLabel: "Агент работает в фоне…",
+    },
+    runtime: {
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      availableModels: [{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }],
+      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    },
+    ...overrides,
+  };
+}
+
+function readSent<TPayload = unknown>(socket: FakeWebSocket, index: number): ProtocolEnvelope<TPayload> {
+  return JSON.parse(socket.sent[index] ?? "{}");
+}
+
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+describe("SessionClient", () => {
+  it("connects to ws://127.0.0.1:<port>", () => {
+    const socket = new FakeWebSocket();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: (url) => {
+        expect(url).toBe("ws://127.0.0.1:31415");
+        return socket;
+      },
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+    });
+
+    client.connect();
+    expect(socket.readyState).toBe(FakeWebSocket.CONNECTING);
+  });
+
+  it("reports connecting state on connect", () => {
+    const onConnectionState = vi.fn();
+    const socket = new FakeWebSocket();
+    new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState,
+    }).connect();
+
+    expect(onConnectionState).toHaveBeenCalledWith({
+      online: false,
+      connecting: true,
+      statusText: "Подключаемся к Pi-сессии…",
+    });
+  });
+
+  it("reports online after receiving session.snapshot", async () => {
+    const socket = new FakeWebSocket();
+    const onSnapshot = vi.fn();
+    const onConnectionState = vi.fn();
+    const snapshot = createSnapshot();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot,
+      onConnectionState,
+    });
+
+    client.connect();
+    socket.emitOpen();
+    socket.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: snapshot });
+    await flush();
+
+    expect(onSnapshot).toHaveBeenCalledWith(snapshot);
+    expect(onConnectionState).toHaveBeenCalledWith({
+      online: true,
+      connecting: false,
+      statusText: "Подключено к Pi-сессии",
+    });
+  });
+
+  it("sends session.chat.send without targetId", async () => {
+    const socket = new FakeWebSocket();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+    });
+
+    client.connect();
+    socket.emitOpen();
+    const sent = client.sendChatMessage(" Привет ");
+
+    expect(sent).toBe(true);
+    expect(readSent(socket, 0)).toMatchObject({
+      version: PROTOCOL_VERSION,
+      type: "session.chat.send",
+      payload: { message: "Привет" },
+    });
+  });
+
+  it("sends session.selection.send", async () => {
+    const socket = new FakeWebSocket();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+    });
+
+    client.connect();
+    socket.emitOpen();
+    const sent = client.sendSelection({
+      url: "https://example.com",
+      title: "Example",
+      selectedText: "hello",
+      selectedHtml: "<p>hello</p>",
+      capturedAt: 1_710_000_000_000,
+    });
+
+    expect(sent).toBe(true);
+    expect(readSent(socket, 0)).toMatchObject({
+      version: PROTOCOL_VERSION,
+      type: "session.selection.send",
+      payload: {
+        selection: {
+          url: "https://example.com",
+          title: "Example",
+          selectedText: "hello",
+          selectedHtml: "<p>hello</p>",
+          capturedAt: 1_710_000_000_000,
+        },
+      },
+    });
+  });
+
+  it("sends session.model.set without targetId", async () => {
+    const socket = new FakeWebSocket();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+    });
+
+    client.connect();
+    socket.emitOpen();
+    const sent = client.setModel({ provider: "anthropic", modelId: "claude-sonnet" });
+
+    expect(sent).toBe(true);
+    expect(readSent(socket, 0)).toMatchObject({
+      version: PROTOCOL_VERSION,
+      type: "session.model.set",
+      payload: { provider: "anthropic", modelId: "claude-sonnet" },
+    });
+  });
+
+  it("returns false when sending while not connected", () => {
+    const socket = new FakeWebSocket();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+    });
+
+    client.connect();
+    // Don't emitOpen — socket is still CONNECTING
+    expect(client.sendChatMessage("Hello")).toBe(false);
+    expect(client.sendSelection({
+      url: "https://example.com",
+      title: "Test",
+      selectedText: "text",
+      selectedHtml: "<p>text</p>",
+      capturedAt: 1_710_000_000_000,
+    })).toBe(false);
+    expect(client.setModel({ provider: "anthropic", modelId: "claude-sonnet" })).toBe(false);
+  });
+
+  it("reconnects to a new port with reconnectToPort", async () => {
+    const sockets = [new FakeWebSocket(), new FakeWebSocket()];
+    let socketIndex = 0;
+    const onConnectionState = vi.fn();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: (url) => {
+        expect(url).toBe(`ws://127.0.0.1:${socketIndex === 0 ? 31415 : 31416}`);
+        return sockets[socketIndex++];
+      },
+      onSnapshot: vi.fn(),
+      onConnectionState,
+    });
+
+    client.connect();
+    sockets[0].emitOpen();
+    await flush();
+
+    client.reconnectToPort(31416);
+
+    expect(sockets[0].closeCalls).toBe(1);
+    expect(sockets[1].readyState).toBe(FakeWebSocket.CONNECTING);
+    expect(onConnectionState).toHaveBeenLastCalledWith({
+      online: false,
+      connecting: true,
+      statusText: "Подключаемся к Pi-сессии…",
+    });
+  });
+
+  it("reports offline and reconnects after close event with backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [new FakeWebSocket(), new FakeWebSocket()];
+      let socketIndex = 0;
+      const webSocketFactory = vi.fn(() => sockets[socketIndex++]);
+      const onConnectionState = vi.fn();
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState,
+        reconnectDelaysMs: [50],
+      });
+
+      client.connect();
+      sockets[0].emitOpen();
+      await flush();
+      sockets[0].emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+
+      sockets[0].emitClose();
+      await flush();
+
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: "Pi-сессия недоступна",
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: true,
+        statusText: "Подключаемся к Pi-сессии…",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels reconnect timer when closed", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [new FakeWebSocket(), new FakeWebSocket()];
+      let socketIndex = 0;
+      const webSocketFactory = vi.fn(() => sockets[socketIndex++]);
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState: vi.fn(),
+        reconnectDelaysMs: [50],
+      });
+
+      client.connect();
+      sockets[0].emitClose();
+      client.close();
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+
+      expect(webSocketFactory).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores messages after close", async () => {
+    const socket = new FakeWebSocket();
+    const onSnapshot = vi.fn();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot,
+      onConnectionState: vi.fn(),
+    });
+
+    client.connect();
+    client.close();
+    socket.emitOpen();
+    socket.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+    await flush();
+
+    expect(onSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("handles session.error message", async () => {
+    const socket = new FakeWebSocket();
+    const onConnectionState = vi.fn();
+    new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState,
+    }).connect();
+    socket.emitOpen();
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "session.error",
+      payload: { error: "Неверный запрос" },
+    });
+    await flush();
+
+    expect(onConnectionState).toHaveBeenLastCalledWith({
+      online: false,
+      connecting: false,
+      statusText: "Неверный запрос",
+    });
+  });
+
+  it("handles session.command.result", async () => {
+    const socket = new FakeWebSocket();
+    const onCommandResult = vi.fn();
+    new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+      onCommandResult,
+    }).connect();
+    socket.emitOpen();
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "session.command.result",
+      requestId: "req-1",
+      payload: { ok: true },
+    });
+    await flush();
+
+    expect(onCommandResult).toHaveBeenCalledWith({
+      requestId: "req-1",
+      result: { ok: true },
+    });
+  });
+
+  it("reconnects on socket error", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [new FakeWebSocket(), new FakeWebSocket()];
+      let socketIndex = 0;
+      const webSocketFactory = vi.fn(() => sockets[socketIndex++]);
+      const firstSocket = sockets[0];
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState: vi.fn(),
+        reconnectDelaysMs: [25],
+      });
+
+      client.connect();
+      firstSocket.emitOpen();
+      firstSocket.emitError();
+      await flush();
+
+      expect(firstSocket.closeCalls).toBe(1);
+
+      firstSocket.emitClose();
+      await vi.advanceTimersByTimeAsync(25);
+      await flush();
+
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ─── Bounded backoff / retry-counter tests ───
+
+  it("bounded backoff ramps up delays across consecutive closes without snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState: vi.fn(),
+        reconnectDelaysMs: [50, 100, 200],
+      });
+
+      client.connect();
+      sockets[0]!.emitOpen();
+      // No snapshot — connection is "open" but not authoritative
+
+      // Close #1 → should schedule reconnect at delay[0]=50
+      sockets[0]!.emitClose();
+      await flush();
+
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+      sockets[1]!.emitOpen();
+      // Still no snapshot
+
+      // Close #2 → should schedule reconnect at delay[1]=100 (ramped up)
+      sockets[1]!.emitClose();
+      await flush();
+
+      // After 60ms — should NOT have reconnected yet (100ms delay)
+      await vi.advanceTimersByTimeAsync(60);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+
+      // After another 40ms (total 100ms from close #2) — should reconnect
+      await vi.advanceTimersByTimeAsync(40);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnectAttempt is NOT reset after open without snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState: vi.fn(),
+        reconnectDelaysMs: [50, 100, 200],
+      });
+
+      client.connect();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitClose();
+      await flush();
+
+      // advance 50ms → reconnect #1
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+      sockets[1]!.emitOpen();
+      // open fired but NO snapshot — counter must NOT reset
+      sockets[1]!.emitClose();
+      await flush();
+
+      // If counter was reset to 0, next delay would be 50ms.
+      // With correct behavior (counter=1), next delay is 100ms.
+      // Advance only 50ms — should NOT reconnect if counter persisted.
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+
+      // Advance another 50ms (total 100ms from close #2) — should reconnect
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnectAttempt resets after successful snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState: vi.fn(),
+        reconnectDelaysMs: [50, 100, 200],
+      });
+
+      client.connect();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+
+      // Disconnect after successful snapshot
+      sockets[0]!.emitClose();
+      await flush();
+
+      // Counter was reset by snapshot, so first reconnect delay = 50ms
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnect after 3+ consecutive closes uses correct bounded delays", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState: vi.fn(),
+        reconnectDelaysMs: [50, 100, 200],
+      });
+
+      client.connect();
+
+      // 5 consecutive close events — delays should be 50, 100, 200, 200, 200 (bounded)
+      const expectedDelays = [50, 100, 200, 200, 200];
+      for (let i = 0; i < 5; i++) {
+        sockets[i]!.emitOpen();
+        // No snapshot — counter keeps incrementing
+        sockets[i]!.emitClose();
+        await flush();
+
+        // Before the expected delay, no reconnect should happen
+        const partialDelay = expectedDelays[i]! - 1;
+        if (partialDelay > 0) {
+          await vi.advanceTimersByTimeAsync(partialDelay);
+          await flush();
+          // Still i+1 sockets (the initial connect + i reconnects so far)
+          expect(webSocketFactory).toHaveBeenCalledTimes(i + 1);
+        }
+
+        // Now advance the remaining time to trigger the reconnect
+        await vi.advanceTimersByTimeAsync(1);
+        await flush();
+        expect(webSocketFactory).toHaveBeenCalledTimes(i + 2);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ─── Reconnect persistence tests ───
+
+  it("keeps reconnecting after many consecutive close events", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const onConnectionState = vi.fn();
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState,
+        reconnectDelaysMs: [50, 100, 200],
+      });
+
+      client.connect();
+
+      // First connect
+      sockets[0]!.emitOpen();
+      await flush();
+      // Close 5 times — should keep reconnecting past the 3-element delay array
+      for (let i = 0; i < 5; i++) {
+        sockets[i]!.emitClose();
+        await flush();
+        // Advance timer — each reconnect uses bounded delay
+        const delay = i < 3 ? [50, 100, 200][i]! : 200;
+        await vi.advanceTimersByTimeAsync(delay);
+        await flush();
+      }
+
+      // After 5 close events, we should have created 6 sockets (1 initial + 5 reconnects)
+      expect(webSocketFactory).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets retry counter after successful reconnect and snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const onConnectionState = vi.fn();
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState,
+        reconnectDelaysMs: [50, 100, 200],
+      });
+
+      client.connect();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+
+      // Disconnect
+      sockets[0]!.emitClose();
+      await flush();
+
+      // Reconnect after 50ms delay
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+
+      // Socket #1 connects successfully
+      sockets[1]!.emitOpen();
+      sockets[1]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+
+      // Now disconnect again — should use the first delay (50ms) since counter was reset
+      sockets[1]!.emitClose();
+      await flush();
+
+      // If counter was NOT reset, delay would be 100ms (attempt #2). Since it IS reset, delay is 50ms.
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+
+      expect(webSocketFactory).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnects to the new port after reconnectToPort when socket closes", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [new FakeWebSocket(), new FakeWebSocket(), new FakeWebSocket()];
+      let socketIndex = 0;
+      const urlsCalled: string[] = [];
+      const webSocketFactory = vi.fn((url: string) => {
+        urlsCalled.push(url);
+        return sockets[socketIndex++];
+      });
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState: vi.fn(),
+        reconnectDelaysMs: [50],
+      });
+
+      // Initial connect to 31415
+      client.connect();
+      sockets[0].emitOpen();
+      await flush();
+      expect(urlsCalled[0]).toBe("ws://127.0.0.1:31415");
+
+      // Reconnect to new port 31416
+      client.reconnectToPort(31416);
+      sockets[1].emitOpen();
+      await flush();
+      expect(urlsCalled[1]).toBe("ws://127.0.0.1:31416");
+
+      // Close the connection to 31416 — reconnect should target 31416, not 31415
+      sockets[1].emitClose();
+      await flush();
+
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+
+      // The reconnection must go to 31416, NOT back to the original 31415
+      expect(urlsCalled[2]).toBe("ws://127.0.0.1:31416");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

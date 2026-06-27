@@ -5,7 +5,12 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createInitialAssistantState, type BackgroundAssistantState } from "./assistantState";
+import {
+  createInitialAssistantState,
+  reduceAssistantState,
+  type BackgroundAssistantState,
+} from "./assistantState";
+import type { DirectSessionSnapshot } from "../shared/protocol";
 
 type PortListener = (message: unknown) => void;
 
@@ -28,49 +33,57 @@ async function flush(): Promise<void> {
   await Promise.resolve();
 }
 
-type TargetMetadataLike = BackgroundAssistantState["targets"][number];
-
-function createTarget(overrides: Partial<TargetMetadataLike> = {}): TargetMetadataLike {
+function createDirectSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectSessionSnapshot {
   return {
-    targetId: "target-1",
-    alias: "Alpha",
-    cwd: "/tmp/pi-alpha",
-    gitBranch: "main",
-    pid: 101,
-    sessionName: "session-a",
-    connectedAt: 1_710_000_000_000,
-    lastSeenAt: 1_710_000_000_100,
+    session: {
+      cwd: "/repo",
+      gitBranch: "main",
+      pid: 1234,
+      sessionName: "test-session",
+      alias: "frontend",
+      connectedAt: 1_710_000_000_000,
+    },
+    chat: {
+      events: [],
+      agentBusy: false,
+      busyLabel: "Агент работает в фоне…",
+    },
+    runtime: {
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      availableModels: [
+        { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+        { provider: "openai", id: "gpt-4.1", label: "GPT 4.1" },
+      ],
+      contextUsage: { tokens: 12340, maxTokens: 200000, percent: 6 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    },
     ...overrides,
   };
 }
 
-function createSnapshot(overrides: Partial<BackgroundAssistantState> = {}): BackgroundAssistantState {
+type ConnectedStateOverrides = Omit<Partial<BackgroundAssistantState>, "connection" | "snapshot"> & {
+  snapshot?: DirectSessionSnapshot;
+  connection?: Partial<BackgroundAssistantState["connection"]>;
+};
+
+function createConnectedState(overrides: ConnectedStateOverrides = {}): BackgroundAssistantState {
   const base = createInitialAssistantState();
+  let state = reduceAssistantState(base, {
+    kind: "connection_updated",
+    connection: { configuredPort: overrides.connection?.configuredPort ?? 31415 },
+  });
+  state = reduceAssistantState(state, {
+    kind: "session_snapshot",
+    snapshot: overrides.snapshot ?? createDirectSnapshot(),
+  });
   return {
-    ...base,
-    connection: {
-      ...base.connection,
-      brokerOnline: true,
-      bridgeOnline: true,
-      connecting: false,
-      tokenConfigured: true,
-      browserAuthorized: true,
-      ...overrides.connection,
-    },
-    targets: overrides.targets ?? base.targets,
-    selectedTargetId: overrides.selectedTargetId,
-    chat: {
-      ...base.chat,
-      ...overrides.chat,
-    },
-    auth: {
-      ...base.auth,
-      tokenConfigured: true,
-      browserToken: "token-1",
-      ...overrides.auth,
-    },
-    diagnostics: overrides.diagnostics ?? base.diagnostics,
-    epoch: overrides.epoch ?? base.epoch,
+    ...state,
+    epoch: overrides.epoch ?? state.epoch + 1,
+    connection: { ...state.connection, ...(overrides.connection ?? {}) },
+    chat: { ...state.chat, ...(overrides.chat ?? {}) },
+    runtime: { ...state.runtime, ...(overrides.runtime ?? {}) },
+    diagnostics: overrides.diagnostics ?? state.diagnostics,
   };
 }
 
@@ -130,7 +143,7 @@ async function importInitializedSidePanel(): Promise<void> {
   await flush();
 }
 
-describe("sidepanel auth lifecycle", () => {
+describe("sidepanel lifecycle", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.resetModules();
@@ -158,67 +171,41 @@ describe("sidepanel auth lifecycle", () => {
     expect(document.querySelector(".brand-title")?.textContent).toBe("Ассистент");
   });
 
-  it("renders targets and auth token from assistant snapshots", async () => {
+  it("renders connected state from assistant snapshots", async () => {
     loadSidePanelHtml();
     const { port } = mockChrome();
     await importInitializedSidePanel();
 
     port.emit({
       type: "assistant.snapshot",
-      state: createSnapshot({ targets: [createTarget()], selectedTargetId: "target-1" }),
+      state: createConnectedState(),
     });
     await flush();
 
-    expect(document.querySelector("#target-container")?.textContent).toContain("Alpha");
-    expect(document.querySelector("#target-container")?.textContent).toContain("/tmp/pi-alpha");
-    expect(document.querySelector("#browser-token-output")?.textContent).toBe("token-1");
-  });
-
-  it("posts auth commands from auth controls and keeps token copy local", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChrome();
-    const writeText = vi.fn(async () => undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-
-    await importInitializedSidePanel();
-    port.emit({ type: "assistant.snapshot", state: createSnapshot() });
-    await flush();
-
-    document.querySelector<HTMLButtonElement>("#header-auth-button")?.click();
-    document.querySelector<HTMLButtonElement>("#copy-browser-token-button")?.click();
-    document.querySelector<HTMLButtonElement>("#regenerate-browser-token-button")?.click();
-    document.querySelector<HTMLButtonElement>("#clear-browser-token-button")?.click();
-    await flush();
-
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.auth.refresh" });
-    expect(writeText).toHaveBeenCalledWith("token-1");
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.auth.regenerateToken" });
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.auth.clearToken" });
+    // Session info should show with success emoji
+    const statusEl = document.querySelector("#session-connection-status");
+    expect(statusEl?.textContent).toContain("✅");
+    expect(statusEl?.textContent).toContain("Подключено");
+    // Model info should render
+    expect(document.querySelector("#model-button")?.textContent).toContain("Claude Sonnet");
   });
 
   it("renders unavailable state and keeps commands safe after assistant port disconnects", async () => {
     loadSidePanelHtml();
     const { port } = mockChrome();
     await importInitializedSidePanel();
-    port.emit({ type: "assistant.snapshot", state: createSnapshot({ targets: [createTarget()], selectedTargetId: "target-1" }) });
+    port.emit({ type: "assistant.snapshot", state: createConnectedState() });
     await flush();
-    const staleTargetButton = document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]');
 
     port.disconnect();
     await flush();
 
     expect(document.querySelector("#status-text")).toBeNull();
     expect(document.querySelector("#diagnostics-output")?.textContent).toContain("Переподключаем боковую панель…");
-    expect(document.querySelector("#target-container")?.textContent).toContain("Alpha");
     expect(document.querySelector<HTMLButtonElement>("#send-button")?.disabled).toBe(true);
     expect(document.querySelector<HTMLButtonElement>("#chat-send-button")?.disabled).toBe(true);
-    expect(document.querySelector<HTMLButtonElement>("#copy-browser-token-button")?.disabled).toBe(true);
-    expect(document.querySelector<HTMLButtonElement>("#regenerate-browser-token-button")?.disabled).toBe(true);
-    expect(document.querySelector<HTMLButtonElement>("#clear-browser-token-button")?.disabled).toBe(true);
 
+    // Commands should not throw when disconnected
     expect(() => {
       const input = document.querySelector<HTMLTextAreaElement>("#chat-input");
       if (input) {
@@ -226,9 +213,53 @@ describe("sidepanel auth lifecycle", () => {
         input.dispatchEvent(new Event("input"));
       }
       document.querySelector<HTMLButtonElement>("#chat-send-button")?.click();
-      document.querySelector<HTMLButtonElement>("#regenerate-browser-token-button")?.click();
-      document.querySelector<HTMLButtonElement>("#clear-browser-token-button")?.click();
-      staleTargetButton?.click();
     }).not.toThrow();
+  });
+
+  it("renders runtime model and context usage from snapshot", async () => {
+    loadSidePanelHtml();
+    const { port } = mockChrome();
+    await importInitializedSidePanel();
+
+    port.emit({
+      type: "assistant.snapshot",
+      state: createConnectedState(),
+    });
+    await flush();
+
+    expect(document.querySelector("#model-button")?.textContent).toContain("Модель: Claude Sonnet");
+    expect(document.querySelector("#context-usage")?.textContent).toContain("Контекст: 12 340 / 200 000 токенов · 6%");
+  });
+
+  it("shows connecting status when connecting", async () => {
+    loadSidePanelHtml();
+    const { port } = mockChrome();
+    await importInitializedSidePanel();
+
+    const connectingState = reduceAssistantState(createInitialAssistantState(), {
+      kind: "connection_updated",
+      connection: { connecting: true, online: false, configuredPort: 31416 },
+    });
+
+    port.emit({ type: "assistant.snapshot", state: connectingState });
+    await flush();
+
+    const statusEl = document.querySelector("#session-connection-status");
+    expect(statusEl?.textContent).toContain("Подключаемся");
+  });
+
+  it("updates port input when snapshot carries configuredPort", async () => {
+    loadSidePanelHtml();
+    const { port } = mockChrome();
+    await importInitializedSidePanel();
+
+    port.emit({
+      type: "assistant.snapshot",
+      state: createConnectedState({ connection: { configuredPort: 31418, online: true } }),
+    });
+    await flush();
+
+    const portInput = document.querySelector<HTMLInputElement>("#session-port-input");
+    expect(portInput?.value).toBe("31418");
   });
 });

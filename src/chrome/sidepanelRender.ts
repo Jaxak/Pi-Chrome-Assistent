@@ -1,12 +1,5 @@
 import type { SidepanelChatMessage } from "./sidepanelState";
 
-export type ChatSendDisabledInput = {
-  selectedTargetId?: string;
-  tokenConfigured: boolean;
-  bridgeOnline: boolean;
-  text: string;
-};
-
 function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString("ru-RU", {
     hour: "2-digit",
@@ -63,6 +56,4 @@ export function updateAgentWorkingElement(element: HTMLElement, label: string, v
   }
 }
 
-export function isChatSendDisabled(input: ChatSendDisabledInput): boolean {
-  return !input.selectedTargetId || !input.tokenConfigured || !input.bridgeOnline || input.text.trim().length === 0;
-}
+

@@ -7,18 +7,16 @@ import {
   parseProtocolEnvelope,
   validateChatEvent,
   validateSelectionPayload,
-  validateSendChatMessagePayload,
-  validateSetTargetModelPayload,
-  validateSubscribeTargetPayload,
-  type BrowserClientHelloPayload,
-  type BrowserClientSendChatMessagePayload,
-  type BrowserClientSendSelectionPayload,
-  type BrowserClientSubscribeTargetPayload,
+  validateDirectSendChatPayload,
+  validateDirectSendSelectionPayload,
+  validateDirectSetModelPayload,
   type ChatEvent,
+  type DirectSendChatPayload,
+  type DirectSendSelectionPayload,
+  type DirectSetModelPayload,
+  type DirectSessionSnapshot,
   type SelectionPayload,
-  type TargetRuntimeState,
 } from "./protocol";
-import { BROWSER_NOT_AUTHORIZED_ERROR, BROWSER_TOKEN_STORAGE_KEY } from "./constants";
 
 const validSelection: SelectionPayload = {
   url: "https://example.com/page",
@@ -31,35 +29,38 @@ const validSelection: SelectionPayload = {
 };
 
 describe("protocol envelope", () => {
-  it("accepts a valid protocol envelope", () => {
+  it("accepts a valid protocol envelope with direct message type", () => {
     expect(
-      isProtocolEnvelope({ version: 1, type: "client.listTargets", requestId: "abc" }),
+      isProtocolEnvelope({ version: 1, type: "session.snapshot", requestId: "abc" }),
     ).toBe(true);
   });
 
-  it("accepts target registration acknowledgements", () => {
-    expect(
-      isProtocolEnvelope({ version: 1, type: "target.registered", requestId: "register-1" }),
-    ).toBe(true);
+  it("accepts direct session message types", () => {
+    expect(isProtocolEnvelope({ version: 1, type: "session.snapshot" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "session.chat.send" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "session.selection.send" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "session.model.set" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "session.command.result" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "session.error" })).toBe(true);
   });
 
   it("rejects envelopes with wrong version", () => {
-    expect(isProtocolEnvelope({ version: 2, type: "client.listTargets" })).toBe(false);
+    expect(isProtocolEnvelope({ version: 2, type: "session.snapshot" })).toBe(false);
   });
 
   it("rejects unknown message types", () => {
-    expect(isProtocolEnvelope({ version: 1, type: "client.unknown" })).toBe(false);
-    expect(parseProtocolEnvelope(JSON.stringify({ version: 1, type: "client.unknown" }))).toBeNull();
+    expect(isProtocolEnvelope({ version: 1, type: "unknown.type" })).toBe(false);
+    expect(parseProtocolEnvelope(JSON.stringify({ version: 1, type: "unknown.type" }))).toBeNull();
   });
 
   it("rejects envelopes with non-string requestId", () => {
-    expect(isProtocolEnvelope({ version: 1, type: "client.listTargets", requestId: 123 })).toBe(false);
+    expect(isProtocolEnvelope({ version: 1, type: "session.snapshot", requestId: 123 })).toBe(false);
   });
 
   it("parses valid JSON into an envelope", () => {
-    expect(parseProtocolEnvelope(JSON.stringify({ version: 1, type: "client.hello" }))).toEqual({
+    expect(parseProtocolEnvelope(JSON.stringify({ version: 1, type: "session.snapshot" }))).toEqual({
       version: 1,
-      type: "client.hello",
+      type: "session.snapshot",
     });
   });
 
@@ -77,67 +78,102 @@ describe("protocol envelope", () => {
   });
 });
 
+describe("direct session protocol validation", () => {
+  it("accepts a valid direct chat send payload", () => {
+    const payload: DirectSendChatPayload = { message: "Привет" };
+    expect(validateDirectSendChatPayload(payload)).toEqual({ ok: true });
+  });
 
+  it("rejects empty chat message", () => {
+    const payload: DirectSendChatPayload = { message: "   " };
+    expect(validateDirectSendChatPayload(payload)).toEqual({ ok: false, error: "Missing message" });
+  });
 
-describe("browser auth protocol helpers", () => {
-  it("exposes stable browser auth constants and payload shapes", () => {
-    const helloPayload: BrowserClientHelloPayload = {
-      token: "browser-token-1",
+  it("rejects missing message", () => {
+    expect(validateDirectSendChatPayload({ message: "" })).toEqual({ ok: false, error: "Missing message" });
+  });
+
+  it("accepts a valid direct selection send payload", () => {
+    const payload: DirectSendSelectionPayload = { selection: validSelection };
+    expect(validateDirectSendSelectionPayload(payload)).toEqual({ ok: true });
+  });
+
+  it("rejects selection payload with invalid selection", () => {
+    const payload: DirectSendSelectionPayload = { selection: { ...validSelection, url: "" } };
+    expect(validateDirectSendSelectionPayload(payload).ok).toBe(false);
+  });
+
+  it("accepts a valid direct model set payload", () => {
+    const payload: DirectSetModelPayload = { provider: "anthropic", modelId: "claude-sonnet" };
+    expect(validateDirectSetModelPayload(payload)).toEqual({ ok: true });
+  });
+
+  it("rejects model set payload with missing provider", () => {
+    expect(validateDirectSetModelPayload({ provider: "", modelId: "claude" }))
+      .toEqual({ ok: false, error: "Missing provider" });
+  });
+
+  it("rejects model set payload with missing modelId", () => {
+    expect(validateDirectSetModelPayload({ provider: "anthropic", modelId: "" }))
+      .toEqual({ ok: false, error: "Missing modelId" });
+  });
+});
+
+describe("direct session snapshot shape", () => {
+  it("exposes valid snapshot payload shape", () => {
+    const snapshot: DirectSessionSnapshot = {
+      session: {
+        cwd: "/repo",
+        gitBranch: "main",
+        pid: 123,
+        sessionName: "test-session",
+        alias: "frontend",
+        connectedAt: 1_710_000_000_000,
+      },
+      chat: {
+        events: [
+          { kind: "user_message", text: "Привет", timestamp: 1_710_000_000_000 },
+        ],
+        agentBusy: false,
+        busyLabel: "Агент работает в фоне…",
+      },
+      runtime: {
+        model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+        availableModels: [
+          { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+        ],
+        contextUsage: { tokens: 1234, maxTokens: 200000, percent: 1 },
+        isIdle: true,
+        updatedAt: 1_710_000_000_000,
+      },
     };
-    const sendSelectionPayload: BrowserClientSendSelectionPayload = {
-      token: helloPayload.token,
-      targetId: "target-1",
-      selection: validSelection,
-    };
 
-    expect(BROWSER_TOKEN_STORAGE_KEY).toBe("browserToken");
-    expect(BROWSER_NOT_AUTHORIZED_ERROR).toBe("Браузер не авторизован в Pi");
-    expect(sendSelectionPayload).toMatchObject({
-      token: "browser-token-1",
-      targetId: "target-1",
-      selection: validSelection,
+    expect(snapshot).toMatchObject({
+      session: { cwd: "/repo", pid: 123 },
+      chat: { agentBusy: false },
+      runtime: { isIdle: true },
     });
   });
 });
 
-describe("chat protocol validation", () => {
-  it("accepts known chat message types as protocol envelopes", () => {
-    expect(isProtocolEnvelope({ version: 1, type: "client.subscribeTarget", requestId: "sub-1" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "client.unsubscribeTarget", requestId: "sub-2" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "client.sendChatMessage", requestId: "chat-1" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "client.chatAccepted", requestId: "chat-1" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "client.chatEvent" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "target.deliverChatMessage", requestId: "chat-1" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "target.chatEvent" })).toBe(true);
-  });
-
-  it("rejects empty chat messages", () => {
-    const payload: BrowserClientSendChatMessagePayload = {
-      token: "browser-token-1",
-      targetId: "target-1",
-      message: "   ",
+describe("chat event validation", () => {
+  it("accepts user message chat event", () => {
+    const event: ChatEvent = {
+      kind: "user_message",
+      text: "Привет",
+      timestamp: 1_710_000_000_000,
     };
-
-    expect(validateSendChatMessagePayload(payload)).toEqual({ ok: false, error: "Missing message" });
+    expect(validateChatEvent(event)).toEqual({ ok: true });
   });
 
-  it("rejects chat messages without targetId", () => {
-    const payload = {
-      token: "browser-token-1",
-      targetId: "",
-      message: "Привет",
-    } satisfies BrowserClientSendChatMessagePayload;
-
-    expect(validateSendChatMessagePayload(payload)).toEqual({ ok: false, error: "Missing targetId" });
-  });
-
-  it("accepts target subscriptions with token and targetId", () => {
-    const payload: BrowserClientSubscribeTargetPayload = {
-      token: "browser-token-1",
-      targetId: "target-1",
+  it("accepts agent_busy chat event", () => {
+    const event: ChatEvent = {
+      kind: "agent_busy",
+      busy: true,
+      label: "Агент работает в фоне…",
+      timestamp: 1_710_000_000_000,
     };
-
-    expect(validateSubscribeTargetPayload(payload)).toEqual({ ok: true });
+    expect(validateChatEvent(event)).toEqual({ ok: true });
   });
 
   it("accepts assistant text delta chat events", () => {
@@ -147,7 +183,6 @@ describe("chat protocol validation", () => {
       delta: "Привет",
       timestamp: 1_710_000_000_000,
     };
-
     expect(validateChatEvent(event)).toEqual({ ok: true });
   });
 
@@ -156,49 +191,6 @@ describe("chat protocol validation", () => {
       ok: false,
       error: "Unknown chat event kind",
     });
-  });
-});
-
-describe("runtime state and model protocol validation", () => {
-  it("accepts runtime/model message types as protocol envelopes", () => {
-    expect(isProtocolEnvelope({ version: 1, type: "target.runtimeState" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "target.availableModels" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "client.setTargetModel", requestId: "model-1" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "target.setModel", requestId: "model-1" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "target.modelSetResult", requestId: "model-1" })).toBe(true);
-    expect(isProtocolEnvelope({ version: 1, type: "client.modelSetResult", requestId: "model-1" })).toBe(true);
-  });
-
-  it("exposes runtime state payload shape", () => {
-    const state: TargetRuntimeState = {
-      targetId: "target-1",
-      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
-      contextUsage: { tokens: 1234, maxTokens: 200000, percent: 1 },
-      isIdle: true,
-      updatedAt: 1_710_000_000_000,
-    };
-
-    expect(state).toMatchObject({ targetId: "target-1", model: { id: "claude-sonnet" } });
-  });
-
-  it("validates set target model payload", () => {
-    expect(validateSetTargetModelPayload({
-      token: "browser-token-1",
-      targetId: "target-1",
-      provider: "anthropic",
-      modelId: "claude-sonnet",
-    })).toEqual({ ok: true });
-  });
-
-  it("rejects set target model payload with missing fields", () => {
-    expect(validateSetTargetModelPayload({ token: "", targetId: "target-1", provider: "anthropic", modelId: "m" }))
-      .toEqual({ ok: false, error: "Missing token" });
-    expect(validateSetTargetModelPayload({ token: "t", targetId: "", provider: "anthropic", modelId: "m" }))
-      .toEqual({ ok: false, error: "Missing targetId" });
-    expect(validateSetTargetModelPayload({ token: "t", targetId: "target-1", provider: "", modelId: "m" }))
-      .toEqual({ ok: false, error: "Missing provider" });
-    expect(validateSetTargetModelPayload({ token: "t", targetId: "target-1", provider: "anthropic", modelId: "" }))
-      .toEqual({ ok: false, error: "Missing modelId" });
   });
 });
 

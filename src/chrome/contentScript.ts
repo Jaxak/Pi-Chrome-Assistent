@@ -11,7 +11,6 @@ const PICKER_SESSION_KEY = "__PI_DOM_PICKER_SESSION__";
 
 type PickerSessionState = {
   cleanup: () => void;
-  targetId: string;
 };
 
 type PickerWindow = Window & {
@@ -28,10 +27,6 @@ const pickerWindow = window as PickerWindow;
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : String(error);
-}
-
-function normalizeTargetId(targetId: unknown): string | undefined {
-  return typeof targetId === "string" && targetId.trim().length > 0 ? targetId.trim() : undefined;
 }
 
 async function reportPickerFailure(phase: string, error: unknown): Promise<void> {
@@ -54,7 +49,7 @@ function stopActivePicker(): void {
   pickerWindow[PICKER_SESSION_KEY] = undefined;
 }
 
-function startDomPicker(targetId: string): void {
+function startDomPicker(): void {
   stopActivePicker();
 
   let isActive = true;
@@ -76,22 +71,16 @@ function startDomPicker(targetId: string): void {
       onSubmit: (comment) => {
         void (async () => {
           try {
-            const activeTargetId = pickerWindow[PICKER_SESSION_KEY]?.targetId;
-            if (!activeTargetId) {
-              throw new Error("No selected target configured for picker session");
-            }
-
             const selection = buildSelectionPayload(logicalSelection, comment);
             const response = (await chrome.runtime.sendMessage({
               type: "sendSelection",
-              targetId: activeTargetId,
               selection,
             })) as SendSelectionResponse;
 
             if (response?.ok) {
               showToast(SEND_SELECTION_SUCCESS_TOAST_MESSAGE, "success");
             } else {
-              const rawErrorMessage = response?.error ?? "Unable to send selection to Pi.";
+              const rawErrorMessage = response?.error ?? "Не удалось отправить выделение в Pi.";
               showToast(formatSendSelectionErrorToastMessage(rawErrorMessage), "error");
               await reportPickerFailure("sendSelection", rawErrorMessage);
             }
@@ -175,7 +164,6 @@ function startDomPicker(targetId: string): void {
   document.addEventListener("keydown", handleKeyDown, true);
   pickerWindow[PICKER_SESSION_KEY] = {
     cleanup,
-    targetId,
   };
 }
 
@@ -188,13 +176,7 @@ if (!pickerWindow[CONTENT_SCRIPT_LISTENER_GUARD]) {
     }
 
     try {
-      const targetId = normalizeTargetId((message as { targetId?: unknown }).targetId);
-
-      if (!targetId) {
-        throw new Error("No selected target provided for DOM picker startup");
-      }
-
-      startDomPicker(targetId);
+      startDomPicker();
       sendResponse({ ok: true, source: "contentScript" });
     } catch (error) {
       const errorMessage = getErrorMessage(error);

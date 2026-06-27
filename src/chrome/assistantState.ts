@@ -1,26 +1,29 @@
-import type { ChatEvent, TargetMetadata, TargetModelSummary, TargetRuntimeState } from "../shared/protocol";
+import type { ChatEvent, DirectSessionSnapshot, TargetModelSummary, TargetContextUsage } from "../shared/protocol";
 import type { DiagnosticEntry } from "./diagnostics";
 import {
   createInitialSidePanelState,
-  formatSidePanelStatus,
   reduceSidePanelChatEvent,
   type SidepanelChatMessage,
 } from "./sidepanelState";
 
+const DEFAULT_DIRECT_SESSION_PORT = 31415;
+
 export type BackgroundAssistantState = {
   epoch: number;
   connection: {
-    brokerOnline: boolean;
-    bridgeOnline: boolean;
+    online: boolean;
     connecting: boolean;
-    tokenConfigured: boolean;
-    browserAuthorized: boolean | undefined;
+    configuredPort: number;
     lastError?: string;
-    targetsStale: boolean;
-    targetsRefreshPending: boolean;
   };
-  targets: TargetMetadata[];
-  selectedTargetId?: string;
+  session?: {
+    cwd: string;
+    gitBranch?: string;
+    pid: number;
+    sessionName?: string;
+    alias?: string;
+    connectedAt: number;
+  };
   chat: {
     messages: SidepanelChatMessage[];
     agentBusy: boolean;
@@ -28,27 +31,22 @@ export type BackgroundAssistantState = {
     sending: boolean;
     error?: string;
   };
-  auth: {
-    browserToken?: string;
-    tokenConfigured: boolean;
-    mutationPending: boolean;
-    error?: string;
-  };
   runtime: {
-    selectedTargetRuntime?: TargetRuntimeState;
+    model?: TargetModelSummary;
     availableModels: TargetModelSummary[];
+    contextUsage?: TargetContextUsage;
+    isIdle: boolean;
     modelMutationPending: boolean;
     modelError?: string;
+    updatedAt?: number;
   };
   diagnostics: DiagnosticEntry[];
 };
 
 export type AssistantStateEvent =
   | { kind: "connection_updated"; connection: Partial<BackgroundAssistantState["connection"]> }
-  | { kind: "targets_updated"; targets: TargetMetadata[] }
-  | { kind: "select_target"; targetId?: string }
+  | { kind: "session_snapshot"; snapshot: DirectSessionSnapshot }
   | { kind: "chat_event"; event: ChatEvent }
-  | { kind: "auth_updated"; auth: Partial<BackgroundAssistantState["auth"]> }
   | { kind: "runtime_updated"; runtime: Partial<BackgroundAssistantState["runtime"]> }
   | { kind: "diagnostics_updated"; diagnostics: DiagnosticEntry[] }
   | { kind: "epoch_incremented" };
@@ -59,15 +57,10 @@ export function createInitialAssistantState(): BackgroundAssistantState {
   return {
     epoch: 0,
     connection: {
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: true,
-      tokenConfigured: false,
-      browserAuthorized: undefined,
-      targetsStale: false,
-      targetsRefreshPending: false,
+      online: false,
+      connecting: false,
+      configuredPort: DEFAULT_DIRECT_SESSION_PORT,
     },
-    targets: [],
     chat: {
       messages: chat.messages,
       agentBusy: chat.agentBusy,
@@ -75,12 +68,9 @@ export function createInitialAssistantState(): BackgroundAssistantState {
       sending: chat.sending,
       error: chat.error,
     },
-    auth: {
-      tokenConfigured: false,
-      mutationPending: false,
-    },
     runtime: {
       availableModels: [],
+      isIdle: true,
       modelMutationPending: false,
     },
     diagnostics: [],
@@ -101,31 +91,20 @@ export function reduceAssistantState(
         },
       };
 
-    case "targets_updated":
-      return selectAvailableTarget(
-        {
-          ...state,
-          targets: [...event.targets],
-        },
-        state.selectedTargetId,
-      );
-
-    case "select_target":
-      return selectAvailableTarget(state, event.targetId);
+    case "session_snapshot":
+      return applySessionSnapshot(state, event.snapshot);
 
     case "chat_event": {
-      const nextChat = reduceSidePanelChatEvent(
-        {
-          bridgeOnline: state.connection.bridgeOnline,
-          selectedTargetId: state.selectedTargetId,
-          messages: state.chat.messages,
-          agentBusy: state.chat.agentBusy,
-          busyLabel: state.chat.busyLabel,
-          sending: state.chat.sending,
-          error: state.chat.error,
-        },
-        event.event,
-      );
+      const sidePanelState = {
+        bridgeOnline: state.connection.online,
+        messages: state.chat.messages,
+        agentBusy: state.chat.agentBusy,
+        busyLabel: state.chat.busyLabel,
+        sending: state.chat.sending,
+        error: state.chat.error,
+      };
+
+      const nextChat = reduceSidePanelChatEvent(sidePanelState, event.event);
 
       return {
         ...state,
@@ -138,19 +117,6 @@ export function reduceAssistantState(
         },
       };
     }
-
-    case "auth_updated":
-      return {
-        ...state,
-        auth: {
-          ...state.auth,
-          ...event.auth,
-        },
-        connection: {
-          ...state.connection,
-          ...(event.auth.tokenConfigured === undefined ? {} : { tokenConfigured: event.auth.tokenConfigured }),
-        },
-      };
 
     case "runtime_updated":
       return {
@@ -178,22 +144,50 @@ export function reduceAssistantState(
   }
 }
 
-export function formatAssistantStatus(state: BackgroundAssistantState): string {
-  const selectedTargetAvailable = state.selectedTargetId
-    ? state.targets.some((target) => target.targetId === state.selectedTargetId)
-    : false;
+function applySessionSnapshot(
+  state: BackgroundAssistantState,
+  snapshot: DirectSessionSnapshot,
+): BackgroundAssistantState {
+  return {
+    ...state,
+    connection: {
+      ...state.connection,
+      online: true,
+      connecting: false,
+      lastError: undefined,
+    },
+    session: { ...snapshot.session },
+    runtime: {
+      model: snapshot.runtime.model,
+      availableModels: [...snapshot.runtime.availableModels],
+      contextUsage: snapshot.runtime.contextUsage,
+      isIdle: snapshot.runtime.isIdle,
+      updatedAt: snapshot.runtime.updatedAt,
+      modelMutationPending: false,
+      modelError: undefined,
+    },
+    chat: {
+      ...state.chat,
+      agentBusy: snapshot.chat.agentBusy,
+      busyLabel: snapshot.chat.busyLabel || state.chat.busyLabel,
+    },
+  };
+}
 
-  return formatSidePanelStatus({
-    brokerOnline: state.connection.brokerOnline,
-    bridgeOnline: state.connection.bridgeOnline,
-    tokenConfigured: state.connection.tokenConfigured,
-    browserAuthorized: state.connection.browserAuthorized,
-    targetsCount: state.targets.length,
-    selectedTargetId: state.selectedTargetId,
-    selectedTargetAvailable,
-    lastError: state.connection.lastError,
-    connecting: state.connection.connecting,
-  });
+export function formatAssistantStatus(state: BackgroundAssistantState): string {
+  if (state.connection.connecting) {
+    return "Подключаемся к Pi…";
+  }
+
+  if (state.connection.online) {
+    return "Подключено к Pi-сессии";
+  }
+
+  if (state.connection.lastError) {
+    return state.connection.lastError;
+  }
+
+  return "Pi не подключён. Введите порт и нажмите «Подключить».";
 }
 
 export function isChatSendDisabled(state: BackgroundAssistantState, draftText: string): boolean {
@@ -202,25 +196,6 @@ export function isChatSendDisabled(state: BackgroundAssistantState, draftText: s
     state.chat.sending ||
     state.chat.agentBusy ||
     state.connection.connecting ||
-    !state.connection.brokerOnline ||
-    !state.connection.bridgeOnline ||
-    !state.connection.tokenConfigured ||
-    state.connection.browserAuthorized !== true ||
-    !state.selectedTargetId ||
-    !state.targets.some((target) => target.targetId === state.selectedTargetId)
+    !state.connection.online
   );
-}
-
-export function selectAvailableTarget(
-  state: BackgroundAssistantState,
-  targetId?: string,
-): BackgroundAssistantState {
-  const selectedTargetId = targetId && state.targets.some((target) => target.targetId === targetId)
-    ? targetId
-    : undefined;
-
-  return {
-    ...state,
-    selectedTargetId,
-  };
 }

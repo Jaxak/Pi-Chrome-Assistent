@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 type RuntimeMessage = {
   type?: string;
-  targetId?: string;
   selection?: unknown;
   phase?: string;
   message?: string;
@@ -64,11 +63,11 @@ function installChromeMock(runtimeSendMessage: ReturnType<typeof vi.fn> = vi.fn(
   return { messageListeners, runtimeSendMessage };
 }
 
-function startPicker(messageListeners: RuntimeMessageListener[], targetId = "target-123") {
+function startPicker(messageListeners: RuntimeMessageListener[]) {
   const startResponse = vi.fn();
 
   messageListeners[0]?.(
-    { type: "startDomPicker", targetId },
+    { type: "startDomPicker" },
     {} as chrome.runtime.MessageSender,
     startResponse,
   );
@@ -118,7 +117,7 @@ describe("contentScript", () => {
     vi.restoreAllMocks();
   });
 
-  it("starts picker with a valid target id and rejects missing target ids with diagnostics", async () => {
+  it("starts picker via startDomPicker and registers cleanup in session", async () => {
     const cleanup = vi.fn();
     const createSelectionOverlay = vi.fn(() => ({
       update: vi.fn(),
@@ -138,30 +137,12 @@ describe("contentScript", () => {
 
     await import("./contentScript");
 
-    const validResponse = startPicker(messageListeners, " target-123 ");
+    const response = startPicker(messageListeners);
 
-    expect(validResponse).toHaveBeenCalledWith({ ok: true, source: "contentScript" });
+    expect(response).toHaveBeenCalledWith({ ok: true, source: "contentScript" });
     expect(createSelectionOverlay).toHaveBeenCalledTimes(1);
-    expect(window.__PI_DOM_PICKER_SESSION__).toEqual(expect.objectContaining({ targetId: "target-123" }));
-
-    const invalidResponse = vi.fn();
-    messageListeners[0]?.(
-      { type: "startDomPicker" },
-      {} as chrome.runtime.MessageSender,
-      invalidResponse,
-    );
-    await flushAsyncWork();
-
-    expect(invalidResponse).toHaveBeenCalledWith({
-      ok: false,
-      error: "No selected target provided for DOM picker startup",
-    });
-    expect(runtimeSendMessage).toHaveBeenCalledWith({
-      type: "pickerDiagnostic",
-      phase: "startDomPicker",
-      message: "No selected target provided for DOM picker startup",
-      url: window.location.href,
-    });
+    expect(window.__PI_DOM_PICKER_SESSION__).toEqual(expect.objectContaining({ cleanup: expect.any(Function) }));
+    expect(window.__PI_DOM_PICKER_SESSION__).not.toHaveProperty("targetId");
   });
 
   it("opens the comment modal immediately after clicking the hovered element", async () => {
@@ -285,7 +266,6 @@ describe("contentScript", () => {
     expect(runtimeSendMessage).toHaveBeenCalledTimes(1);
     expect(runtimeSendMessage).toHaveBeenCalledWith({
       type: "sendSelection",
-      targetId: "target-123",
       selection: selectionPayload,
     });
     expect(cleanup).not.toHaveBeenCalled();
@@ -354,7 +334,6 @@ describe("contentScript", () => {
     expect(buildSelectionPayload).not.toHaveBeenCalledWith(hoveredEl, "Explain this");
     expect(runtimeSendMessage).toHaveBeenCalledWith({
       type: "sendSelection",
-      targetId: "target-123",
       selection: selectionPayload,
     });
     expect(showToast).toHaveBeenCalledWith("Отправлено в Pi", "success");

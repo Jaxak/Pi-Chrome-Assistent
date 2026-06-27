@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import {
   createAgentWorkingElement,
   createChatMessageElement,
-  isChatSendDisabled,
 } from "./sidepanelRender";
 import type { SidepanelChatMessage } from "./sidepanelState";
 
@@ -36,11 +35,15 @@ describe("sidepanelRender", () => {
     expect(element.textContent).toContain("Агент работает в фоне…");
   });
 
-  it("disables chat send when target token connection or text is missing", () => {
-    expect(isChatSendDisabled({ selectedTargetId: "target-1", tokenConfigured: true, bridgeOnline: true, text: "Привет" })).toBe(false);
-    expect(isChatSendDisabled({ selectedTargetId: undefined, tokenConfigured: true, bridgeOnline: true, text: "Привет" })).toBe(true);
-    expect(isChatSendDisabled({ selectedTargetId: "target-1", tokenConfigured: false, bridgeOnline: true, text: "Привет" })).toBe(true);
-    expect(isChatSendDisabled({ selectedTargetId: "target-1", tokenConfigured: true, bridgeOnline: false, text: "Привет" })).toBe(true);
-    expect(isChatSendDisabled({ selectedTargetId: "target-1", tokenConfigured: true, bridgeOnline: true, text: "   " })).toBe(true);
+  it("renders user messages with correct role class", () => {
+    const message: SidepanelChatMessage = {
+      role: "user",
+      text: "Привет Pi",
+      timestamp: 1_710_000_000_000,
+    };
+
+    const element = createChatMessageElement(message);
+    expect(element.className).toContain("user");
+    expect(element.textContent).toContain("Привет Pi");
   });
 });

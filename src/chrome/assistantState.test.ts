@@ -1,186 +1,365 @@
 import { describe, expect, it } from "vitest";
 
-import type { TargetMetadata, TargetRuntimeState } from "../shared/protocol";
+import type { DirectSessionSnapshot, TargetModelSummary, TargetContextUsage } from "../shared/protocol";
 import {
   createInitialAssistantState,
   formatAssistantStatus,
   isChatSendDisabled,
   reduceAssistantState,
-  selectAvailableTarget,
   type BackgroundAssistantState,
+  type AssistantStateEvent,
 } from "./assistantState";
 
-function createTarget(overrides: Partial<TargetMetadata> = {}): TargetMetadata {
-  return {
-    targetId: "target-1",
-    cwd: "/workspace/project",
-    pid: 1234,
-    connectedAt: 1_710_000_000_000,
-    lastSeenAt: 1_710_000_000_100,
-    ...overrides,
-  };
-}
+const DEFAULT_PORT = 31415;
 
-function createReadyState(overrides: Partial<BackgroundAssistantState> = {}): BackgroundAssistantState {
-  const target = createTarget();
-
+function createDirectSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectSessionSnapshot {
   return {
-    ...createInitialAssistantState(),
-    connection: {
-      brokerOnline: true,
-      bridgeOnline: true,
-      connecting: false,
-      tokenConfigured: true,
-      browserAuthorized: true,
-      targetsStale: false,
-      targetsRefreshPending: false,
+    session: {
+      cwd: "/repo",
+      gitBranch: "main",
+      pid: 1234,
+      sessionName: "test-session",
+      alias: "frontend",
+      connectedAt: 1_710_000_000_000,
     },
-    auth: {
-      tokenConfigured: true,
-      mutationPending: false,
-      browserToken: "browser-token",
+    chat: {
+      events: [],
+      agentBusy: false,
+      busyLabel: "Агент работает в фоне…",
     },
-    targets: [target],
-    selectedTargetId: target.targetId,
+    runtime: {
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      availableModels: [{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }],
+      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    },
     ...overrides,
   };
 }
 
 describe("assistantState", () => {
-  it("creates an initial state with connecting status, no token, no targets, and disabled chat", () => {
-    const state = createInitialAssistantState();
+  describe("createInitialAssistantState", () => {
+    it("creates initial direct session state with default port and offline connection", () => {
+      const state = createInitialAssistantState();
 
-    expect(state.connection.connecting).toBe(true);
-    expect(state.connection.tokenConfigured).toBe(false);
-    expect(state.auth.tokenConfigured).toBe(false);
-    expect(state.auth.browserToken).toBeUndefined();
-    expect(state.targets).toEqual([]);
-    expect(state.selectedTargetId).toBeUndefined();
-    expect(isChatSendDisabled(state, "Привет")).toBe(true);
+      expect(state.epoch).toBe(0);
+      expect(state.connection).toMatchObject({
+        online: false,
+        connecting: false,
+        configuredPort: DEFAULT_PORT,
+      });
+      expect(state.session).toBeUndefined();
+      expect(state.chat.messages).toEqual([]);
+      expect(state.chat.agentBusy).toBe(false);
+      expect(state.chat.sending).toBe(false);
+      expect(state.runtime.availableModels).toEqual([]);
+      expect(state.runtime.modelMutationPending).toBe(false);
+      expect(state.diagnostics).toEqual([]);
+    });
   });
 
-  it.each([
-    ["connecting", createInitialAssistantState(), "Подключаемся к Pi…"],
-    [
-      "token missing",
-      {
-        ...createInitialAssistantState(),
-        connection: { ...createInitialAssistantState().connection, connecting: false, brokerOnline: true },
-      },
-      "Для отправки настройте browserToken в chrome.storage.local.",
-    ],
-    [
-      "auth required",
-      {
-        ...createReadyState(),
-        connection: { ...createReadyState().connection, browserAuthorized: false },
-      },
-      "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.",
-    ],
-    [
-      "broker unavailable",
-      {
-        ...createReadyState({ targets: [], selectedTargetId: undefined }),
-        connection: { ...createReadyState().connection, brokerOnline: false, bridgeOnline: false },
-      },
-      "Pi не подключён. Выполните /chrome-assistent-connect в терминале.",
-    ],
-    ["targets empty", createReadyState({ targets: [], selectedTargetId: undefined }), "Pi подключён · нет активных целей"],
-    [
-      "selected target gone",
-      createReadyState({ selectedTargetId: "missing-target" }),
-      "Pi подключён · выбранная сессия закрыта",
-    ],
-    ["ready", createReadyState(), "Pi подключён · целей: 1"],
-  ])("formats stable Russian status for %s", (_name, state, expected) => {
-    expect(formatAssistantStatus(state)).toBe(expected);
+  describe("reduceAssistantState - session_snapshot", () => {
+    it("applies direct session snapshot and sets online", () => {
+      const state = createInitialAssistantState();
+      const snapshot = createDirectSnapshot();
+
+      const nextState = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot,
+      });
+
+      expect(nextState.connection.online).toBe(true);
+      expect(nextState.connection.connecting).toBe(false);
+      expect(nextState.connection.lastError).toBeUndefined();
+      expect(nextState.session).toMatchObject({
+        cwd: "/repo",
+        gitBranch: "main",
+        pid: 1234,
+        connectedAt: 1_710_000_000_000,
+      });
+      expect(nextState.runtime.model).toEqual({
+        provider: "anthropic",
+        id: "claude-sonnet",
+        label: "Claude Sonnet",
+      });
+      expect(nextState.runtime.availableModels).toEqual([
+        { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      ]);
+      expect(nextState.runtime.contextUsage).toEqual({
+        tokens: 1000,
+        maxTokens: 200000,
+        percent: 0.5,
+      });
+      expect(nextState.runtime.isIdle).toBe(true);
+    });
+
+    it("preserves configuredPort when applying snapshot", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "connection_updated",
+        connection: { configuredPort: 31416 },
+      });
+
+      const nextState = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot(),
+      });
+
+      expect(nextState.connection.configuredPort).toBe(31416);
+      expect(nextState.connection.online).toBe(true);
+    });
   });
 
-  it("clears selectedTargetId and disables sending when the selected target disappears", () => {
-    const selected = createTarget({ targetId: "target-1" });
-    const remaining = createTarget({ targetId: "target-2" });
-    const state = createReadyState({ targets: [selected, remaining], selectedTargetId: selected.targetId });
+  describe("reduceAssistantState - connection_updated", () => {
+    it("updates connection state fields", () => {
+      const state = createInitialAssistantState();
 
-    const nextState = selectAvailableTarget(
-      reduceAssistantState(state, { kind: "targets_updated", targets: [remaining] }),
-      selected.targetId,
-    );
+      const nextState = reduceAssistantState(state, {
+        kind: "connection_updated",
+        connection: {
+          connecting: true,
+          online: false,
+          lastError: undefined,
+        },
+      });
 
-    expect(nextState.selectedTargetId).toBeUndefined();
-    expect(isChatSendDisabled(nextState, "Привет")).toBe(true);
+      expect(nextState.connection.connecting).toBe(true);
+      expect(nextState.connection.online).toBe(false);
+    });
+
+    it("updates configuredPort", () => {
+      const state = createInitialAssistantState();
+
+      const nextState = reduceAssistantState(state, {
+        kind: "connection_updated",
+        connection: { configuredPort: 31416 },
+      });
+
+      expect(nextState.connection.configuredPort).toBe(31416);
+    });
+
+    it("sets lastError", () => {
+      const state = createInitialAssistantState();
+
+      const nextState = reduceAssistantState(state, {
+        kind: "connection_updated",
+        connection: { lastError: "Не удалось подключиться к Pi-сессии" },
+      });
+
+      expect(nextState.connection.lastError).toBe("Не удалось подключиться к Pi-сессии");
+    });
   });
 
-  it("trims a user chat message and marks sending busy", () => {
-    const state = createReadyState();
+  describe("reduceAssistantState - chat_event", () => {
+    it("trims a user chat message and marks sending busy", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot(),
+      });
 
-    const nextState = reduceAssistantState(state, {
-      kind: "chat_event",
-      event: { kind: "user_message", text: " Привет Pi ", timestamp: 1_710_000_000_300 },
+      const nextState = reduceAssistantState(state, {
+        kind: "chat_event",
+        event: { kind: "user_message", text: " Привет Pi ", timestamp: 1_710_000_000_300 },
+      });
+
+      expect(nextState.chat.messages).toEqual([
+        { role: "user", text: "Привет Pi", timestamp: 1_710_000_000_300 },
+      ]);
+      expect(nextState.chat.agentBusy).toBe(true);
+      expect(nextState.chat.sending).toBe(true);
     });
 
-    expect(nextState.chat.messages).toEqual([
-      { role: "user", text: "Привет Pi", timestamp: 1_710_000_000_300 },
-    ]);
-    expect(nextState.chat.agentBusy).toBe(true);
-    expect(nextState.chat.sending).toBe(true);
+    it("clears agentBusy and sending when a chat error arrives", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot({ chat: { agentBusy: true, busyLabel: "…" } }),
+      });
+      state = reduceAssistantState(state, {
+        kind: "chat_event",
+        event: { kind: "user_message", text: "test", timestamp: 1_710_000_000_200 },
+      });
+
+      const nextState = reduceAssistantState(state, {
+        kind: "chat_event",
+        event: { kind: "error", message: "Не удалось отправить сообщение", timestamp: 1_710_000_000_400 },
+      });
+
+      expect(nextState.chat.agentBusy).toBe(false);
+      expect(nextState.chat.sending).toBe(false);
+      expect(nextState.chat.error).toBe("Не удалось отправить сообщение");
+    });
   });
 
-  it("stores runtime state and available models independently", () => {
-    const state = createReadyState();
-    const runtime: TargetRuntimeState = {
-      targetId: "target-1",
-      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
-      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
-      isIdle: true,
-      updatedAt: 1_710_000_000_500,
-    };
+  describe("reduceAssistantState - runtime_updated", () => {
+    it("stores model and context usage independently", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot(),
+      });
+      const model: TargetModelSummary = { provider: "openai", id: "gpt-4", label: "GPT-4" };
+      const contextUsage: TargetContextUsage = { tokens: 5000, maxTokens: 200000, percent: 2.5 };
 
-    const nextState = reduceAssistantState(state, {
-      kind: "runtime_updated",
-      runtime: {
-        selectedTargetRuntime: runtime,
-        availableModels: [{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }],
-      },
+      const nextState = reduceAssistantState(state, {
+        kind: "runtime_updated",
+        runtime: {
+          model,
+          contextUsage,
+          isIdle: false,
+          availableModels: [
+            { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+            { provider: "openai", id: "gpt-4", label: "GPT-4" },
+          ],
+        },
+      });
+
+      expect(nextState.runtime.model).toEqual(model);
+      expect(nextState.runtime.contextUsage).toEqual(contextUsage);
+      expect(nextState.runtime.isIdle).toBe(false);
+      expect(nextState.runtime.availableModels).toEqual([
+        { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+        { provider: "openai", id: "gpt-4", label: "GPT-4" },
+      ]);
     });
 
-    expect(nextState.runtime.selectedTargetRuntime).toEqual(runtime);
-    expect(nextState.runtime.availableModels).toEqual([{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }]);
-    expect(nextState.runtime.modelMutationPending).toBe(false);
+    it("tracks model mutation pending and error", () => {
+      const state = createInitialAssistantState();
+
+      const pendingState = reduceAssistantState(state, {
+        kind: "runtime_updated",
+        runtime: { modelMutationPending: true, modelError: undefined },
+      });
+      const failedState = reduceAssistantState(pendingState, {
+        kind: "runtime_updated",
+        runtime: { modelMutationPending: false, modelError: "Модель недоступна" },
+      });
+
+      expect(pendingState.runtime.modelMutationPending).toBe(true);
+      expect(failedState.runtime.modelMutationPending).toBe(false);
+      expect(failedState.runtime.modelError).toBe("Модель недоступна");
+    });
   });
 
-  it("tracks model mutation pending and error", () => {
-    const state = createReadyState();
+  describe("reduceAssistantState - diagnostics_updated", () => {
+    it("updates diagnostics list", () => {
+      const state = createInitialAssistantState();
 
-    const pendingState = reduceAssistantState(state, {
-      kind: "runtime_updated",
-      runtime: { modelMutationPending: true, modelError: undefined },
-    });
-    const failedState = reduceAssistantState(pendingState, {
-      kind: "runtime_updated",
-      runtime: { modelMutationPending: false, modelError: "Модель недоступна" },
-    });
+      const nextState = reduceAssistantState(state, {
+        kind: "diagnostics_updated",
+        diagnostics: [
+          { timestamp: 1_710_000_000_001, phase: "startup", message: "Первый журнал" },
+        ],
+      });
 
-    expect(pendingState.runtime.modelMutationPending).toBe(true);
-    expect(failedState.runtime.modelMutationPending).toBe(false);
-    expect(failedState.runtime.modelError).toBe("Модель недоступна");
+      expect(nextState.diagnostics).toEqual([
+        { timestamp: 1_710_000_000_001, phase: "startup", message: "Первый журнал" },
+      ]);
+    });
   });
 
-  it("clears agentBusy and sending when a chat error arrives", () => {
-    const state = createReadyState({
-      chat: {
-        ...createReadyState().chat,
-        agentBusy: true,
-        sending: true,
-      },
+  describe("reduceAssistantState - epoch_incremented", () => {
+    it("increments epoch", () => {
+      const state = createInitialAssistantState();
+
+      const nextState = reduceAssistantState(state, { kind: "epoch_incremented" });
+
+      expect(nextState.epoch).toBe(1);
+    });
+  });
+
+  describe("formatAssistantStatus", () => {
+    it("returns connecting status when connecting", () => {
+      const state = createInitialAssistantState();
+      const stateConnecting = reduceAssistantState(state, {
+        kind: "connection_updated",
+        connection: { connecting: true },
+      });
+      expect(formatAssistantStatus(stateConnecting)).toBe("Подключаемся к Pi…");
     });
 
-    const nextState = reduceAssistantState(state, {
-      kind: "chat_event",
-      event: { kind: "error", message: "Не удалось отправить сообщение", timestamp: 1_710_000_000_400 },
+    it("returns online status when connected with session", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot(),
+      });
+      expect(formatAssistantStatus(state)).toBe("Подключено к Pi-сессии");
     });
 
-    expect(nextState.chat.agentBusy).toBe(false);
-    expect(nextState.chat.sending).toBe(false);
-    expect(nextState.chat.error).toBe("Не удалось отправить сообщение");
+    it("returns offline status with error", () => {
+      const state = createInitialAssistantState();
+      const stateError = reduceAssistantState(state, {
+        kind: "connection_updated",
+        connection: {
+          online: false,
+          connecting: false,
+          lastError: "Не удалось подключиться к 127.0.0.1:31415",
+        },
+      });
+      expect(formatAssistantStatus(stateError)).toBe("Не удалось подключиться к 127.0.0.1:31415");
+    });
+
+    it("returns disconnected status when offline without error", () => {
+      const state = createInitialAssistantState();
+      expect(formatAssistantStatus(state)).toBe("Pi не подключён. Введите порт и нажмите «Подключить».");
+    });
+  });
+
+  describe("isChatSendDisabled", () => {
+    it("returns true when empty draft text", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot(),
+      });
+      expect(isChatSendDisabled(state, "")).toBe(true);
+      expect(isChatSendDisabled(state, "   ")).toBe(true);
+    });
+
+    it("returns true when sending or agent busy", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot(),
+      });
+      state = reduceAssistantState(state, {
+        kind: "chat_event",
+        event: { kind: "user_message", text: "test", timestamp: 1_710_000_000_300 },
+      });
+      expect(isChatSendDisabled(state, "Сообщение")).toBe(true);
+    });
+
+    it("returns true when connecting", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "connection_updated",
+        connection: { connecting: true },
+      });
+      expect(isChatSendDisabled(state, "Сообщение")).toBe(true);
+    });
+
+    it("returns true when not online", () => {
+      const state = createInitialAssistantState();
+      expect(isChatSendDisabled(state, "Сообщение")).toBe(true);
+    });
+
+    it("returns false when online and not busy", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot(),
+      });
+      expect(isChatSendDisabled(state, "Сообщение")).toBe(false);
+    });
+  });
+
+  describe("no multi-session concepts", () => {
+    it("state has no auth section", () => {
+      const state = createInitialAssistantState();
+      expect("auth" in state).toBe(false);
+    });
   });
 });

@@ -11,9 +11,7 @@
       <header class="ant-layout-header">
         <div class="header-row">
           <div class="brand">
-            <div class="avatar" aria-hidden="true">
-              <img class="avatar__icon" src="./icon.svg" alt="" />
-            </div>
+            <img class="avatar" src="./icon.svg" alt="" aria-hidden="true" />
             <div class="brand-copy">
               <div class="brand-title">Ассистент</div>
             </div>
@@ -23,7 +21,6 @@
               <button id="header-menu-button" class="ant-btn-icon" type="button" aria-label="Меню панели" aria-expanded="false">⋯</button>
               <div id="header-menu" class="kebab-menu__dropdown" hidden>
                 <button class="kebab-menu__item" type="button" disabled aria-disabled="true">Настройки</button>
-                <button id="header-auth-button" class="kebab-menu__item" type="button">Авторизация</button>
                 <button id="header-devlog-button" class="kebab-menu__item" type="button">Dev-журнал</button>
               </div>
             </div>
@@ -32,16 +29,14 @@
       </header>
 
       <section id="panel-assistant" class="ant-content" aria-label="Чат ассистента">
-        <section class="ant-card session-card" aria-labelledby="target-heading">
+        <section class="ant-card session-card" aria-labelledby="session-heading">
           <div class="ant-card-body">
-            <div class="session-card__header">
-              <label class="field-label" id="target-heading">Сессия</label>
-              <button id="refresh-sessions-button" class="button-secondary button-compact" type="button">Обновить</button>
+            <label class="field-label" id="session-heading" for="session-port-input">Сессия Pi</label>
+            <div class="session-port-row">
+              <input id="session-port-input" class="ant-input session-port-input" inputmode="numeric" pattern="[0-9]*" value="31415" />
+              <button id="connect-session-button" class="button-secondary" type="button">Подключить</button>
             </div>
-            <div id="session-stale-guidance" class="session-stale-guidance" role="status" hidden></div>
-            <div id="target-container" class="target-container" role="listbox" aria-label="Сессии Pi">
-              <div class="target-placeholder">Цели появятся здесь.</div>
-            </div>
+            <p id="session-connection-status" class="panel__hint">Введите порт Pi-сессии и нажмите «Подключить».</p>
           </div>
         </section>
 
@@ -82,22 +77,6 @@
         </section>
       </section>
 
-      <section id="panel-auth" class="drawer-panel" aria-label="Авторизация" hidden>
-        <section class="ant-card">
-          <div class="panel__header">
-            <div class="panel__label" id="auth-heading">Авторизация браузера</div>
-            <button id="tab-assistant" class="button-secondary button-compact" type="button">Назад</button>
-          </div>
-          <p id="auth-status-text" class="panel__hint">Откройте авторизацию, чтобы получить токен браузера.</p>
-          <pre id="browser-token-output" class="token-output">Токен ещё не загружен.</pre>
-          <div class="actions actions--auth">
-            <button id="copy-browser-token-button" type="button" class="button-secondary" disabled aria-disabled="true">Скопировать токен</button>
-            <button id="regenerate-browser-token-button" type="button">Сгенерировать новый токен</button>
-            <button id="clear-browser-token-button" type="button" class="button-danger" disabled aria-disabled="true">Удалить токен</button>
-          </div>
-        </section>
-      </section>
-
       <section id="panel-sessions" class="drawer-panel" aria-label="Dev-журнал" hidden>
         <section class="ant-card">
           <div class="panel__header">
@@ -110,8 +89,6 @@
           <pre id="diagnostics-output" class="diagnostics-output">Диагностика ещё не запускалась.</pre>
         </section>
       </section>
-
-      <button id="tab-auth" class="visually-hidden" type="button" aria-hidden="true" tabindex="-1">Авторизация</button>
     </main>
 
     <script src="./sidepanel.js"></script>

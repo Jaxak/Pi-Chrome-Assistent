@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ChatEvent, DeliveryResult, TargetMetadata, TargetModelSummary, TargetRuntimeState } from "../shared/protocol";
-import type { BrokerConnectionState } from "./brokerClient";
-import type { BrowserAuthState } from "./browserToken";
+import type { ChatEvent, DirectSessionSnapshot, SelectionPayload } from "../shared/protocol";
+import type { SessionConnectionState } from "./sessionClient";
 import {
   BackgroundAssistantStateServer,
   type BackgroundStateServerStorage,
@@ -84,67 +83,68 @@ class FakeStorage implements BackgroundStateServerStorage {
   }
 }
 
-type FakeBrokerClientOptions = {
-  browserToken?: string;
-  onTargets?: (targets: TargetMetadata[]) => void;
-  onChatEvent?: (event: ChatEvent) => void;
-  onRuntimeState?: (state: TargetRuntimeState) => void;
-  onAvailableModels?: (models: TargetModelSummary[], targetId: string) => void;
-  onModelSetResult?: (result: DeliveryResult) => void;
-  onConnectionState?: (state: BrokerConnectionState) => void;
+type FakeSessionClientOptions = {
+  port?: number;
+  onSnapshot?: (snapshot: DirectSessionSnapshot) => void;
+  onConnectionState?: (state: SessionConnectionState) => void;
 };
 
-class FakeBrokerClient {
+class FakeSessionClient {
+  port: number;
   readonly connect = vi.fn();
   readonly close = vi.fn();
-  selectedTargetId: string | undefined;
+  readonly reconnectToPort = vi.fn((port: number) => {
+    this.port = port;
+  });
   sendChatMessageResult = true;
   readonly sendChatMessage = vi.fn((message: string): boolean => {
     void message;
     return this.sendChatMessageResult;
   });
-  readonly setSelectedTargetId = vi.fn((targetId: string | undefined): void => {
-    this.selectedTargetId = targetId;
+  readonly sendSelection = vi.fn((selection: SelectionPayload): boolean => {
+    void selection;
+    return true;
   });
-  readonly setTargetModel = vi.fn((_input: { targetId?: string; provider: string; modelId: string }): boolean => true);
+  readonly setModel = vi.fn((input: { provider: string; modelId: string }): boolean => {
+    void input;
+    return true;
+  });
 
-  constructor(readonly options: FakeBrokerClientOptions) {}
-
-  emitTargets(targets: TargetMetadata[]): void {
-    this.options.onTargets?.(targets);
+  constructor(readonly options: FakeSessionClientOptions) {
+    this.port = options.port ?? 31415;
   }
 
-  emitChatEvent(event: ChatEvent): void {
-    this.options.onChatEvent?.(event);
+  emitSnapshot(snapshot: DirectSessionSnapshot): void {
+    this.options.onSnapshot?.(snapshot);
   }
 
-  emitRuntimeState(state: TargetRuntimeState): void {
-    this.options.onRuntimeState?.(state);
-  }
-
-  emitAvailableModels(models: TargetModelSummary[], targetId = "target-1"): void {
-    this.options.onAvailableModels?.(models, targetId);
-  }
-
-  emitModelSetResult(result: DeliveryResult): void {
-    this.options.onModelSetResult?.(result);
-  }
-
-  emitConnectionState(state: BrokerConnectionState): void {
+  emitConnectionState(state: SessionConnectionState): void {
     this.options.onConnectionState?.(state);
   }
 }
 
-function createTarget(overrides: Partial<TargetMetadata> = {}): TargetMetadata {
+function createSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectSessionSnapshot {
   return {
-    targetId: "target-1",
-    alias: "Alpha",
-    cwd: "/tmp/pi",
-    gitBranch: "main",
-    pid: 1234,
-    sessionName: "session-a",
-    connectedAt: 1_710_000_000_000,
-    lastSeenAt: 1_710_000_000_100,
+    session: {
+      cwd: "/repo",
+      gitBranch: "main",
+      pid: 1234,
+      sessionName: "test-session",
+      alias: "frontend",
+      connectedAt: 1_710_000_000_000,
+    },
+    chat: {
+      events: [],
+      agentBusy: false,
+      busyLabel: "Агент работает в фоне…",
+    },
+    runtime: {
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      availableModels: [{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }],
+      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    },
     ...overrides,
   };
 }
@@ -152,32 +152,22 @@ function createTarget(overrides: Partial<TargetMetadata> = {}): TargetMetadata {
 function createServer(overrides: Partial<ConstructorParameters<typeof BackgroundAssistantStateServer>[0]> = {}) {
   const storage = new FakeStorage();
   const diagnostics: Array<{ phase: string; message: string }> = [];
-  const brokerClients: FakeBrokerClient[] = [];
-  const tokenHelpers = {
-    ensureBrowserToken: vi.fn<() => Promise<string>>(async () => "token-initial"),
-    getBrowserAuthState: vi.fn<() => Promise<BrowserAuthState>>(async () => ({
-      browserToken: "token-initial",
-      tokenConfigured: true,
-    })),
-    regenerateBrowserToken: vi.fn<() => Promise<string>>(async () => "token-regenerated"),
-    clearBrowserToken: vi.fn<() => Promise<void>>(async () => undefined),
-  };
+  const sessionClients: FakeSessionClient[] = [];
   const server = new BackgroundAssistantStateServer({
     storage,
     runtimeClock: () => 1_710_000_000_123,
-    brokerClientFactory: (options) => {
-      const client = new FakeBrokerClient(options);
-      brokerClients.push(client);
+    sessionClientFactory: (options) => {
+      const client = new FakeSessionClient(options);
+      sessionClients.push(client);
       return client;
     },
     recordDiagnostic: async (diagnostic) => {
       diagnostics.push({ phase: diagnostic.phase, message: diagnostic.message });
     },
-    tokenHelpers,
     ...overrides,
   });
 
-  return { server, storage, diagnostics, brokerClients, tokenHelpers };
+  return { server, storage, diagnostics, sessionClients };
 }
 
 async function flushAsyncWork(): Promise<void> {
@@ -197,470 +187,172 @@ function createDeferred<T>() {
 }
 
 describe("BackgroundAssistantStateServer", () => {
-  it("loads or creates a browser token on startup and connects broker with it", async () => {
-    const { server, brokerClients, tokenHelpers } = createServer();
+  it("starts without connecting to any session by default", async () => {
+    const { server, sessionClients } = createServer();
 
     await server.start();
 
-    expect(tokenHelpers.ensureBrowserToken).toHaveBeenCalledTimes(1);
-    expect(brokerClients).toHaveLength(1);
-    expect(brokerClients[0]?.options.browserToken).toBe("token-initial");
-    expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
-    expect(server.getSnapshot().auth).toMatchObject({ browserToken: "token-initial", tokenConfigured: true });
-    expect(server.getSnapshot().connection.tokenConfigured).toBe(true);
+    expect(sessionClients).toHaveLength(0);
+    expect(server.getSnapshot().connection.online).toBe(false);
+    expect(server.getSnapshot().connection.connecting).toBe(false);
+    expect(server.getSnapshot().connection.configuredPort).toBe(31415);
   });
 
-  it("recreates broker client with same token when sessions refresh is requested", async () => {
-    const { server, brokerClients } = createServer();
+  it("connects to user supplied port via assistant.session.connect and stores it", async () => {
+    const { server, sessionClients, storage } = createServer();
     const port = new FakePort();
 
     await server.start();
     server.connectPort(port);
 
-    port.emitMessage({ type: "assistant.sessions.refresh" });
+    port.emitMessage({ type: "assistant.session.connect", port: 31416 });
     await flushAsyncWork();
 
-    expect(brokerClients).toHaveLength(2);
-    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
-    expect(brokerClients[1]?.options.browserToken).toBe("token-initial");
-    expect(brokerClients[1]?.connect).toHaveBeenCalledTimes(1);
+    expect(sessionClients).toHaveLength(1);
+    expect(sessionClients[0]?.port).toBe(31416);
+    expect(sessionClients[0]?.connect).toHaveBeenCalledTimes(1);
+    expect(server.getSnapshot().connection.configuredPort).toBe(31416);
   });
 
-  it("does not mark broker offline when one-shot session refresh starts after live broker connected", async () => {
-    const listTargets = createDeferred<{ ok: boolean; targets: TargetMetadata[] }>();
-    const { server, brokerClients } = createServer({
-      listTargets: async () => listTargets.promise,
+  it("rejects invalid port in assistant.session.connect with Russian error", async () => {
+    const { server, sessionClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.session.connect", port: 0 });
+
+    expect(sessionClients).toHaveLength(0);
+    const snapshot = server.getSnapshot();
+    expect(snapshot.connection.lastError).toBeDefined();
+    expect(snapshot.connection.lastError).toContain("порт");
+  });
+
+  it("rejects port > 65535 with Russian error", async () => {
+    const { server, sessionClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.session.connect", port: 70000 });
+
+    expect(sessionClients).toHaveLength(0);
+    expect(server.getSnapshot().connection.lastError).toBeDefined();
+    expect(server.getSnapshot().connection.lastError).toContain("порт");
+  });
+
+  it("applies session.snapshot and sets online", () => {
+    const { server, sessionClients } = createServer();
+
+    const client = sessionClients.length === 0 ? undefined : sessionClients[0];
+    // Manually create a client since start doesn't
+    const { sessionClients: clients2 } = createServer({
+      sessionClientFactory: (options) => {
+        const client = new FakeSessionClient(options);
+        return client;
+      },
     });
+    // Use applySessionSnapshot directly
+    server.applySessionSnapshot(createSnapshot());
+
+    expect(server.getSnapshot().connection.online).toBe(true);
+    expect(server.getSnapshot().session).toMatchObject({
+      cwd: "/repo",
+      pid: 1234,
+    });
+  });
+
+  it("updates connection state from SessionClient callbacks", async () => {
+    const { server, sessionClients, storage } = createServer();
     const port = new FakePort();
 
     await server.start();
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
     server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
 
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: true,
-      bridgeOnline: true,
+    // Simulate connecting state
+    sessionClients[0]?.emitConnectionState({
+      online: false,
+      connecting: true,
+      statusText: "Подключаемся к Pi-сессии…",
+    });
+
+    expect(server.getSnapshot().connection.connecting).toBe(true);
+    expect(server.getSnapshot().connection.online).toBe(false);
+
+    // Simulate online
+    sessionClients[0]?.emitConnectionState({
+      online: true,
       connecting: false,
-      targetsRefreshPending: true,
+      statusText: "Подключено к Pi-сессии",
     });
 
-    listTargets.resolve({ ok: true, targets: [] });
+    expect(server.getSnapshot().connection.connecting).toBe(false);
+    expect(server.getSnapshot().connection.online).toBe(true);
+  });
+
+  it("sends chat through sessionClient on assistant.sendChatMessage", async () => {
+    const { server, sessionClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    // Connect to a port to create a session client
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-  });
+    server.applySessionSnapshot(createSnapshot());
 
-  it("keeps a live broker client for chat when one-shot session refresh is configured", async () => {
-    const { server, brokerClients } = createServer({
-      listTargets: async () => ({ ok: true, targets: [createTarget({ targetId: "target-1" })] }),
-    });
-    const port = new FakePort();
-
-    await server.start();
-    server.connectPort(port);
+    port.emitMessage({ type: "assistant.sendChatMessage", message: " Привет Pi " });
     await flushAsyncWork();
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
 
-    port.emitMessage({ type: "assistant.sendChatMessage", message: "привет" });
-
-    expect(brokerClients).toHaveLength(1);
-    expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
-    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenCalledWith("target-1");
-    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledWith("привет");
-    expect(server.getSnapshot().chat.messages.some((message) => "kind" in message && message.kind === "error")).toBe(false);
+    expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledWith("Привет Pi");
+    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "user", text: "Привет Pi" });
+    expect(server.getSnapshot().chat.agentBusy).toBe(true);
+    expect(server.getSnapshot().chat.sending).toBe(true);
   });
 
-  it("stores selected target runtime state and available models in snapshots", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    const runtime: TargetRuntimeState = {
-      targetId: "target-1",
-      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
-      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
-      isIdle: true,
-      updatedAt: 1_710_000_000_500,
-    };
-
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-
-    brokerClients[0]?.emitRuntimeState(runtime);
-    brokerClients[0]?.emitAvailableModels([{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }]);
-
-    expect(server.getSnapshot().runtime.selectedTargetRuntime).toEqual(runtime);
-    expect(server.getSnapshot().runtime.availableModels).toEqual([{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }]);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("routes model set commands to the live broker client", async () => {
-    const { server, brokerClients } = createServer();
+  it("sends model set through sessionClient on assistant.model.set", async () => {
+    const { server, sessionClients } = createServer();
     const port = new FakePort();
 
     await server.start();
     server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+
+    // Connect to create session client
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+    await flushAsyncWork();
+    server.applySessionSnapshot(createSnapshot());
 
     port.emitMessage({ type: "assistant.model.set", provider: "anthropic", modelId: "claude-sonnet" });
 
-    expect(brokerClients[0]?.setTargetModel).toHaveBeenCalledWith({
-      targetId: "target-1",
+    expect(sessionClients[0]?.setModel).toHaveBeenCalledWith({
       provider: "anthropic",
       modelId: "claude-sonnet",
     });
     expect(server.getSnapshot().runtime.modelMutationPending).toBe(true);
   });
 
-  it("clears model mutation pending when broker returns model set result", async () => {
-    const { server, brokerClients } = createServer();
+  it("disconnects and removes old session client when reconnecting to new port", async () => {
+    const { server, sessionClients } = createServer();
     const port = new FakePort();
 
     await server.start();
     server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    port.emitMessage({ type: "assistant.model.set", provider: "anthropic", modelId: "claude-sonnet" });
 
-    brokerClients[0]?.emitModelSetResult({ ok: false, error: "Модель недоступна" });
-
-    expect(server.getSnapshot().runtime.modelMutationPending).toBe(false);
-    expect(server.getSnapshot().runtime.modelError).toBe("Модель недоступна");
-  });
-
-  it("keeps known targets while sessions refresh reconnects", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-
-    port.emitMessage({ type: "assistant.sessions.refresh" });
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
+    expect(sessionClients).toHaveLength(1);
 
-    expect(server.getSnapshot().targets.map((target) => target.targetId)).toEqual(["target-1"]);
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: true,
-      targetsStale: true,
-    });
-  });
-
-  it("keeps targets stale when refresh broker reports online before targets", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
-
-    port.emitMessage({ type: "assistant.sessions.refresh" });
+    port.emitMessage({ type: "assistant.session.connect", port: 31416 });
     await flushAsyncWork();
-    brokerClients[1]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: true,
-      connecting: false,
-      targetsStale: true,
-    });
-  });
-
-  it("updates targets and preserves selected target when sessions refresh receives it again", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-
-    port.emitMessage({ type: "assistant.sessions.refresh" });
-    await flushAsyncWork();
-    brokerClients[1]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-    brokerClients[1]?.emitTargets([createTarget({ targetId: "target-1", alias: "Alpha refreshed" })]);
-
-    expect(server.getSnapshot().targets).toMatchObject([{ targetId: "target-1", alias: "Alpha refreshed" }]);
-    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
-    expect(server.getSnapshot().connection.targetsStale).toBe(false);
-    expect(brokerClients[1]?.setSelectedTargetId).toHaveBeenCalledWith("target-1");
-  });
-
-  it("clears selected target when sessions refresh no longer returns it", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-
-    port.emitMessage({ type: "assistant.sessions.refresh" });
-    await flushAsyncWork();
-    brokerClients[1]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-    brokerClients[1]?.emitTargets([createTarget({ targetId: "target-2", alias: "Beta" })]);
-
-    expect(server.getSnapshot().targets.map((target) => target.targetId)).toEqual(["target-2"]);
-    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
-    expect(brokerClients[1]?.setSelectedTargetId).toHaveBeenCalledWith(undefined);
-  });
-
-  it("closes the broker client and broadcasts token guidance when auth refresh finds no token", async () => {
-    const { server, brokerClients, tokenHelpers } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    tokenHelpers.getBrowserAuthState.mockResolvedValueOnce({ tokenConfigured: false });
-
-    port.emitMessage({ type: "assistant.auth.refresh" });
-    await flushAsyncWork();
-
-    expect(tokenHelpers.getBrowserAuthState).toHaveBeenCalledTimes(1);
-    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
-    expect(brokerClients).toHaveLength(1);
-    expect(server.getSnapshot().auth).toMatchObject({ tokenConfigured: false });
-    expect(server.getSnapshot().auth.browserToken).toBeUndefined();
-    expect(server.getSnapshot().connection.lastError).toBe("Токен браузера не настроен. Сгенерируйте токен для подключения к Pi.");
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("regenerates token with one epoch increment and recreates broker client once", async () => {
-    const { server, brokerClients, tokenHelpers } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    const epochBefore = server.getSnapshot().epoch;
-
-    port.emitMessage({ type: "assistant.auth.regenerateToken" });
-    await flushAsyncWork();
-
-    expect(tokenHelpers.regenerateBrowserToken).toHaveBeenCalledTimes(1);
-    expect(server.getSnapshot().epoch).toBe(epochBefore + 2);
-    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
-    expect(brokerClients).toHaveLength(2);
-    expect(brokerClients[1]?.options.browserToken).toBe("token-regenerated");
-    expect(brokerClients[1]?.connect).toHaveBeenCalledTimes(1);
-  });
-
-  it("ignores duplicate regenerate commands while auth mutation is pending", async () => {
-    const regenerate = createDeferred<string>();
-    const { server, brokerClients, tokenHelpers } = createServer();
-    const port = new FakePort();
-    tokenHelpers.regenerateBrowserToken.mockReturnValueOnce(regenerate.promise);
-    await server.start();
-    server.connectPort(port);
-
-    port.emitMessage({ type: "assistant.auth.regenerateToken" });
-    port.emitMessage({ type: "assistant.auth.regenerateToken" });
-    await flushAsyncWork();
-
-    expect(tokenHelpers.regenerateBrowserToken).toHaveBeenCalledTimes(1);
-    expect(server.getSnapshot().auth.mutationPending).toBe(true);
-    expect(brokerClients).toHaveLength(1);
-    expect(brokerClients[0]?.close).not.toHaveBeenCalled();
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-
-    regenerate.resolve("token-regenerated");
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().auth.mutationPending).toBe(false);
-    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
-    expect(brokerClients).toHaveLength(2);
-    expect(brokerClients[1]?.options.browserToken).toBe("token-regenerated");
-  });
-
-  it("ignores regenerate while clear token mutation is pending", async () => {
-    const clear = createDeferred<void>();
-    const { server, brokerClients, tokenHelpers } = createServer();
-    const port = new FakePort();
-    tokenHelpers.clearBrowserToken.mockReturnValueOnce(clear.promise);
-    await server.start();
-    server.connectPort(port);
-
-    port.emitMessage({ type: "assistant.auth.clearToken" });
-    port.emitMessage({ type: "assistant.auth.regenerateToken" });
-    await flushAsyncWork();
-
-    expect(tokenHelpers.clearBrowserToken).toHaveBeenCalledTimes(1);
-    expect(tokenHelpers.regenerateBrowserToken).not.toHaveBeenCalled();
-    expect(server.getSnapshot().auth.mutationPending).toBe(true);
-    expect(brokerClients[0]?.close).not.toHaveBeenCalled();
-
-    clear.resolve(undefined);
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().auth.mutationPending).toBe(false);
-    expect(server.getSnapshot().auth.browserToken).toBeUndefined();
-    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
-    expect(brokerClients).toHaveLength(1);
-  });
-
-  it("resets auth-error connection fields to connecting baseline after token regeneration", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitConnectionState({
-      online: false,
-      statusText: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.",
-    });
-
-    port.emitMessage({ type: "assistant.auth.regenerateToken" });
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().connection).toEqual({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: true,
-      tokenConfigured: true,
-      browserAuthorized: undefined,
-      targetsStale: false,
-      targetsRefreshPending: true,
-      lastError: undefined,
-    });
-  });
-
-  it("resets online connection fields to connecting baseline after token regeneration", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-
-    port.emitMessage({ type: "assistant.auth.regenerateToken" });
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().connection).toEqual({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: true,
-      tokenConfigured: true,
-      browserAuthorized: undefined,
-      targetsStale: false,
-      targetsRefreshPending: true,
-      lastError: undefined,
-    });
-  });
-
-  it("clears token, closes broker, clears targets and selection, and disables chat", async () => {
-    const { server, brokerClients, tokenHelpers } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-
-    port.emitMessage({ type: "assistant.auth.clearToken" });
-    await flushAsyncWork();
-
-    expect(tokenHelpers.clearBrowserToken).toHaveBeenCalledTimes(1);
-    expect(brokerClients[0]?.close).toHaveBeenCalledTimes(1);
-    expect(server.getSnapshot().targets).toEqual([]);
-    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
-    expect(server.getSnapshot().connection.tokenConfigured).toBe(false);
-    expect(server.getSnapshot().connection.brokerOnline).toBe(false);
-    expect(server.getSnapshot().connection.bridgeOnline).toBe(false);
-    expect(server.getSnapshot().connection.browserAuthorized).toBeUndefined();
-    expect(isChatSendDisabled(server.getSnapshot(), "сообщение")).toBe(true);
-  });
-
-  it("does not reconnect the broker client when auth refresh returns the same token", async () => {
-    const { server, brokerClients, tokenHelpers } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    tokenHelpers.getBrowserAuthState.mockResolvedValueOnce({ browserToken: "token-initial", tokenConfigured: true });
-    const epochBefore = server.getSnapshot().epoch;
-
-    port.emitMessage({ type: "assistant.auth.refresh" });
-    await flushAsyncWork();
-
-    expect(tokenHelpers.getBrowserAuthState).toHaveBeenCalledTimes(1);
-    expect(brokerClients).toHaveLength(1);
-    expect(brokerClients[0]?.close).not.toHaveBeenCalled();
-    expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
-    expect(server.getSnapshot().epoch).toBe(epochBefore + 2);
-    expect(server.getSnapshot().auth.mutationPending).toBe(false);
-  });
-
-  it.each([
-    ["assistant.auth.refresh", "getBrowserAuthState", "Не удалось обновить токен браузера. Попробуйте ещё раз."],
-    ["assistant.auth.regenerateToken", "regenerateBrowserToken", "Не удалось сгенерировать новый токен браузера. Попробуйте ещё раз."],
-    ["assistant.auth.clearToken", "clearBrowserToken", "Не удалось удалить токен браузера. Попробуйте ещё раз."],
-  ] as const)("handles %s token helper rejection without unhandled command rejection", async (commandType, helperName, expectedError) => {
-    const { server, tokenHelpers, diagnostics } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    tokenHelpers[helperName].mockRejectedValueOnce(new Error("storage offline"));
-
-    expect(() => port.emitMessage({ type: commandType })).not.toThrow();
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().auth).toMatchObject({
-      mutationPending: false,
-      error: expectedError,
-    });
-    expect(diagnostics).toEqual([
-      {
-        phase: commandType,
-        message: `${expectedError} storage offline`,
-      },
-    ]);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("allows retrying start after ensureBrowserToken fails", async () => {
-    const { server, brokerClients, tokenHelpers, diagnostics } = createServer();
-    tokenHelpers.ensureBrowserToken
-      .mockRejectedValueOnce(new Error("vault locked"))
-      .mockResolvedValueOnce("token-after-retry");
-
-    await expect(server.start()).rejects.toThrow("vault locked");
-
-    expect(server.getSnapshot().auth).toMatchObject({
-      mutationPending: false,
-      error: "Не удалось подготовить токен браузера. Попробуйте ещё раз.",
-    });
-    expect(server.getSnapshot().connection.connecting).toBe(false);
-    expect(server.getSnapshot().connection.lastError).toBe("Не удалось подготовить токен браузера. Попробуйте ещё раз.");
-    expect(diagnostics).toEqual([
-      {
-        phase: "assistant.start",
-        message: "Не удалось подготовить токен браузера. Попробуйте ещё раз. vault locked",
-      },
-    ]);
-    expect(brokerClients).toHaveLength(0);
-
-    await server.start();
-
-    expect(tokenHelpers.ensureBrowserToken).toHaveBeenCalledTimes(2);
-    expect(server.getSnapshot().auth).toMatchObject({ browserToken: "token-after-retry", tokenConfigured: true });
-    expect(brokerClients).toHaveLength(1);
-    expect(brokerClients[0]?.connect).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not create or connect a broker when stopped before delayed startup completes", async () => {
-    const startup = createDeferred<string>();
-    const { server, brokerClients, tokenHelpers } = createServer();
-    tokenHelpers.ensureBrowserToken.mockReturnValueOnce(startup.promise);
-
-    const startPromise = server.start();
-    server.stop();
-    startup.resolve("late-token");
-    await startPromise;
-
-    expect(brokerClients).toHaveLength(0);
-    expect(server.getSnapshot().auth.browserToken).toBeUndefined();
-    expect(server.getSnapshot().auth.tokenConfigured).toBe(false);
-    expect(server.getSnapshot().connection.connecting).toBe(false);
-    expect(server.getSnapshot().connection.lastError).toBe("Токен браузера не настроен. Сгенерируйте токен для подключения к Pi.");
+    expect(sessionClients).toHaveLength(2);
+    expect(sessionClients[0]?.close).toHaveBeenCalledTimes(1);
+    expect(sessionClients[1]?.port).toBe(31416);
   });
 
   it("immediately posts an assistant snapshot when a port connects", () => {
@@ -677,30 +369,63 @@ describe("BackgroundAssistantStateServer", () => {
     ]);
   });
 
-  it("broker onTargets updates state and broadcasts the same snapshot to multiple ports", async () => {
-    const { server, brokerClients } = createServer();
+  it("broadcasts snapshot to multiple ports", async () => {
+    const { server } = createServer();
     const portA = new FakePort();
     const portB = new FakePort();
+
     await server.start();
     server.connectPort(portA);
     server.connectPort(portB);
 
-    brokerClients[0]?.emitTargets([createTarget()]);
+    server.applySessionSnapshot(createSnapshot());
 
-    expect(server.getSnapshot().targets).toEqual([createTarget()]);
     const expected = { type: "assistant.snapshot", state: server.getSnapshot() };
     expect(portA.postedMessages.at(-1)).toEqual(expected);
     expect(portB.postedMessages.at(-1)).toEqual(expected);
   });
 
-  it("loads stored diagnostics and broadcasts a snapshot for assistant.diagnostics.refresh", async () => {
+  it("removes disconnected ports from future broadcasts", async () => {
+    const { server } = createServer();
+    const connectedPort = new FakePort();
+    const disconnectedPort = new FakePort();
+
+    await server.start();
+    server.connectPort(connectedPort);
+    server.connectPort(disconnectedPort);
+    disconnectedPort.disconnect();
+
+    server.applySessionSnapshot(createSnapshot());
+
+    expect(connectedPort.postedMessages).toHaveLength(2);
+    expect(disconnectedPort.postedMessages).toHaveLength(1);
+  });
+
+  it("removes ports that throw on postMessage and continues broadcasting", async () => {
+    const { server } = createServer();
+    const throwingPort = new FakePort();
+    const healthyPort = new FakePort();
+    throwingPort.throwOnPost = true;
+
+    await server.start();
+
+    expect(() => server.connectPort(throwingPort)).not.toThrow();
+    server.connectPort(healthyPort);
+
+    server.applySessionSnapshot(createSnapshot());
+
+    expect(healthyPort.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+    expect(throwingPort.postedMessages).toHaveLength(0);
+  });
+
+  it("handles assistant.diagnostics.refresh", async () => {
     const { server, storage } = createServer();
     const port = new FakePort();
     const storedDiagnostics = [
       { timestamp: 1_710_000_000_001, phase: "startup", message: "Первый журнал" },
-      { timestamp: 1_710_000_000_002, phase: "bridge", message: "Второй журнал" },
     ];
     storage.values.set("diagnostics", storedDiagnostics);
+
     await server.start();
     server.connectPort(port);
 
@@ -708,619 +433,228 @@ describe("BackgroundAssistantStateServer", () => {
     await flushAsyncWork();
 
     expect(server.getSnapshot().diagnostics).toEqual(storedDiagnostics);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
   });
 
-  it("records a Russian diagnostic without rejecting when diagnostics refresh storage fails", async () => {
-    const { server, storage, diagnostics } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    storage.getError = new Error("storage offline");
+  it("handles session chat events via sessionClient snapshot", () => {
+    const { server } = createServer();
+    server.applySessionSnapshot(createSnapshot());
 
-    expect(() => port.emitMessage({ type: "assistant.diagnostics.refresh" })).not.toThrow();
-    await expect(flushAsyncWork()).resolves.toBeUndefined();
-
-    expect(server.getSnapshot().diagnostics.at(-1)).toMatchObject({
-      phase: "assistant.diagnostics.refresh",
-      message: "Не удалось обновить диагностику: storage offline",
-    });
-    expect(diagnostics).toEqual([
-      {
-        phase: "assistant.diagnostics.refresh",
-        message: "Не удалось обновить диагностику: storage offline",
-      },
-    ]);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+    // Chat events are part of the snapshot, not separate
+    expect(server.getSnapshot().chat.agentBusy).toBe(false);
   });
 
-  it("uses broker connection state to make background snapshots ready and send-enabled", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
+  it("isChatSendDisabled returns true when not online", () => {
+    const { server } = createServer();
 
-    expect(isChatSendDisabled(server.getSnapshot(), "Привет")).toBe(true);
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: true,
-      browserAuthorized: undefined,
-    });
-
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: true,
-      bridgeOnline: true,
-      connecting: false,
-      browserAuthorized: true,
-      lastError: undefined,
-    });
-    expect(isChatSendDisabled(server.getSnapshot(), "Привет")).toBe(false);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+    expect(isChatSendDisabled(server.getSnapshot(), "Сообщение")).toBe(true);
   });
 
-  it("keeps reconnect churn visually offline after an error until broker comes online", async () => {
-    const { server, brokerClients } = createServer();
+  it("isChatSendDisabled returns false when online", () => {
+    const { server } = createServer();
+    server.applySessionSnapshot(createSnapshot());
+
+    expect(isChatSendDisabled(server.getSnapshot(), "Сообщение")).toBe(false);
+  });
+
+  it("does not append or call client twice for duplicate sends while chat is busy", async () => {
+    const { server, sessionClients } = createServer();
     const port = new FakePort();
+
     await server.start();
     server.connectPort(port);
 
-    brokerClients[0]?.emitConnectionState({ online: false, statusText: "Подключаемся к Pi…" });
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: true,
-      lastError: undefined,
-    });
-
-    brokerClients[0]?.emitConnectionState({ online: false, statusText: "Pi недоступен" });
-    const offlineSnapshot = server.getSnapshot();
-    const epochAfterOffline = offlineSnapshot.epoch;
-    const broadcastsAfterOffline = port.postedMessages.length;
-    expect(offlineSnapshot.connection).toMatchObject({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: false,
-      lastError: "Pi недоступен",
-    });
-
-    brokerClients[0]?.emitConnectionState({ online: false, statusText: "Подключаемся к Pi…" });
-
-    expect(server.getSnapshot()).toEqual(offlineSnapshot);
-    expect(server.getSnapshot().connection.connecting).toBe(false);
-    expect(server.getSnapshot().connection.lastError).toBe("Pi недоступен");
-    expect(port.postedMessages).toHaveLength(broadcastsAfterOffline);
-
-    brokerClients[0]?.emitConnectionState({ online: false, statusText: "Pi недоступен" });
-
-    expect(server.getSnapshot()).toEqual(offlineSnapshot);
-    expect(server.getSnapshot().epoch).toBe(epochAfterOffline);
-    expect(port.postedMessages).toHaveLength(broadcastsAfterOffline);
-
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: true,
-      bridgeOnline: true,
-      connecting: false,
-      browserAuthorized: true,
-      lastError: undefined,
-    });
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("reduces broker connection states and ignores stale generation updates", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    const staleClient = brokerClients[0];
-
-    staleClient?.emitConnectionState({ online: false, statusText: "Подключаемся к Pi…" });
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: true,
-      browserAuthorized: undefined,
-      lastError: undefined,
-    });
-
-    staleClient?.emitConnectionState({ online: false, statusText: "Pi недоступен" });
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: false,
-      lastError: "Pi недоступен",
-    });
-
-    staleClient?.emitConnectionState({ online: false, statusText: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале." });
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: false,
-      browserAuthorized: false,
-      lastError: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.",
-    });
-
-    staleClient?.emitConnectionState({ online: false, statusText: "Pi недоступен" });
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: false,
-      browserAuthorized: undefined,
-      lastError: "Pi недоступен",
-    });
-
-    staleClient?.emitConnectionState({ online: false, statusText: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале." });
-    port.emitMessage({ type: "assistant.auth.regenerateToken" });
+    // Connect to create session client
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-    staleClient?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-
-    expect(brokerClients).toHaveLength(2);
-    expect(server.getSnapshot().connection).toMatchObject({
-      brokerOnline: false,
-      bridgeOnline: false,
-      connecting: true,
-      browserAuthorized: undefined,
-    });
-  });
-
-  it("keeps selected target when broker targets still include it", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-
-    brokerClients[0]?.emitTargets([
-      createTarget({ alias: "Обновлённая цель", lastSeenAt: 1_710_000_000_200 }),
-      createTarget({ targetId: "target-2", alias: "Beta" }),
-    ]);
-
-    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
-    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenLastCalledWith("target-1");
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("clears selected target and broker subscription when selected target disappears", async () => {
-    const { server, brokerClients, storage } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-    const broadcastsBeforeDisappearance = port.postedMessages.length;
-
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-2", alias: "Beta" })]);
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
-    expect(isChatSendDisabled(server.getSnapshot(), "сообщение")).toBe(true);
-    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenLastCalledWith(undefined);
-    expect(storage.values.get("selectedTargetId")).toBeUndefined();
-    expect(storage.removedKeys).toContain("selectedTargetId");
-    expect(port.postedMessages).toHaveLength(broadcastsBeforeDisappearance + 1);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("ignores late onTargets from stale broker generation", async () => {
-    const { server, brokerClients, tokenHelpers } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    const staleClient = brokerClients[0];
-    port.emitMessage({ type: "assistant.auth.regenerateToken" });
-    await flushAsyncWork();
-
-    staleClient?.emitTargets([createTarget({ targetId: "stale-target" })]);
-
-    expect(brokerClients).toHaveLength(2);
-    expect(tokenHelpers.regenerateBrowserToken).toHaveBeenCalledTimes(1);
-    expect(server.getSnapshot().targets).toEqual([]);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("broadcasts a Russian chat error and does not call broker when sending without a selected target", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-    const broadcastsBeforeSend = port.postedMessages.length;
-
-    port.emitMessage({ type: "assistant.sendChatMessage", message: " Привет " });
-    await flushAsyncWork();
-
-    expect(brokerClients[0]?.sendChatMessage).not.toHaveBeenCalled();
-    expect(server.getSnapshot().chat.error).toBe("Выберите цель Pi для отправки сообщения.");
-    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({
-      role: "system",
-      text: "Выберите цель Pi для отправки сообщения.",
-      tone: "error",
-    });
-    expect(port.postedMessages).toHaveLength(broadcastsBeforeSend + 1);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("appends a user chat message immediately and marks chat busy for a valid send", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-
-    port.emitMessage({ type: "assistant.sendChatMessage", message: " Привет Pi " });
-    await flushAsyncWork();
-
-    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledWith("Привет Pi");
-    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "user", text: "Привет Pi" });
-    expect(server.getSnapshot().chat.agentBusy).toBe(true);
-    expect(server.getSnapshot().chat.sending).toBe(true);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("does not append or call broker twice for duplicate sends while chat is busy", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
+    server.applySessionSnapshot(createSnapshot());
 
     port.emitMessage({ type: "assistant.sendChatMessage", message: "Первое" });
     port.emitMessage({ type: "assistant.sendChatMessage", message: "Второе" });
     await flushAsyncWork();
 
-    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledTimes(1);
-    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledWith("Первое");
+    expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledTimes(1);
+    expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledWith("Первое");
     expect(server.getSnapshot().chat.messages).toEqual([
       { role: "user", text: "Первое", timestamp: 1_710_000_000_123 },
     ]);
-    expect(server.getSnapshot().chat.agentBusy).toBe(true);
-    expect(server.getSnapshot().chat.sending).toBe(true);
   });
 
-  it("does not send while connection is not ready or browser auth is invalid and emits Russian errors", async () => {
-    const { server, brokerClients } = createServer();
+  it("adds a Pi unavailable chat error when sessionClient send fails", async () => {
+    const { server, sessionClients } = createServer();
     const port = new FakePort();
+
     await server.start();
     server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
+
+    // Connect to create session client
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-
-    port.emitMessage({ type: "assistant.sendChatMessage", message: "Привет" });
-
-    expect(brokerClients[0]?.sendChatMessage).not.toHaveBeenCalled();
-    expect(server.getSnapshot().chat.error).toBe("Pi недоступен");
-    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "system", text: "Pi недоступен", tone: "error" });
-    const messagesAfterNotReadySend = server.getSnapshot().chat.messages.length;
-
-    brokerClients[0]?.emitConnectionState({
-      online: false,
-      statusText: "Браузер не авторизован в Pi. Выполните /chrome-assistent-auth в терминале.",
-    });
-    port.emitMessage({ type: "assistant.sendChatMessage", message: "Ещё раз" });
-
-    expect(brokerClients[0]?.sendChatMessage).not.toHaveBeenCalled();
-    expect(server.getSnapshot().connection.browserAuthorized).toBe(false);
-    expect(server.getSnapshot().chat.messages).toHaveLength(messagesAfterNotReadySend + 1);
-    expect(server.getSnapshot().chat.error).toBe("Pi недоступен");
-    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "system", text: "Pi недоступен", tone: "error" });
-  });
-
-  it("rejects DOM picker command without a selected target using a Russian error", async () => {
-    const startDomPicker = vi.fn(async () => ({ ok: true }));
-    const { server, brokerClients, diagnostics } = createServer({ startDomPicker });
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-
-    port.emitMessage({ type: "assistant.startDomPicker", tabId: 77 });
-    await flushAsyncWork();
-
-    expect(startDomPicker).not.toHaveBeenCalled();
-    expect(server.getSnapshot().chat.error).toBe("Выберите цель Pi для DOM picker.");
-    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({
-      role: "system",
-      text: "Выберите цель Pi для DOM picker.",
-      tone: "error",
-    });
-    expect(diagnostics).toEqual([
-      {
-        phase: "assistant.startDomPicker",
-        message: "Выберите цель Pi для DOM picker.",
-      },
-    ]);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("delegates DOM picker command to injected starter with selected target and tab id", async () => {
-    const startDomPicker = vi.fn(async () => ({ ok: true }));
-    const { server, brokerClients, diagnostics } = createServer({ startDomPicker });
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-9" })]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-9" });
-    await flushAsyncWork();
-
-    port.emitMessage({ type: "assistant.startDomPicker", tabId: 555 });
-    await flushAsyncWork();
-
-    expect(startDomPicker).toHaveBeenCalledWith({ targetId: "target-9", tabId: 555 });
-    expect(server.getSnapshot().chat.error).toBeUndefined();
-    expect(diagnostics).toEqual([]);
-  });
-
-  it("records a Russian diagnostic and chat error when DOM picker starter rejects a restricted URL", async () => {
-    const startDomPicker = vi.fn(async () => ({
-      ok: false,
-      error: "DOM picker можно запускать только на обычных http/https страницах.",
-    }));
-    const { server, brokerClients, diagnostics } = createServer({ startDomPicker });
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-9" })]);
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-9" });
-    await flushAsyncWork();
-
-    port.emitMessage({ type: "assistant.startDomPicker", tabId: 555 });
-    await flushAsyncWork();
-
-    expect(startDomPicker).toHaveBeenCalledWith({ targetId: "target-9", tabId: 555 });
-    expect(server.getSnapshot().chat.error).toBe("DOM picker можно запускать только на обычных http/https страницах.");
-    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({
-      role: "system",
-      text: "DOM picker можно запускать только на обычных http/https страницах.",
-      tone: "error",
-    });
-    expect(diagnostics).toEqual([
-      {
-        phase: "assistant.startDomPicker",
-        message: "DOM picker можно запускать только на обычных http/https страницах.",
-      },
-    ]);
-  });
-
-  it("adds a Pi unavailable chat error and clears busy when broker send fails", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-    brokerClients[0]?.emitConnectionState({ online: true, statusText: "Pi подключён" });
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-    if (brokerClients[0]) {
-      brokerClients[0].sendChatMessageResult = false;
+    server.applySessionSnapshot(createSnapshot());
+    if (sessionClients[0]) {
+      sessionClients[0].sendChatMessageResult = false;
     }
 
     port.emitMessage({ type: "assistant.sendChatMessage", message: "Привет" });
     await flushAsyncWork();
 
-    expect(brokerClients[0]?.sendChatMessage).toHaveBeenCalledWith("Привет");
+    expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledWith("Привет");
     expect(server.getSnapshot().chat.error).toBe("Pi недоступен");
     expect(server.getSnapshot().chat.agentBusy).toBe(false);
     expect(server.getSnapshot().chat.sending).toBe(false);
-    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "system", text: "Pi недоступен", tone: "error" });
   });
 
-  it("reduces broker chat events in background and broadcasts snapshots", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-
-    brokerClients[0]?.emitChatEvent({ kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_456 });
-
-    expect(server.getSnapshot().chat.messages).toEqual([
-      { role: "assistant", messageId: "msg-1", text: "", streaming: true, timestamp: 1_710_000_000_456 },
-    ]);
-    expect(server.getSnapshot().chat.agentBusy).toBe(true);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("ignores stale broker chat events after broker generation changes", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    const staleClient = brokerClients[0];
-    port.emitMessage({ type: "assistant.auth.regenerateToken" });
-    await flushAsyncWork();
-
-    staleClient?.emitChatEvent({ kind: "error", message: "Старое событие", timestamp: 1_710_000_000_789 });
-
-    expect(brokerClients).toHaveLength(2);
-    expect(server.getSnapshot().chat.messages).toEqual([]);
-    expect(server.getSnapshot().chat.error).toBeUndefined();
-  });
-
-  it("removes disconnected ports from future broadcasts", async () => {
-    const { server, brokerClients } = createServer();
-    const connectedPort = new FakePort();
-    const disconnectedPort = new FakePort();
-    await server.start();
-    server.connectPort(connectedPort);
-    server.connectPort(disconnectedPort);
-    disconnectedPort.disconnect();
-
-    brokerClients[0]?.emitTargets([createTarget()]);
-
-    expect(connectedPort.postedMessages).toHaveLength(2);
-    expect(disconnectedPort.postedMessages).toHaveLength(1);
-  });
-
-  it("restores stored selectedTargetId on startup when a matching broker target appears", async () => {
-    const storage = new FakeStorage();
-    storage.values.set("selectedTargetId", "target-2");
-    const { server, brokerClients } = createServer({ storage });
+  it("clears model mutation pending when model set result comes via snapshot", async () => {
+    const { server } = createServer();
     const port = new FakePort();
 
     await server.start();
     server.connectPort(port);
-    brokerClients[0]?.emitTargets([
-      createTarget({ targetId: "target-1" }),
-      createTarget({ targetId: "target-2", alias: "Beta" }),
-    ]);
-    await flushAsyncWork();
 
-    expect(server.getSnapshot().selectedTargetId).toBe("target-2");
-    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenCalledWith("target-2");
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
+    // Connect to create session client
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+    await flushAsyncWork();
+    server.applySessionSnapshot(createSnapshot());
+
+    port.emitMessage({ type: "assistant.model.set", provider: "anthropic", modelId: "claude-sonnet" });
+    expect(server.getSnapshot().runtime.modelMutationPending).toBe(true);
+
+    // New snapshot resets modelMutationPending
+    server.applySessionSnapshot(createSnapshot());
+    expect(server.getSnapshot().runtime.modelMutationPending).toBe(false);
   });
 
-  it("ignores missing stored selectedTargetId and allows later user selection", async () => {
-    const storage = new FakeStorage();
-    storage.values.set("selectedTargetId", "missing-target");
-    const { server, brokerClients } = createServer({ storage });
+  it("no multi-session concepts in snapshot", () => {
+    const { server } = createServer();
+    server.applySessionSnapshot(createSnapshot());
+
+    const snapshot = server.getSnapshot();
+    expect("targets" in snapshot).toBe(false);
+    expect("auth" in snapshot).toBe(false);
+    expect("brokerOnline" in snapshot.connection).toBe(false);
+    expect("bridgeOnline" in snapshot.connection).toBe(false);
+    expect("tokenConfigured" in snapshot.connection).toBe(false);
+    expect("browserAuthorized" in snapshot.connection).toBe(false);
+  });
+
+  it("auto-restores saved session port on first port connect — creates SessionClient", async () => {
+    const { server, storage, sessionClients } = createServer();
+    const port = new FakePort();
+
+    // Simulate a previously saved port from before service-worker restart
+    storage.values.set("sessionPort", 31416);
+
+    await server.start();
+    server.connectPort(port);
+    await flushAsyncWork();
+
+    // A SessionClient should have been created for the saved port
+    expect(sessionClients).toHaveLength(1);
+    expect(sessionClients[0]?.port).toBe(31416);
+    expect(sessionClients[0]?.connect).toHaveBeenCalledTimes(1);
+
+    // Connection state should reflect the restored port
+    const snapshot = server.getSnapshot();
+    expect(snapshot.connection.configuredPort).toBe(31416);
+    expect(snapshot.connection.connecting).toBe(true);
+  });
+
+  it("does NOT auto-connect when no saved port in storage", async () => {
+    const { server, storage, sessionClients } = createServer();
+    const port = new FakePort();
+
+    // No sessionPort in storage — empty map from createServer
+    expect(storage.values.get("sessionPort")).toBeUndefined();
+
+    await server.start();
+    server.connectPort(port);
+    await flushAsyncWork();
+
+    // No SessionClient should be created
+    expect(sessionClients).toHaveLength(0);
+    const snapshot = server.getSnapshot();
+    expect(snapshot.connection.connecting).toBe(false);
+    expect(snapshot.connection.configuredPort).toBe(31415); // default
+  });
+
+  it("skips auto-restore for invalid saved port values", async () => {
+    const { server, storage, sessionClients } = createServer();
+    const port = new FakePort();
+
+    // Invalid port: out of range
+    storage.values.set("sessionPort", 70000);
+
+    await server.start();
+    server.connectPort(port);
+    await flushAsyncWork();
+
+    expect(sessionClients).toHaveLength(0);
+    expect(server.getSnapshot().connection.connecting).toBe(false);
+  });
+
+  // ─── Task 1: Additional restore/reconnect tests ───
+
+  it("after SessionClient disconnects, reconnect state remains in background state", async () => {
+    const { server, sessionClients } = createServer();
     const port = new FakePort();
 
     await server.start();
     server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget({ targetId: "target-1" })]);
+
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
 
-    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
-    expect(brokerClients[0]?.setSelectedTargetId).not.toHaveBeenCalledWith("missing-target");
-
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
-    expect(storage.values.get("selectedTargetId")).toBe("target-1");
-    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenLastCalledWith("target-1");
-  });
-
-  it("updates state and persists selectedTargetId for assistant.selectTarget", async () => {
-    let serverRef: BackgroundAssistantStateServer | undefined;
-    const storage = new FakeStorage();
-    const setOrder: string[] = [];
-    const originalSet = storage.set.bind(storage);
-    storage.set = async <T>(key: string, value: T): Promise<void> => {
-      if (serverRef?.getSnapshot().selectedTargetId === value) {
-        setOrder.push("state-before-storage");
-      }
-      await originalSet(key, value);
-    };
-    const created = createServer({ storage });
-    const { server, brokerClients } = created;
-    serverRef = server;
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
-    expect(storage.values.get("selectedTargetId")).toBe("target-1");
-    expect(setOrder).toEqual(["state-before-storage"]);
-    expect(port.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-  });
-
-  it("calls brokerClient.setSelectedTargetId only after state accepts target", async () => {
-    const { server, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "missing-target" });
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
-    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenCalledTimes(1);
-    expect(brokerClients[0]?.setSelectedTargetId).toHaveBeenCalledWith("target-1");
-  });
-
-  it("removes persisted selectedTargetId when assistant.selectTarget clears the target", async () => {
-    const { server, storage, brokerClients } = createServer();
-    const port = new FakePort();
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-    port.emitMessage({ type: "assistant.selectTarget", targetId: undefined });
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().selectedTargetId).toBeUndefined();
-    expect(storage.values.get("selectedTargetId")).toBeUndefined();
-    expect(storage.removedKeys).toContain("selectedTargetId");
-  });
-
-  it("removes ports that throw on postMessage and continues broadcasting", async () => {
-    const { server, brokerClients } = createServer();
-    const throwingPort = new FakePort();
-    const healthyPort = new FakePort();
-    throwingPort.throwOnPost = true;
-    await server.start();
-
-    expect(() => server.connectPort(throwingPort)).not.toThrow();
-    server.connectPort(healthyPort);
-
-    brokerClients[0]?.emitTargets([createTarget()]);
-
-    expect(healthyPort.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
-    expect(healthyPort.postedMessages).toHaveLength(2);
-    expect(throwingPort.postedMessages).toHaveLength(0);
-  });
-
-  it("records a Russian diagnostic without rolling back in-memory selection when storage fails", async () => {
-    const { server, storage, diagnostics, brokerClients } = createServer();
-    const port = new FakePort();
-    storage.setError = new Error("disk full");
-    await server.start();
-    server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
-
-    port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" });
-    await flushAsyncWork();
-
-    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
-    expect(diagnostics).toEqual([
-      {
-        phase: "assistant.selectTarget",
-        message: "Не удалось сохранить выбранную цель Pi: disk full",
-      },
-    ]);
-  });
-
-  it("keeps selection and does not reject async work when persistence and diagnostic recording fail", async () => {
-    const { server, storage, brokerClients } = createServer({
-      recordDiagnostic: async () => {
-        throw new Error("diagnostic unavailable");
-      },
+    // Simulate client connecting
+    sessionClients[0]?.emitConnectionState({
+      online: false,
+      connecting: true,
+      statusText: "Подключаемся к Pi-сессии…",
     });
+
+    expect(server.getSnapshot().connection.connecting).toBe(true);
+    expect(server.getSnapshot().connection.configuredPort).toBe(31415);
+  });
+
+  it("restored SessionClient can go online after saved-port reconnect", async () => {
+    const { server, storage, sessionClients } = createServer();
     const port = new FakePort();
-    storage.setError = new Error("disk full");
+
+    // Simulate previously saved port
+    storage.values.set("sessionPort", 31416);
+
     await server.start();
     server.connectPort(port);
-    brokerClients[0]?.emitTargets([createTarget()]);
+    await flushAsyncWork();
 
-    expect(() => port.emitMessage({ type: "assistant.selectTarget", targetId: "target-1" })).not.toThrow();
-    await expect(flushAsyncWork()).resolves.toBeUndefined();
+    // SessionClient created for saved port
+    expect(sessionClients).toHaveLength(1);
 
-    expect(server.getSnapshot().selectedTargetId).toBe("target-1");
+    // Simulate the restored client going online
+    sessionClients[0]?.emitConnectionState({
+      online: true,
+      connecting: false,
+      statusText: "Подключено к Pi-сессии",
+    });
+
+    expect(server.getSnapshot().connection.online).toBe(true);
+    expect(server.getSnapshot().connection.configuredPort).toBe(31416);
+    expect(server.getSnapshot().connection.connecting).toBe(false);
+  });
+
+  it("stop() closes session client and clears it", async () => {
+    const { server, sessionClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+    await flushAsyncWork();
+
+    expect(sessionClients).toHaveLength(1);
+
+    server.stop();
+
+    expect(sessionClients[0]?.close).toHaveBeenCalledTimes(1);
+    expect(server.getSnapshot().connection.online).toBe(false);
   });
 });

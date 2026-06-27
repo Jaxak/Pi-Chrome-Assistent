@@ -1,33 +1,12 @@
 import { PROTOCOL_VERSION } from "./constants";
 
 export const PROTOCOL_MESSAGE_TYPES = [
-  "client.hello",
-  "client.listTargets",
-  "client.sendSelection",
-  "client.subscribeTarget",
-  "client.unsubscribeTarget",
-  "client.sendChatMessage",
-  "client.chatAccepted",
-  "client.chatEvent",
-  "client.setTargetModel",
-  "client.modelSetResult",
-  "client.runtimeState",
-  "client.availableModels",
-  "target.register",
-  "target.registered",
-  "target.heartbeat",
-  "target.unregister",
-  "target.sendSelectionResult",
-  "client.targets",
-  "client.sendResult",
-  "client.error",
-  "target.deliverSelection",
-  "target.deliverChatMessage",
-  "target.chatEvent",
-  "target.runtimeState",
-  "target.availableModels",
-  "target.setModel",
-  "target.modelSetResult",
+  "session.snapshot",
+  "session.chat.send",
+  "session.selection.send",
+  "session.model.set",
+  "session.command.result",
+  "session.error",
 ] as const;
 
 export type ProtocolMessageType = (typeof PROTOCOL_MESSAGE_TYPES)[number];
@@ -51,33 +30,34 @@ export type SelectionPayload = {
   capturedAt: number;
 };
 
-export type BrowserClientHelloPayload = {
-  token: string;
+export type DirectSendChatPayload = { message: string };
+export type DirectSendSelectionPayload = { selection: SelectionPayload };
+export type DirectSetModelPayload = { provider: string; modelId: string };
+
+export type DirectSessionSnapshot = {
+  session: {
+    cwd: string;
+    gitBranch?: string;
+    pid: number;
+    sessionName?: string;
+    alias?: string;
+    connectedAt: number;
+  };
+  chat: {
+    events?: ChatEvent[];
+    agentBusy: boolean;
+    busyLabel: string;
+  };
+  runtime: {
+    model?: TargetModelSummary;
+    availableModels: TargetModelSummary[];
+    contextUsage?: TargetContextUsage;
+    isIdle: boolean;
+    updatedAt: number;
+  };
 };
 
-export type BrowserClientSendSelectionPayload = {
-  token: string;
-  targetId: string;
-  selection: SelectionPayload;
-};
-
-export type BrowserClientSubscribeTargetPayload = {
-  token: string;
-  targetId: string;
-};
-
-export type BrowserClientSendChatMessagePayload = {
-  token: string;
-  targetId: string;
-  message: string;
-};
-
-export type BrowserClientSetTargetModelPayload = {
-  token: string;
-  targetId: string;
-  provider: string;
-  modelId: string;
-};
+export type DirectCommandResult = DeliveryResult;
 
 export type TargetModelSummary = {
   provider: string;
@@ -91,21 +71,6 @@ export type TargetContextUsage = {
   percent: number | null;
 };
 
-export type TargetRuntimeState = {
-  targetId: string;
-  model?: TargetModelSummary;
-  contextUsage?: TargetContextUsage;
-  isIdle: boolean;
-  updatedAt: number;
-};
-
-export type TargetModelSetResult = DeliveryResult;
-
-export type TargetDeliverChatMessagePayload = {
-  message: string;
-  sentAt: number;
-};
-
 export type ChatEvent =
   | { kind: "user_message"; text: string; timestamp: number }
   | { kind: "agent_busy"; busy: boolean; label: string; timestamp: number }
@@ -113,17 +78,6 @@ export type ChatEvent =
   | { kind: "assistant_text_delta"; messageId: string; delta: string; timestamp: number }
   | { kind: "assistant_message_end"; messageId: string; timestamp: number }
   | { kind: "error"; message: string; timestamp: number };
-
-export type TargetMetadata = {
-  targetId: string;
-  alias?: string;
-  cwd: string;
-  gitBranch?: string;
-  pid: number;
-  sessionName?: string;
-  connectedAt: number;
-  lastSeenAt: number;
-};
 
 export type DeliveryResult = {
   ok: boolean;
@@ -181,32 +135,12 @@ function hasFiniteTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-export function validateSubscribeTargetPayload(value: unknown): ValidationResult {
+export function validateDirectSendChatPayload(value: unknown): ValidationResult {
   if (!value || typeof value !== "object") {
     return { ok: false, error: "Payload must be an object" };
   }
 
-  const payload = value as Partial<BrowserClientSubscribeTargetPayload>;
-
-  if (!isNonEmptyString(payload.token)) {
-    return { ok: false, error: "Missing token" };
-  }
-
-  if (!isNonEmptyString(payload.targetId)) {
-    return { ok: false, error: "Missing targetId" };
-  }
-
-  return { ok: true };
-}
-
-export function validateSendChatMessagePayload(value: unknown): ValidationResult {
-  const subscriptionValidation = validateSubscribeTargetPayload(value);
-
-  if (!subscriptionValidation.ok) {
-    return subscriptionValidation;
-  }
-
-  const payload = value as Partial<BrowserClientSendChatMessagePayload>;
+  const payload = value as Partial<DirectSendChatPayload>;
 
   if (!isNonEmptyString(payload.message)) {
     return { ok: false, error: "Missing message" };
@@ -215,14 +149,27 @@ export function validateSendChatMessagePayload(value: unknown): ValidationResult
   return { ok: true };
 }
 
-export function validateSetTargetModelPayload(value: unknown): ValidationResult {
-  const subscriptionValidation = validateSubscribeTargetPayload(value);
-
-  if (!subscriptionValidation.ok) {
-    return subscriptionValidation;
+export function validateDirectSendSelectionPayload(value: unknown): ValidationResult {
+  if (!value || typeof value !== "object") {
+    return { ok: false, error: "Payload must be an object" };
   }
 
-  const payload = value as Partial<BrowserClientSetTargetModelPayload>;
+  const payload = value as Partial<DirectSendSelectionPayload>;
+
+  const selectionValidation = validateSelectionPayload(payload.selection);
+  if (!selectionValidation.ok) {
+    return selectionValidation;
+  }
+
+  return { ok: true };
+}
+
+export function validateDirectSetModelPayload(value: unknown): ValidationResult {
+  if (!value || typeof value !== "object") {
+    return { ok: false, error: "Payload must be an object" };
+  }
+
+  const payload = value as Partial<DirectSetModelPayload>;
 
   if (!isNonEmptyString(payload.provider)) {
     return { ok: false, error: "Missing provider" };

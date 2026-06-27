@@ -32,7 +32,7 @@ describe("diagnostics", () => {
     for (let index = 0; index < DIAGNOSTIC_LOG_LIMIT + 3; index += 1) {
       await appendDiagnostic(storage, {
         timestamp: 1_710_000_000_000 + index,
-        phase: "broker.connect",
+        phase: "diagnostics",
         message: `message-${index}`,
       });
     }
@@ -62,8 +62,8 @@ describe("diagnostics", () => {
 
     await appendDiagnostic(storage, {
       timestamp: 1_710_000_000_000,
-      phase: "listTargets",
-      message: "Broker unreachable",
+      phase: "targets",
+      message: "Connection failed",
     });
 
     await clearDiagnostics(storage);

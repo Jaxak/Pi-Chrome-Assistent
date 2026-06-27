@@ -5,7 +5,12 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createInitialAssistantState, type BackgroundAssistantState } from "./assistantState";
+import {
+  createInitialAssistantState,
+  reduceAssistantState,
+  type BackgroundAssistantState,
+} from "./assistantState";
+import type { DirectSessionSnapshot } from "../shared/protocol";
 
 function loadSidePanelHtml(): void {
   const html = readFileSync(resolve(process.cwd(), "src/chrome/sidepanel.html"), "utf8");
@@ -32,58 +37,66 @@ type MockChromeRuntime = {
   sendMessage: ReturnType<typeof vi.fn>;
 };
 
-function createTarget(overrides: Partial<BackgroundAssistantState["targets"][number]> = {}): BackgroundAssistantState["targets"][number] {
+function createDirectSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectSessionSnapshot {
   return {
-    targetId: "target-1",
-    alias: "Alpha",
-    cwd: "/tmp/pi-alpha",
-    gitBranch: "main",
-    pid: 101,
-    sessionName: "session-a",
-    connectedAt: 1_710_000_000_000,
-    lastSeenAt: 1_710_000_000_100,
+    session: {
+      cwd: "/repo",
+      gitBranch: "main",
+      pid: 1234,
+      sessionName: "test-session",
+      alias: "frontend",
+      connectedAt: 1_710_000_000_000,
+    },
+    chat: {
+      events: [],
+      agentBusy: false,
+      busyLabel: "Агент работает в фоне…",
+    },
+    runtime: {
+      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+      availableModels: [
+        { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+        { provider: "openai", id: "gpt-4.1", label: "GPT 4.1" },
+      ],
+      contextUsage: { tokens: 12340, maxTokens: 200000, percent: 6 },
+      isIdle: true,
+      updatedAt: 1_710_000_000_500,
+    },
     ...overrides,
   };
 }
 
-function createReadySnapshot(overrides: Partial<BackgroundAssistantState> = {}): BackgroundAssistantState {
+type ConnectedStateOverrides = Omit<Partial<BackgroundAssistantState>, "connection" | "snapshot"> & {
+  snapshot?: DirectSessionSnapshot;
+  connection?: Partial<BackgroundAssistantState["connection"]>;
+};
+
+function createConnectedState(overrides: ConnectedStateOverrides = {}): BackgroundAssistantState {
   const base = createInitialAssistantState();
-  const targets = overrides.targets ?? [createTarget()];
+  let state: BackgroundAssistantState = reduceAssistantState(base, {
+    kind: "connection_updated",
+    connection: { configuredPort: overrides.connection?.configuredPort ?? 31415 },
+  });
+  state = reduceAssistantState(state, {
+    kind: "session_snapshot",
+    snapshot: overrides.snapshot ?? createDirectSnapshot(),
+  });
   return {
-    ...base,
-    epoch: overrides.epoch ?? 1,
-    connection: {
-      ...base.connection,
-      brokerOnline: true,
-      bridgeOnline: true,
-      connecting: false,
-      tokenConfigured: true,
-      browserAuthorized: true,
-      ...overrides.connection,
-    },
-    targets,
-    selectedTargetId: overrides.selectedTargetId ?? targets[0]?.targetId,
-    chat: {
-      ...base.chat,
-      ...overrides.chat,
-    },
-    auth: {
-      ...base.auth,
-      tokenConfigured: true,
-      browserToken: "token-1",
-      ...overrides.auth,
-    },
-    runtime: {
-      ...base.runtime,
-      ...overrides.runtime,
-    },
-    diagnostics: overrides.diagnostics ?? base.diagnostics,
+    ...state,
+    epoch: overrides.epoch ?? state.epoch + 1,
+    connection: { ...state.connection, ...(overrides.connection ?? {}) },
+    chat: { ...state.chat, ...(overrides.chat ?? {}) },
+    runtime: { ...state.runtime, ...(overrides.runtime ?? {}) },
+    diagnostics: overrides.diagnostics ?? state.diagnostics,
   };
 }
 
 function mockChromeRuntime(): MockChromeRuntime {
   const ports: MockPort[] = [];
-  const createPort = (): MockPort & { addMessageListener(listener: PortListener): void; addDisconnectListener(listener: () => void): void } => {
+  const createPort = (): MockPort & {
+    addMessageListener(listener: PortListener): void;
+    addDisconnectListener(listener: () => void): void;
+  } => {
     const listeners: PortListener[] = [];
     const disconnectListeners: Array<() => void> = [];
     const port = {
@@ -164,13 +177,100 @@ describe("sidepanel navigation", () => {
     document.documentElement.innerHTML = "";
   });
 
-  it("reconnects the assistant port after background disconnect instead of staying unavailable", async () => {
+  it("renders port input with default 31415", async () => {
+    loadSidePanelHtml();
+    mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    const portInput = document.querySelector<HTMLInputElement>("#session-port-input");
+    expect(portInput).not.toBeNull();
+    expect(portInput?.value).toBe("31415");
+  });
+
+  it("renders connect button with Russian label", async () => {
+    loadSidePanelHtml();
+    mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    const connectButton = document.querySelector<HTMLButtonElement>("#connect-session-button");
+    expect(connectButton).not.toBeNull();
+    expect(connectButton?.textContent).toBe("Подключить");
+  });
+
+  it("posts connect command with entered port", async () => {
+    const runtime = mockChromeRuntime();
+    loadSidePanelHtml();
+    await importInitializedSidePanel();
+
+    const portInput = document.querySelector<HTMLInputElement>("#session-port-input")!;
+    portInput.value = "31416";
+    document.querySelector<HTMLButtonElement>("#connect-session-button")!.click();
+
+    expect(runtime.port.postMessage).toHaveBeenCalledWith({
+      type: "assistant.session.connect",
+      port: 31416,
+    });
+  });
+
+  it("posts connect command with default port 31415", async () => {
+    const runtime = mockChromeRuntime();
+    loadSidePanelHtml();
+    await importInitializedSidePanel();
+
+    document.querySelector<HTMLButtonElement>("#connect-session-button")!.click();
+
+    expect(runtime.port.postMessage).toHaveBeenCalledWith({
+      type: "assistant.session.connect",
+      port: 31415,
+    });
+  });
+
+  it("does not post connect command for invalid port", async () => {
+    const runtime = mockChromeRuntime();
+    loadSidePanelHtml();
+    await importInitializedSidePanel();
+
+    const portInput = document.querySelector<HTMLInputElement>("#session-port-input")!;
+    portInput.value = "abc";
+    document.querySelector<HTMLButtonElement>("#connect-session-button")!.click();
+
+    expect(runtime.port.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not post connect command for port out of range", async () => {
+    const runtime = mockChromeRuntime();
+    loadSidePanelHtml();
+    await importInitializedSidePanel();
+
+    const portInput = document.querySelector<HTMLInputElement>("#session-port-input")!;
+    portInput.value = "70000";
+    document.querySelector<HTMLButtonElement>("#connect-session-button")!.click();
+
+    expect(runtime.port.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("updates port input from snapshot configuredPort", async () => {
+    loadSidePanelHtml();
+    const runtime = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    runtime.port.emit({
+      type: "assistant.snapshot",
+      state: createConnectedState({ connection: { configuredPort: 31417, online: true } }),
+    });
+    await flush();
+
+    const portInput = document.querySelector<HTMLInputElement>("#session-port-input");
+    expect(portInput?.value).toBe("31417");
+  });
+
+  it("reconnects the assistant port after background disconnect", async () => {
     vi.useFakeTimers();
     loadSidePanelHtml();
     const runtime = mockChromeRuntime();
     await importInitializedSidePanel();
 
-    runtime.ports[0]?.emit({ type: "assistant.snapshot", state: createReadySnapshot() });
+    runtime.ports[0]?.emit({ type: "assistant.snapshot", state: createConnectedState() });
     await flush();
 
     runtime.ports[0]?.disconnect();
@@ -179,11 +279,15 @@ describe("sidepanel navigation", () => {
     expect(document.querySelector("#diagnostics-output")?.textContent).toContain("Переподключаем боковую панель…");
 
     await vi.advanceTimersByTimeAsync(250);
-    runtime.ports[1]?.emit({ type: "assistant.snapshot", state: createReadySnapshot({ targets: [createTarget({ alias: "Alpha restored" })] }) });
+    runtime.ports[1]?.emit({
+      type: "assistant.snapshot",
+      state: createConnectedState({
+        snapshot: createDirectSnapshot({ session: { ...createDirectSnapshot().session, alias: "Alpha restored" } }),
+      }),
+    });
     await flush();
 
     expect(chrome.runtime.connect).toHaveBeenCalledTimes(2);
-    expect(document.querySelector("#target-container")?.textContent).toContain("Alpha restored");
   });
 
   it("renders context usage and model controls under the composer", async () => {
@@ -193,20 +297,18 @@ describe("sidepanel navigation", () => {
 
     runtime.port.emit({
       type: "assistant.snapshot",
-      state: createReadySnapshot({
+      state: createConnectedState({
         runtime: {
-          selectedTargetRuntime: {
-            targetId: "target-1",
-            model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
-            contextUsage: { tokens: 12340, maxTokens: 200000, percent: 6 },
-            isIdle: true,
-            updatedAt: 1_710_000_000_500,
-          },
+          model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
+          contextUsage: { tokens: 12340, maxTokens: 200000, percent: 6 },
+          isIdle: true,
+          updatedAt: 1_710_000_000_500,
           availableModels: [
             { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
             { provider: "openai", id: "gpt-4.1", label: "GPT 4.1" },
           ],
           modelMutationPending: false,
+          modelError: undefined,
         },
       }),
     });
@@ -249,684 +351,110 @@ describe("sidepanel navigation", () => {
     expect(sessionsPanel?.hidden).toBe(true);
   });
 
-  it("keeps initial acquisition open when broker reports online before targets", async () => {
+  it("renders connected status text when online", async () => {
     loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
+    const runtime = mockChromeRuntime();
     await importInitializedSidePanel();
 
-    port.emit({ type: "assistant.snapshot", state: createInitialAssistantState() });
-    await flush();
-
-    port.emit({
+    runtime.port.emit({
       type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 1,
-        targets: [],
-        selectedTargetId: undefined,
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: true,
-          tokenConfigured: true,
-          browserAuthorized: undefined,
-          targetsStale: false,
-          targetsRefreshPending: true,
-          lastError: undefined,
-        },
-      }),
+      state: createConnectedState({ connection: { configuredPort: 31415, online: true } }),
     });
     await flush();
 
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [],
-        selectedTargetId: undefined,
-        connection: {
-          brokerOnline: true,
-          bridgeOnline: true,
-          connecting: false,
-          tokenConfigured: true,
-          browserAuthorized: true,
-          targetsStale: false,
-          targetsRefreshPending: true,
-          lastError: undefined,
-        },
-      }),
-    });
-    await flush();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 3,
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" })],
-        selectedTargetId: "target-1",
-        connection: {
-          brokerOnline: true,
-          bridgeOnline: true,
-          connecting: false,
-          tokenConfigured: true,
-          browserAuthorized: true,
-          targetsStale: false,
-          targetsRefreshPending: false,
-          lastError: undefined,
-        },
-      }),
-    });
-    await flush();
-
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.textContent).toContain("Alpha");
+    const statusEl = document.querySelector("#session-connection-status");
+    expect(statusEl?.textContent).toContain("✅");
+    expect(statusEl?.textContent).toContain("Подключено");
+    expect(statusEl?.textContent).toContain("31415");
   });
 
-  it("renders targets on open after an initial bootstrap snapshot", async () => {
+  it("shows warning disconnected status when offline", async () => {
     loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
+    const runtime = mockChromeRuntime();
     await importInitializedSidePanel();
 
-    port.emit({ type: "assistant.snapshot", state: createInitialAssistantState() });
-    await flush();
-
-    port.emit({
+    runtime.port.emit({
       type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 1,
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" })],
-        selectedTargetId: "target-1",
-      }),
+      state: createInitialAssistantState(),
     });
     await flush();
 
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.textContent).toContain("Alpha");
+    const statusEl = document.querySelector("#session-connection-status");
+    expect(statusEl?.textContent).toContain("⚠️");
+    expect(statusEl?.textContent).toContain("Введите порт");
   });
 
-  it("posts target selection and marks the clicked target selected optimistically", async () => {
+  it("renders status tone data attribute on connection element", async () => {
     loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
+    const runtime = mockChromeRuntime();
     await importInitializedSidePanel();
 
-    port.emit({
+    // Online → success tone
+    runtime.port.emit({
       type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-1",
-      }),
+      state: createConnectedState({ connection: { configuredPort: 31415, online: true } }),
     });
     await flush();
+    let statusEl = document.querySelector<HTMLElement>("#session-connection-status");
+    expect(statusEl?.dataset.tone).toBe("success");
 
-    document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.click();
-
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.selectTarget", targetId: "target-2" });
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.className).not.toContain("target-option--selected");
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.className).toContain("target-option--selected");
+    // Offline → warning tone
+    runtime.port.emit({
+      type: "assistant.snapshot",
+      state: createInitialAssistantState(),
+    });
+    await flush();
+    statusEl = document.querySelector<HTMLElement>("#session-connection-status");
+    expect(statusEl?.dataset.tone).toBe("warning");
   });
 
-  it("does not mutate target DOM when an identical snapshot arrives", async () => {
+  it("renders error status tone when lastError exists", async () => {
     loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
+    const runtime = mockChromeRuntime();
     await importInitializedSidePanel();
 
-    port.emit({
+    const errorState = createConnectedState({
+      connection: { configuredPort: 31415, online: false, lastError: "Pi-сессия недоступна" },
+    });
+    runtime.port.emit({
       type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-1",
-      }),
+      state: errorState,
     });
     await flush();
 
-    const container = document.querySelector<HTMLElement>("#target-container");
-    const mutations: MutationRecord[] = [];
-    const observer = new MutationObserver((records) => mutations.push(...records));
-    if (container) {
-      observer.observe(container, { attributes: true, childList: true, characterData: true, subtree: true });
-    }
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
-    observer.disconnect();
-
-    expect(mutations).toHaveLength(0);
+    const statusEl = document.querySelector<HTMLElement>("#session-connection-status");
+    expect(statusEl?.textContent).toContain("❌");
+    expect(statusEl?.textContent).toContain("Pi-сессия недоступна");
+    expect(statusEl?.dataset.tone).toBe("error");
   });
 
-  it("does not mutate target placeholder DOM when an identical snapshot arrives", async () => {
+  it("renders info status tone when connecting", async () => {
     loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
+    const runtime = mockChromeRuntime();
     await importInitializedSidePanel();
 
-    const noTargetsSnapshot = createReadySnapshot({
-      targets: [],
-      selectedTargetId: undefined,
-      connection: {
-        brokerOnline: false,
-        bridgeOnline: false,
-        connecting: false,
-        tokenConfigured: true,
-        browserAuthorized: undefined,
-        targetsStale: false,
-        targetsRefreshPending: false,
-        lastError: "Pi недоступен",
-      },
+    const connectingState = reduceAssistantState(createInitialAssistantState(), {
+      kind: "connection_updated",
+      connection: { connecting: true, online: false, configuredPort: 31416 },
     });
-
-    port.emit({ type: "assistant.snapshot", state: noTargetsSnapshot });
+    runtime.port.emit({
+      type: "assistant.snapshot",
+      state: connectingState,
+    });
     await flush();
 
-    const container = document.querySelector<HTMLElement>("#target-container");
-    const mutations: MutationRecord[] = [];
-    const observer = new MutationObserver((records) => mutations.push(...records));
-    if (container) {
-      observer.observe(container, { attributes: true, childList: true, characterData: true, subtree: true });
-    }
-
-    port.emit({ type: "assistant.snapshot", state: { ...noTargetsSnapshot, epoch: 2 } });
-    await flush();
-    observer.disconnect();
-
-    expect(mutations).toHaveLength(0);
+    const statusEl = document.querySelector<HTMLElement>("#session-connection-status");
+    expect(statusEl?.textContent).toContain("🔄");
+    expect(statusEl?.textContent).toContain("Подключаемся");
+    expect(statusEl?.dataset.tone).toBe("info");
   });
 
-  it("renders token guidance when token is cleared after target list freezes", async () => {
+  it("posts chat send command when online", async () => {
     loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
+    const runtime = mockChromeRuntime();
     await importInitializedSidePanel();
 
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" })],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [],
-        selectedTargetId: undefined,
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: false,
-          tokenConfigured: false,
-          browserAuthorized: undefined,
-          targetsStale: false,
-          targetsRefreshPending: false,
-          lastError: "Токен браузера не настроен.",
-        },
-      }),
-    });
-    await flush();
-
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')).toBeNull();
-    expect(document.querySelector("#target-container")?.textContent).toContain("Для отправки настройте browserToken");
-  });
-
-  it("keeps target acquisition open when token recovery reports online before targets", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [],
-        selectedTargetId: undefined,
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: false,
-          tokenConfigured: false,
-          browserAuthorized: undefined,
-          targetsStale: false,
-          targetsRefreshPending: false,
-          lastError: "Токен браузера не настроен.",
-        },
-      }),
-    });
-    await flush();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [],
-        selectedTargetId: undefined,
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: true,
-          tokenConfigured: true,
-          browserAuthorized: undefined,
-          targetsStale: false,
-          targetsRefreshPending: false,
-          lastError: undefined,
-        },
-      }),
-    });
-    await flush();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 3,
-        targets: [],
-        selectedTargetId: undefined,
-        connection: {
-          brokerOnline: true,
-          bridgeOnline: true,
-          connecting: false,
-          tokenConfigured: true,
-          browserAuthorized: true,
-          targetsStale: false,
-          targetsRefreshPending: false,
-          lastError: undefined,
-        },
-      }),
-    });
-    await flush();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 4,
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" })],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
-
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.textContent).toContain("Alpha");
-  });
-
-  it("updates target container when token becomes configured after missing-token guidance", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [],
-        selectedTargetId: undefined,
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: false,
-          tokenConfigured: false,
-          browserAuthorized: undefined,
-          targetsStale: false,
-          targetsRefreshPending: false,
-          lastError: "Токен браузера не настроен.",
-        },
-      }),
-    });
-    await flush();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" })],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
-
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.textContent).toContain("Alpha");
-  });
-
-  it("does not update target list from an unsolicited snapshot after initial render", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
-
-    const firstButton = document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]');
-    const secondButton = document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]');
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [createTarget({ targetId: "target-3", alias: "Gamma" })],
-        selectedTargetId: "target-3",
-      }),
-    });
-    await flush();
-
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')).toBe(firstButton);
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')).toBe(secondButton);
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-3"]')).toBeNull();
-    expect(firstButton?.textContent).toContain("Alpha");
-    expect(firstButton?.className).toContain("target-option--selected");
-  });
-
-  it("keeps optimistic selection through an older snapshot that still contains the pending target", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
-
-    document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.click();
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
-
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.className).not.toContain("target-option--selected");
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.className).toContain("target-option--selected");
-  });
-
-  it("lets a second quick target click replace the optimistic selection", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: undefined,
-      }),
-    });
-    await flush();
-
-    document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.click();
-    document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.click();
-
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.selectTarget", targetId: "target-1" });
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.selectTarget", targetId: "target-2" });
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.className).not.toContain("target-option--selected");
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.className).toContain("target-option--selected");
-  });
-
-  it("updates target list after manual refresh", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" })],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
-
-    document.querySelector<HTMLButtonElement>("#refresh-sessions-button")?.click();
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-2",
-      }),
-    });
-    await flush();
-
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.sessions.refresh" });
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')).toBeNull();
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.textContent).toContain("Beta");
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.className).toContain("target-option--selected");
-  });
-
-  it("keeps manual refresh open from an empty list until refreshed targets arrive", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [],
-        selectedTargetId: undefined,
-      }),
-    });
-    await flush();
-
-    document.querySelector<HTMLButtonElement>("#refresh-sessions-button")?.click();
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [],
-        selectedTargetId: undefined,
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: true,
-          tokenConfigured: true,
-          browserAuthorized: undefined,
-          targetsStale: false,
-          targetsRefreshPending: true,
-          lastError: undefined,
-        },
-      }),
-    });
-    await flush();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 3,
-        targets: [createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-2",
-        connection: {
-          brokerOnline: true,
-          bridgeOnline: true,
-          connecting: false,
-          tokenConfigured: true,
-          browserAuthorized: true,
-          targetsStale: false,
-          targetsRefreshPending: false,
-          lastError: undefined,
-        },
-      }),
-    });
-    await flush();
-
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.textContent).toContain("Beta");
-  });
-
-  it("keeps manual refresh open when broker comes online before refreshed targets arrive", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    const alpha = createTarget({ targetId: "target-1", alias: "Alpha" });
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [alpha],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
-
-    document.querySelector<HTMLButtonElement>("#refresh-sessions-button")?.click();
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [alpha],
-        selectedTargetId: "target-1",
-        connection: {
-          brokerOnline: true,
-          bridgeOnline: true,
-          connecting: false,
-          tokenConfigured: true,
-          browserAuthorized: true,
-          targetsStale: true,
-          targetsRefreshPending: true,
-          lastError: undefined,
-        },
-      }),
-    });
-    await flush();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 3,
-        targets: [createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-2",
-        connection: {
-          brokerOnline: true,
-          bridgeOnline: true,
-          connecting: false,
-          tokenConfigured: true,
-          browserAuthorized: true,
-          targetsStale: false,
-          targetsRefreshPending: false,
-          lastError: undefined,
-        },
-      }),
-    });
-    await flush();
-
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')).toBeNull();
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.textContent).toContain("Beta");
-  });
-
-  it("renders session refresh button and posts refresh command", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    const refreshButton = document.querySelector<HTMLButtonElement>("#refresh-sessions-button");
-    expect(refreshButton?.textContent).toBe("Обновить");
-
-    refreshButton?.click();
-
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.sessions.refresh" });
-  });
-
-  it("does not enter refreshing mode when manual refresh is clicked without a configured token", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [],
-        selectedTargetId: undefined,
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: false,
-          tokenConfigured: false,
-          browserAuthorized: undefined,
-          targetsStale: false,
-          targetsRefreshPending: false,
-          lastError: "Токен браузера не настроен.",
-        },
-      }),
-    });
-    await flush();
-
-    document.querySelector<HTMLButtonElement>("#refresh-sessions-button")?.click();
-
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.sessions.refresh" });
-    expect(document.querySelector("#session-stale-guidance")?.textContent).not.toContain("Обновляем список сессий");
-    expect(document.querySelector("#target-container")?.textContent).toContain("Для отправки настройте browserToken");
-  });
-
-  it("does not auto-refresh sessions on a timer", async () => {
-    vi.useFakeTimers();
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" })],
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: false,
-          tokenConfigured: true,
-          browserAuthorized: undefined,
-          targetsStale: true,
-          targetsRefreshPending: false,
-          lastError: "Pi недоступен",
-        },
-      }),
-    });
-    await flush();
-
-    vi.advanceTimersByTime(5_000);
-
-    expect(port.postMessage).not.toHaveBeenCalledWith({ type: "assistant.sessions.refresh" });
-  });
-
-  it("shows stale guidance with known targets while broker is offline", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" })],
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: false,
-          tokenConfigured: true,
-          browserAuthorized: undefined,
-          lastError: "Pi недоступен",
-          targetsStale: true,
-          targetsRefreshPending: false,
-        },
-      }),
-    });
-    await flush();
-
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.textContent).toContain("Alpha");
-    expect(document.querySelector("#session-stale-guidance")?.textContent).toContain("Список может быть устаревшим");
-  });
-
-  it("posts chat send command instead of sending through a sidepanel broker", async () => {
-    loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
-    await importInitializedSidePanel();
-
-    port.emit({ type: "assistant.snapshot", state: createReadySnapshot() });
+    runtime.port.emit({ type: "assistant.snapshot", state: createConnectedState() });
     await flush();
 
     const input = document.querySelector<HTMLTextAreaElement>("#chat-input");
@@ -937,76 +465,66 @@ describe("sidepanel navigation", () => {
 
     document.querySelector<HTMLButtonElement>("#chat-send-button")?.click();
 
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.sendChatMessage", message: "Привет Pi" });
+    expect(runtime.port.postMessage).toHaveBeenCalledWith({ type: "assistant.sendChatMessage", message: "Привет Pi" });
     expect(input?.value).toBe("");
   });
 
-  it("keeps known targets rendered while broker is temporarily offline", async () => {
+  it("does not post chat send when offline", async () => {
     loadSidePanelHtml();
-    const { port } = mockChromeRuntime();
+    const runtime = mockChromeRuntime();
     await importInitializedSidePanel();
 
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" }), createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-1",
-        connection: {
-          brokerOnline: false,
-          bridgeOnline: false,
-          connecting: false,
-          tokenConfigured: true,
-          browserAuthorized: undefined,
-          targetsStale: true,
-          targetsRefreshPending: false,
-          lastError: "Pi недоступен",
-        },
-      }),
-    });
-    await flush();
+    const input = document.querySelector<HTMLTextAreaElement>("#chat-input");
+    if (input) {
+      input.value = "Привет";
+      input.dispatchEvent(new Event("input"));
+    }
 
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-1"]')?.textContent).toContain("Alpha");
-    expect(document.querySelector<HTMLButtonElement>('[data-target-id="target-2"]')?.textContent).toContain("Beta");
-    expect(document.querySelector("#target-container")?.textContent).not.toContain("Pi не подключён");
+    document.querySelector<HTMLButtonElement>("#chat-send-button")?.click();
+
+    expect(runtime.port.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "assistant.sendChatMessage" }),
+    );
   });
 
-  it("does not start DOM picker when frozen UI selection diverges from live background selection", async () => {
+  it("does not have session list UI elements", async () => {
     loadSidePanelHtml();
-    const { port, tabsQuery } = mockChromeRuntime();
+    mockChromeRuntime();
     await importInitializedSidePanel();
 
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        targets: [createTarget({ targetId: "target-1", alias: "Alpha" })],
-        selectedTargetId: "target-1",
-      }),
-    });
-    await flush();
+    expect(document.querySelector("#target-container")).toBeNull();
+    expect(document.querySelector("#refresh-sessions-button")).toBeNull();
+    expect(document.querySelector("#session-stale-guidance")).toBeNull();
+  });
 
-    port.emit({
-      type: "assistant.snapshot",
-      state: createReadySnapshot({
-        epoch: 2,
-        targets: [createTarget({ targetId: "target-2", alias: "Beta" })],
-        selectedTargetId: "target-2",
-      }),
-    });
-    await flush();
+  it("does not have auth drawer UI elements", async () => {
+    loadSidePanelHtml();
+    mockChromeRuntime();
+    await importInitializedSidePanel();
 
-    document.querySelector<HTMLButtonElement>("#send-button")?.click();
-    await flush();
+    expect(document.querySelector("#panel-auth")).toBeNull();
+    expect(document.querySelector("#tab-auth")).toBeNull();
+    expect(document.querySelector("#header-auth-button")).toBeNull();
+    expect(document.querySelector("#browser-token-output")).toBeNull();
+  });
 
-    expect(tabsQuery).not.toHaveBeenCalled();
-    expect(port.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.startDomPicker" }));
+  it("no green circle behind avatar icon", async () => {
+    loadSidePanelHtml();
+    mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    const avatar = document.querySelector<HTMLImageElement>(".avatar");
+    expect(avatar).not.toBeNull();
+    // The avatar should be a direct img element, not a container div with a background
+    expect(avatar?.tagName.toLowerCase()).toBe("img");
   });
 
   it("posts DOM picker command through assistant port with active tab id", async () => {
     loadSidePanelHtml();
-    const { port, tabsQuery, sendMessage } = mockChromeRuntime();
+    const { port, tabsQuery } = mockChromeRuntime();
     await importInitializedSidePanel();
 
-    port.emit({ type: "assistant.snapshot", state: createReadySnapshot() });
+    port.emit({ type: "assistant.snapshot", state: createConnectedState() });
     await flush();
 
     document.querySelector<HTMLButtonElement>("#send-button")?.click();
@@ -1014,6 +532,5 @@ describe("sidepanel navigation", () => {
 
     expect(tabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true });
     expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.startDomPicker", tabId: 1 });
-    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "startDomPicker" }));
   });
 });

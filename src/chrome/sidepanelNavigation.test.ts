@@ -122,7 +122,10 @@ function mockChromeRuntime(): MockChromeRuntime {
     return port;
   };
   const port = createPort();
-  const tabsQuery = vi.fn(async () => [{ id: 1 }]);
+  const tabsQuery = vi.fn(async () => [
+    { id: 999, url: "chrome-extension://abc/sidepanel.html" },
+    { id: 1, url: "https://example.com/page" },
+  ]);
   const sendMessage = vi.fn(async () => ({ ok: true }));
 
   let connectCount = 0;
@@ -530,7 +533,7 @@ describe("sidepanel navigation", () => {
     document.querySelector<HTMLButtonElement>("#send-button")?.click();
     await flush();
 
-    expect(tabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true });
+    expect(tabsQuery).toHaveBeenCalledWith({ currentWindow: true });
     expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.startDomPicker", tabId: 1 });
   });
 

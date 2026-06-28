@@ -47,6 +47,20 @@ const SIDEPANEL_RECONNECT_DELAYS_MS = [250, 1000, 2000] as const;
 const PORT_ERROR_TEXT = "Введите порт от 1 до 65535.";
 const DEFAULT_PORT = 31415;
 
+/**
+ * Find the first injectable (http/https) tab in the current window.
+ * Sidepanel itself is a chrome-extension:// tab and must be skipped.
+ */
+async function findInjectableTabId(): Promise<number | undefined> {
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  for (const tab of tabs) {
+    if (typeof tab.url === "string" && /^https?:\/\//i.test(tab.url)) {
+      return tab.id;
+    }
+  }
+  return undefined;
+}
+
 let assistantPort: chrome.runtime.Port | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectAttempt = 0;
@@ -522,10 +536,10 @@ function initializeSidePanel(): void {
     try {
       sendButton.disabled = true;
       sendButton.setAttribute("aria-disabled", "true");
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabId = await findInjectableTabId();
       postAssistantCommand({
         type: "assistant.startDomPicker",
-        tabId: activeTab?.id,
+        tabId,
       });
 
       setDiagnostics(elements, START_PICKER_PROMPT);

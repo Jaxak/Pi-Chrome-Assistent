@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { DEFAULT_DIRECT_SESSION_HOST } from "../shared/constants";
 import type {
-  ChatEvent,
   DirectCommandResult,
   DirectSessionSnapshot,
   SelectionPayload,
@@ -89,163 +88,6 @@ export async function handleDirectModelSet(options: {
   return changed ? { ok: true } : { ok: false, error: "Не удалось сменить модель" };
 }
 
-// ---------------------------------------------------------------------------
-// Event helpers
-// ---------------------------------------------------------------------------
-
-function getAssistantMessageId(event: unknown): string | undefined {
-  // Handle test shape { message: { id: 'msg-1', role: 'assistant' } }
-  // and possible variants with messageId
-  const message = (event as { message?: { id?: unknown; messageId?: unknown; role?: unknown } })?.message;
-
-  if (message?.role !== "assistant") {
-    return undefined;
-  }
-
-  const id = message.id ?? message.messageId;
-  return typeof id === "string" && id.length > 0 ? id : undefined;
-}
-
-function getAssistantTextDelta(event: unknown): string | undefined {
-  const assistantMessageEvent = (event as {
-    assistantMessageEvent?: {
-      text_delta?: unknown;
-      delta?: unknown;
-      textDelta?: unknown;
-      text?: unknown;
-    };
-  })?.assistantMessageEvent;
-
-  const delta =
-    assistantMessageEvent?.text_delta ??
-    assistantMessageEvent?.delta ??
-    assistantMessageEvent?.textDelta ??
-    assistantMessageEvent?.text;
-
-  return typeof delta === "string" ? delta : undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Merge helpers — append-only overlap merge of session history + transient
-// ---------------------------------------------------------------------------
-
-/**
- * Produce a stable signature string for a single ChatEvent.
- * Used to detect exact structural equality during overlap detection.
- */
-function eventSignature(evt: ChatEvent): string {
-  switch (evt.kind) {
-    case "user_message":
-      return `user|${evt.text}|${evt.timestamp}`;
-    case "agent_busy":
-      return `busy|${evt.busy}|${evt.label}|${evt.timestamp}`;
-    case "assistant_message_start":
-      return `ast_start|${evt.messageId}|${evt.timestamp}`;
-    case "assistant_text_delta":
-      return `ast_delta|${evt.messageId}|${evt.delta}|${evt.timestamp}`;
-    case "assistant_message_end":
-      return `ast_end|${evt.messageId}|${evt.timestamp}`;
-    case "error":
-      return `err|${evt.message}|${evt.timestamp}`;
-  }
-}
-
-/**
- * Find the length of the longest overlap between the suffix of `base` and the prefix of `overlay`.
- * Returns the number of consecutive events at the start of `overlay` that match
- * the tail of `base` by exact signature.
- */
-function findOverlapIndex(base: ChatEvent[], overlay: ChatEvent[]): number {
-  if (base.length === 0 || overlay.length === 0) return 0;
-
-  const maxOverlap = Math.min(base.length, overlay.length);
-  for (let len = maxOverlap; len >= 1; len--) {
-    let match = true;
-    for (let i = 0; i < len; i++) {
-      if (eventSignature(base[base.length - len + i]) !== eventSignature(overlay[i])) {
-        match = false;
-        break;
-      }
-    }
-    if (match) return len;
-  }
-  return 0;
-}
-
-/**
- * Merge authoritative session history with transient overlay events
- * using append-only overlap merge.
- *
- * Strategy:
- * - sessionHistory is the authoritative base.
- * - transient is the recent overlay (in-memory events since last persist).
- * - Find the longest prefix of transient that exactly matches a suffix of
- *   sessionHistory (by event signatures).
- * - Append the non-overlapping suffix of transient to sessionHistory.
- *
- * This avoids eating new events that merely share text with older history entries.
- */
-export function mergeChatEvents(
-  sessionHistory: ChatEvent[],
-  transient: ChatEvent[],
-): ChatEvent[] {
-  if (transient.length === 0) return [...sessionHistory];
-  if (sessionHistory.length === 0) return [...transient];
-
-  const overlap = findOverlapIndex(sessionHistory, transient);
-  const newEvents = transient.slice(overlap);
-
-  return [...sessionHistory, ...newEvents];
-}
-
-// ---------------------------------------------------------------------------
-// Session history from sessionManager
-// ---------------------------------------------------------------------------
-
-/** Build authoritative chat events from sessionManager branch entries. */
-export function buildChatEventsFromSessionBranch(options: {
-  ctx: ExtensionContext | undefined;
-  now: () => number;
-}): ChatEvent[] {
-  const branch = options.ctx?.sessionManager?.getBranch?.() ?? [];
-  const events: ChatEvent[] = [];
-  const baseTs = options.now();
-
-  for (const entry of branch) {
-    if (entry.type !== "message") continue;
-
-    const msg = entry.message;
-    const ts = msg.timestamp
-      ? (msg.timestamp as number)
-      : baseTs;
-
-    if (msg.role === "user") {
-      const text = extractTextContent(msg.content);
-      if (text.length > 0) {
-        events.push({ kind: "user_message", text, timestamp: ts });
-      }
-    } else if (msg.role === "assistant") {
-      const id = (msg as { id?: string }).id ?? entry.id;
-      events.push({ kind: "assistant_message_start", messageId: id, timestamp: ts });
-      const text = extractTextContent(msg.content);
-      if (text.length > 0) {
-        events.push({ kind: "assistant_text_delta", messageId: id, delta: text, timestamp: ts });
-      }
-      events.push({ kind: "assistant_message_end", messageId: id, timestamp: ts });
-    }
-  }
-
-  return events;
-}
-
-function extractTextContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((c) => typeof c === "object" && c !== null && "text" in c)
-    .map((c) => (c as { text?: string }).text ?? "")
-    .join("\n");
-}
 
 // ---------------------------------------------------------------------------
 // Extension default export
@@ -257,13 +99,13 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   let latestCtx: ExtensionContext | undefined;
   let latestAlias: string | undefined;
   let connectedAt: number | undefined;
-  let chatEvents: ChatEvent[] = [];
+
 
   const broadcastSnapshot = () => {
     activeSessionServer?.broadcastSnapshot();
   };
 
-  // ----- Pi event handlers -----
+  // ----- Pi event handlers (broadcast snapshot on state changes) -----
 
   pi.on("model_select", (_event, ctx) => {
     latestCtx = ctx;
@@ -280,41 +122,15 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
     broadcastSnapshot();
   });
 
-  pi.on("message_start", (event) => {
-    const messageId = getAssistantMessageId(event);
-    if (messageId) {
-      chatEvents.push({
-        kind: "assistant_message_start",
-        messageId,
-        timestamp: Date.now(),
-      });
-    }
+  pi.on("message_start", (_event, _ctx) => {
     broadcastSnapshot();
   });
 
-  pi.on("message_update", (event) => {
-    const messageId = getAssistantMessageId(event);
-    const delta = getAssistantTextDelta(event);
-    if (messageId && delta !== undefined) {
-      chatEvents.push({
-        kind: "assistant_text_delta",
-        messageId,
-        delta,
-        timestamp: Date.now(),
-      });
-    }
+  pi.on("message_update", (_event, _ctx) => {
     broadcastSnapshot();
   });
 
-  pi.on("message_end", (event) => {
-    const messageId = getAssistantMessageId(event);
-    if (messageId) {
-      chatEvents.push({
-        kind: "assistant_message_end",
-        messageId,
-        timestamp: Date.now(),
-      });
-    }
+  pi.on("message_end", (_event, _ctx) => {
     broadcastSnapshot();
   });
 
@@ -327,16 +143,14 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
     ctx.ui.setStatus(STATUS_KEY, undefined);
   });
 
-  // ----- Snapshot builder -----
+  // ----- Snapshot builder — authoritative entries from sessionManager -----
 
   const buildSnapshot = (): DirectSessionSnapshot => {
     const ctx = latestCtx;
     const runtime = buildDirectRuntimeState({ ctx: ctx as Parameters<typeof buildDirectRuntimeState>[0]["ctx"] });
 
-    // Merge authoritative session history with transient in-memory events,
-    // avoiding duplicates when transient events have already been persisted.
-    const sessionHistory = buildChatEventsFromSessionBranch({ ctx, now: Date.now });
-    const mergedEvents = mergeChatEvents(sessionHistory, chatEvents);
+    // Authoritative history: raw session entries from Pi sessionManager
+    const entries = ctx?.sessionManager?.getBranch?.() ?? [];
 
     const modelSummary: TargetModelSummary | undefined =
       typeof ctx?.model?.provider === "string" && typeof ctx.model.id === "string"
@@ -356,7 +170,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
         connectedAt: connectedAt ?? Date.now(),
       },
       chat: {
-        events: mergedEvents,
+        entries,
         agentBusy: ctx ? !ctx.isIdle() : false,
         busyLabel: "Агент работает в фоне…",
       },
@@ -386,8 +200,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
         await prev.close().catch(() => undefined);
       }
 
-      chatEvents = [];
-
       try {
         const server = await startDirectSessionServerOnAvailablePort({
           host: DEFAULT_DIRECT_SESSION_HOST,
@@ -395,8 +207,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
           buildSnapshot,
           onChatMessage: async (message: string): Promise<DirectCommandResult> => {
             try {
-              chatEvents.push({ kind: "user_message", text: message, timestamp: Date.now() });
-              chatEvents.push({ kind: "agent_busy", busy: true, label: "Агент работает в фоне…", timestamp: Date.now() });
               broadcastSnapshot();
 
               const deliveryOptions = ctx.isIdle() ? undefined : ({ deliverAs: "followUp" } as const);
@@ -405,7 +215,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
               return { ok: true };
             } catch (error) {
               const errMsg = error instanceof Error ? error.message : "Неизвестная ошибка";
-              chatEvents.push({ kind: "error", message: errMsg, timestamp: Date.now() });
               broadcastSnapshot();
               return { ok: false, error: errMsg };
             }
@@ -413,8 +222,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
           onSelection: async (selection: SelectionPayload): Promise<DirectCommandResult> => {
             try {
               const formatted = formatSelectionMessage(selection);
-              chatEvents.push({ kind: "user_message", text: formatted, timestamp: Date.now() });
-              chatEvents.push({ kind: "agent_busy", busy: true, label: "Агент работает в фоне…", timestamp: Date.now() });
               broadcastSnapshot();
 
               const deliveryOptions = ctx.isIdle() ? undefined : ({ deliverAs: "followUp" } as const);
@@ -423,7 +230,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
               return { ok: true };
             } catch (error) {
               const errMsg = error instanceof Error ? error.message : "Неизвестная ошибка";
-              chatEvents.push({ kind: "error", message: errMsg, timestamp: Date.now() });
               broadcastSnapshot();
               return { ok: false, error: errMsg };
             }

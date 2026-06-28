@@ -452,13 +452,97 @@ describe("mirror snapshot — entries from sessionManager.getBranch()", () => {
 
     // В mirror-архитектуре snapshot.chat.entries должен содержать raw entries
     // вместо синтетических chat.events
-    const entries = (snapshot.chat as { entries?: unknown[] }).entries;
-    if (entries === undefined) {
-      // На текущем коде chat.entries ещё не реализован — тест должен FAIL
-      throw new Error("snapshot.chat.entries отсутствует — mirror-архитектура не реализована");
-    }
+    const entries = snapshot.chat.entries;
     expect(Array.isArray(entries)).toBe(true);
     expect(entries.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("snapshot.chat.entries preserves faithful entry shapes from sessionManager", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls } = createFakePi();
+
+    const mockSessionManager = {
+      getBranch: () => [
+        { type: "message", id: "u1", parentId: null, timestamp: "2025-06-01T10:00:00Z", message: { role: "user", content: "Здравствуй" } },
+        { type: "message", id: "a1", parentId: "u1", timestamp: "2025-06-01T10:00:01Z", message: { role: "assistant", id: "a1", content: [{ type: "text", text: "Привет! Чем могу помочь?" }] } },
+      ],
+    };
+    (ctx as unknown as Record<string, unknown>).sessionManager = mockSessionManager;
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const snapshot = capturedSessionServerOptions!.buildSnapshot();
+    const entries = snapshot.chat.entries;
+
+    // Проверяем что entries — это именно объекты из sessionManager, а не синтетические ChatEvent
+    expect(entries[0]).toHaveProperty("type", "message");
+    expect(entries[0]).toHaveProperty("id", "u1");
+    expect(entries[0].message.role).toBe("user");
+
+    expect(entries[1]).toHaveProperty("type", "message");
+    expect(entries[1]).toHaveProperty("id", "a1");
+    expect(entries[1].message.role).toBe("assistant");
+  });
+
+  it("snapshot.chat.entries is empty array when sessionManager returns empty branch", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls } = createFakePi();
+
+    const mockSessionManager = {
+      getBranch: () => [],
+    };
+    (ctx as unknown as Record<string, unknown>).sessionManager = mockSessionManager;
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const snapshot = capturedSessionServerOptions!.buildSnapshot();
+    expect(snapshot.chat.entries).toEqual([]);
+  });
+
+  it("snapshot.chat.agentBusy reflects ctx.isIdle()", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls } = createFakePi();
+
+    const mockSessionManager = { getBranch: () => [] };
+    (ctx as unknown as Record<string, unknown>).sessionManager = mockSessionManager;
+
+    // isIdle = true => agentBusy = false
+    ctx.isIdle = () => true;
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    let snapshot = capturedSessionServerOptions!.buildSnapshot();
+    expect(snapshot.chat.agentBusy).toBe(false);
+
+    // isIdle = false => agentBusy = true
+    ctx.isIdle = () => false;
+    snapshot = capturedSessionServerOptions!.buildSnapshot();
+    expect(snapshot.chat.agentBusy).toBe(true);
+  });
+
+  it("snapshot.chat.busyLabel is Russian", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls } = createFakePi();
+
+    const mockSessionManager = { getBranch: () => [] };
+    (ctx as unknown as Record<string, unknown>).sessionManager = mockSessionManager;
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const snapshot = capturedSessionServerOptions!.buildSnapshot();
+    expect(snapshot.chat.busyLabel).toBe("Агент работает в фоне…");
   });
 });
 

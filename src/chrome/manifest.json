@@ -9,7 +9,7 @@
     "48": "icon48.png",
     "128": "icon128.png"
   },
-  "permissions": ["activeTab", "storage", "sidePanel", "tabs"],
+  "permissions": ["activeTab", "storage", "sidePanel", "tabs", "scripting"],
   "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*"],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*"
@@ -23,12 +23,5 @@
   },
   "side_panel": {
     "default_path": "sidepanel.html"
-  },
-  "content_scripts": [
-    {
-      "matches": ["https://*/*", "http://*/*"],
-      "js": ["contentScript.js"],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }

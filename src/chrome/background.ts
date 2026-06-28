@@ -57,6 +57,24 @@ export function canInjectIntoTabUrl(url: string | undefined): boolean {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
+/**
+ * Inject content script into the tab if not already injected.
+ * Uses ping-pong to check if script is present.
+ */
+export async function injectContentScriptIfNeeded(tabId: number): Promise<void> {
+  try {
+    // Try to ping existing content script
+    await chrome.tabs.sendMessage(tabId, { type: "ping" });
+    // Script already injected
+  } catch {
+    // Not injected — inject now
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["contentScript.js"],
+    });
+  }
+}
+
 async function recordDiagnostic(
   diagnosticStorage: StorageAdapter,
   now: () => number,
@@ -146,6 +164,9 @@ async function tryInjectDomPicker(
       return { ok: false, error: userMessage };
     }
 
+    // Ensure content script is injected before sending commands
+    await injectContentScriptIfNeeded(tabId);
+
     const pickerResponse = (await chrome.tabs.sendMessage(tabId, {
       type: "startDomPicker",
     })) as { ok?: boolean; error?: unknown } | undefined;
@@ -191,7 +212,9 @@ export function configureTabChangeListeners(): void {
   chrome.tabs.onActivated.addListener((activeInfo) => {
     const tabId = activeInfo.tabId;
     if (typeof tabId === "number") {
-      void chrome.tabs.sendMessage(tabId, { type: "stopDomPicker" }).catch(() => {});
+      void injectContentScriptIfNeeded(tabId)
+        .then(() => chrome.tabs.sendMessage(tabId, { type: "stopDomPicker" }))
+        .catch(() => {});
     }
   });
 
@@ -200,7 +223,9 @@ export function configureTabChangeListeners(): void {
       return;
     }
     if (changeInfo.status === "loading" || changeInfo.url) {
-      void chrome.tabs.sendMessage(tabId, { type: "stopDomPicker" }).catch(() => {});
+      void injectContentScriptIfNeeded(tabId)
+        .then(() => chrome.tabs.sendMessage(tabId, { type: "stopDomPicker" }))
+        .catch(() => {});
     }
   });
 }

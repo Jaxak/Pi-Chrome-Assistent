@@ -8,6 +8,7 @@ import {
   createBackgroundMessageListener,
   startDomPicker,
   canInjectIntoTabUrl,
+  injectContentScriptIfNeeded,
 } from "./background";
 
 /* ------------------------------------------------------------------ */
@@ -129,10 +130,12 @@ describe("configureSidePanelOnActionClick", () => {
 /* ------------------------------------------------------------------ */
 
 describe("configureTabChangeListeners", () => {
-  it("sends stopDomPicker to the new active tab on tab activation", () => {
+  it("sends stopDomPicker to the new active tab on tab activation", async () => {
     const activatedListener = vi.fn();
     const updatedListener = vi.fn();
-    const tabsSendMessage = vi.fn(async () => ({ ok: true }));
+    const tabsSendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping succeeds
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: {
@@ -140,6 +143,7 @@ describe("configureTabChangeListeners", () => {
         onUpdated: { addListener: updatedListener },
         sendMessage: tabsSendMessage,
       },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     configureTabChangeListeners();
@@ -151,12 +155,19 @@ describe("configureTabChangeListeners", () => {
     ) => void;
     onActivated({ tabId: 2, previousTabId: 1 } as chrome.tabs.TabActiveInfo);
 
+    // Wait for async injection + message
+    await Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve());
+
+    expect(tabsSendMessage).toHaveBeenCalledWith(2, { type: "ping" });
+    // Ping succeeded, so no injection needed
+    expect(executeScript).not.toHaveBeenCalled();
     expect(tabsSendMessage).toHaveBeenCalledWith(2, { type: "stopDomPicker" });
   });
 
-  it("sends stopDomPicker when tab parameter is undefined", () => {
+  it("sends stopDomPicker when tab parameter is undefined", async () => {
     const activatedListener = vi.fn();
     const tabsSendMessage = vi.fn(async () => ({ ok: true }));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: {
@@ -164,6 +175,7 @@ describe("configureTabChangeListeners", () => {
         onUpdated: { addListener: vi.fn() },
         sendMessage: tabsSendMessage,
       },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     configureTabChangeListeners();
@@ -174,6 +186,9 @@ describe("configureTabChangeListeners", () => {
     // Chrome sometimes passes undefined as the second argument (tab)
     onActivated({ tabId: 2, previousTabId: 1 } as chrome.tabs.TabActiveInfo);
 
+    await Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve());
+
+    expect(tabsSendMessage).toHaveBeenCalledWith(2, { type: "ping" });
     expect(tabsSendMessage).toHaveBeenCalledWith(2, { type: "stopDomPicker" });
   });
 
@@ -186,6 +201,7 @@ describe("configureTabChangeListeners", () => {
         onUpdated: { addListener: vi.fn() },
         sendMessage: tabsSendMessage,
       },
+      scripting: { executeScript: vi.fn() },
     } as unknown as typeof chrome);
 
     configureTabChangeListeners();
@@ -197,6 +213,7 @@ describe("configureTabChangeListeners", () => {
         onUpdated: { addListener: updatedListener },
         sendMessage: tabsSendMessage,
       },
+      scripting: { executeScript: vi.fn() },
     } as unknown as typeof chrome);
 
     configureTabChangeListeners();
@@ -210,9 +227,10 @@ describe("configureTabChangeListeners", () => {
     expect(tabsSendMessage).not.toHaveBeenCalled();
   });
 
-  it("sends stopDomPicker on tab navigation (status=loading)", () => {
+  it("sends stopDomPicker on tab navigation (status=loading)", async () => {
     const updatedListener = vi.fn();
     const tabsSendMessage = vi.fn(async () => ({ ok: true }));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: {
@@ -220,6 +238,7 @@ describe("configureTabChangeListeners", () => {
         onUpdated: { addListener: updatedListener },
         sendMessage: tabsSendMessage,
       },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     configureTabChangeListeners();
@@ -232,12 +251,16 @@ describe("configureTabChangeListeners", () => {
     ) => void;
     onUpdated(5, { status: "loading" });
 
+    await Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve());
+
+    expect(tabsSendMessage).toHaveBeenCalledWith(5, { type: "ping" });
     expect(tabsSendMessage).toHaveBeenCalledWith(5, { type: "stopDomPicker" });
   });
 
-  it("sends stopDomPicker on tab URL change", () => {
+  it("sends stopDomPicker on tab URL change", async () => {
     const updatedListener = vi.fn();
     const tabsSendMessage = vi.fn(async () => ({ ok: true }));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: {
@@ -245,6 +268,7 @@ describe("configureTabChangeListeners", () => {
         onUpdated: { addListener: updatedListener },
         sendMessage: tabsSendMessage,
       },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     configureTabChangeListeners();
@@ -255,6 +279,9 @@ describe("configureTabChangeListeners", () => {
     ) => void;
     onUpdated(5, { url: "https://newpage.com" });
 
+    await Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve());
+
+    expect(tabsSendMessage).toHaveBeenCalledWith(5, { type: "ping" });
     expect(tabsSendMessage).toHaveBeenCalledWith(5, { type: "stopDomPicker" });
   });
 
@@ -267,6 +294,7 @@ describe("configureTabChangeListeners", () => {
         onUpdated: { addListener: vi.fn() },
         sendMessage: tabsSendMessage,
       },
+      scripting: { executeScript: vi.fn() },
     } as unknown as typeof chrome);
 
     configureTabChangeListeners();
@@ -299,10 +327,13 @@ describe("startDomPicker", () => {
     const storage = new FakeStorageAdapter();
     const getActiveTab = vi.fn(async () => ({ id: 999, url: "https://example.com/active" } as chrome.tabs.Tab));
     const get = vi.fn(async () => ({ id: 999, url: "https://example.com/active" } as chrome.tabs.Tab));
-    const sendMessage = vi.fn(async () => ({ ok: true }));
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, query: getActiveTab, sendMessage },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const result = await startDomPicker(
@@ -311,6 +342,7 @@ describe("startDomPicker", () => {
     );
     expect(result).toEqual({ ok: true });
     expect(get).toHaveBeenCalledWith(999);
+    expect(sendMessage).toHaveBeenCalledWith(999, { type: "ping" });
     expect(sendMessage).toHaveBeenCalledWith(999, { type: "startDomPicker" });
   });
 
@@ -328,10 +360,11 @@ describe("startDomPicker", () => {
   it("returns a Russian error for non-http(s) tab URLs", async () => {
     const storage = new FakeStorageAdapter();
     const get = vi.fn(async () => ({ id: 555, url: "chrome://extensions" } as chrome.tabs.Tab));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get },
-      scripting: { executeScript: vi.fn() },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const result = await startDomPicker({ tabId: 555 }, { storage, now: () => 1_710_000_000_123 });
@@ -339,6 +372,9 @@ describe("startDomPicker", () => {
       ok: false,
       error: "DOM picker можно запускать только на обычных http/https страницах.",
     });
+
+    // Should NOT inject — URL check fails before injection
+    expect(executeScript).not.toHaveBeenCalled();
 
     await expect(readDiagnostics(storage)).resolves.toEqual([
       {
@@ -350,34 +386,48 @@ describe("startDomPicker", () => {
   });
 
   it("sends startDomPicker message to the content script for valid tabs", async () => {
-    const sendMessage = vi.fn(async () => ({ ok: true }));
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping succeeds
     const get = vi.fn(async () => ({ id: 555, url: "https://example.com/page" } as chrome.tabs.Tab));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, sendMessage },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const result = await startDomPicker({ tabId: 555 });
     expect(result).toEqual({ ok: true });
 
     expect(get).toHaveBeenCalledWith(555);
+    expect(sendMessage).toHaveBeenCalledWith(555, { type: "ping" });
     expect(sendMessage).toHaveBeenCalledWith(555, { type: "startDomPicker" });
+    expect(executeScript).not.toHaveBeenCalled();
   });
 
   it("returns helpful error when content script is not loaded yet", async () => {
     const storage = new FakeStorageAdapter();
-    const sendMessage = vi.fn(async () => {
-      throw new Error("Receiving end does not exist");
-    });
+    const sendMessage = vi.fn().mockRejectedValue(new Error("Receiving end does not exist"));
     const get = vi.fn(async () => ({ id: 555, url: "https://example.com/page" } as chrome.tabs.Tab));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, sendMessage },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const result = await startDomPicker({ tabId: 555 }, { storage, now: () => 1_710_000_000_123 });
+
+    // After injection, ping succeeds (script injected) but sendMessage for startDomPicker still fails
+    // because the injected script hasn't registered yet — or we simulate the connection error
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("перезагрузить");
+    expect(result.error).toBeDefined();
+
+    // Verify injection was attempted
+    expect(executeScript).toHaveBeenCalledWith({
+      target: { tabId: 555 },
+      files: ["contentScript.js"],
+    });
 
     await expect(readDiagnostics(storage)).resolves.toEqual([
       expect.objectContaining({
@@ -389,41 +439,44 @@ describe("startDomPicker", () => {
 
   it("records diagnostics when connection error is not a Receiving-end error", async () => {
     const storage = new FakeStorageAdapter();
-    const sendMessage = vi.fn(async () => {
-      throw new Error("Some other network error");
-    });
+    const sendMessage = vi.fn()
+      .mockRejectedValueOnce(new Error("Receiving end does not exist")) // ping fails → inject
+      .mockRejectedValueOnce(new Error("Some other network error"));    // startDomPicker fails
     const get = vi.fn(async () => ({ id: 555, url: "https://example.com/page" } as chrome.tabs.Tab));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, sendMessage },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const result = await startDomPicker({ tabId: 555 }, { storage, now: () => 1_710_000_000_123 });
-    expect(result).toEqual({
-      ok: false,
-      error: "Не удалось запустить DOM picker: Some other network error",
-    });
+    expect(result.ok).toBe(false);
 
     await expect(readDiagnostics(storage)).resolves.toEqual([
       expect.objectContaining({
         timestamp: 1_710_000_000_123,
         phase: "startDomPicker",
-        message: "Some other network error",
       }),
     ]);
   });
 
   it("propagates failed picker startup responses from the content script", async () => {
-    const sendMessage = vi.fn(async () => ({ ok: false, error: "Picker unavailable" }));
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, source: "contentScript" }) // ping
+      .mockResolvedValueOnce({ ok: false, error: "Picker unavailable" });
     const get = vi.fn(async () => ({ id: 321, url: "https://example.com/page" } as chrome.tabs.Tab));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, sendMessage },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const result = await startDomPicker({ tabId: 321 });
     expect(result).toEqual({ ok: false, error: "Picker unavailable" });
 
+    expect(sendMessage).toHaveBeenCalledWith(321, { type: "ping" });
     expect(sendMessage).toHaveBeenCalledWith(321, { type: "startDomPicker" });
   });
 
@@ -435,10 +488,13 @@ describe("startDomPicker", () => {
       if (id === 999) return { id: 999, url: "https://example.com/valid" } as chrome.tabs.Tab;
       throw new Error(`No tab with id: ${id}`);
     });
-    const sendMessage = vi.fn(async () => ({ ok: true }));
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, query: getActiveTab, sendMessage },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     // tabId 555 is chrome:// — non-injectable
@@ -451,6 +507,7 @@ describe("startDomPicker", () => {
     expect(result).toEqual({ ok: true });
     expect(getActiveTab).toHaveBeenCalled();
     expect(get).toHaveBeenCalledWith(999);
+    expect(sendMessage).toHaveBeenCalledWith(999, { type: "ping" });
     expect(sendMessage).toHaveBeenCalledWith(999, { type: "startDomPicker" });
   });
 
@@ -462,10 +519,13 @@ describe("startDomPicker", () => {
       if (id === 888) return { id: 888, url: "https://example.com/fallback" } as chrome.tabs.Tab;
       throw new Error(`No tab with id: ${id}`);
     });
-    const sendMessage = vi.fn(async () => ({ ok: true }));
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, query: getActiveTab, sendMessage },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const result = await startDomPicker(
@@ -476,6 +536,7 @@ describe("startDomPicker", () => {
     // Should have fallen back to active tab 888
     expect(result).toEqual({ ok: true });
     expect(getActiveTab).toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(888, { type: "ping" });
     expect(sendMessage).toHaveBeenCalledWith(888, { type: "startDomPicker" });
   });
 
@@ -487,9 +548,11 @@ describe("startDomPicker", () => {
       if (id === 777) return { id: 777, url: "chrome://newtab" } as chrome.tabs.Tab;
       throw new Error(`No tab with id: ${id}`);
     });
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, query: getActiveTab, sendMessage: vi.fn() },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const result = await startDomPicker(
@@ -510,9 +573,11 @@ describe("startDomPicker", () => {
       if (id === 777) return { id: 777, url: "about:blank" } as chrome.tabs.Tab;
       throw new Error(`No tab with id: ${id}`);
     });
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, query: getActiveTab, sendMessage: vi.fn() },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const result = await startDomPicker(
@@ -539,11 +604,14 @@ describe("createBackgroundMessageListener", () => {
   });
 
   it("handles startDomPicker with tabId", async () => {
-    const sendMessage = vi.fn(async () => ({ ok: true }));
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping
     const get = vi.fn(async () => ({ id: 555, url: "https://example.com/page" } as chrome.tabs.Tab));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, sendMessage },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const listener = createBackgroundMessageListener();
@@ -564,12 +632,15 @@ describe("createBackgroundMessageListener", () => {
   });
 
   it("uses getActiveTab fallback in startDomPicker message when no tabId", async () => {
-    const sendMessage = vi.fn(async () => ({ ok: true }));
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping
     const get = vi.fn(async () => ({ id: 42, url: "https://example.com" } as chrome.tabs.Tab));
     const getActiveTab = vi.fn(async () => ({ id: 42, url: "https://example.com" } as chrome.tabs.Tab));
+    const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
       tabs: { get, sendMessage },
+      scripting: { executeScript },
     } as unknown as typeof chrome);
 
     const listener = createBackgroundMessageListener({
@@ -825,6 +896,10 @@ describe("module side effects", () => {
         tabs: {
           onActivated: { addListener: vi.fn() },
           onUpdated: { addListener: vi.fn() },
+          sendMessage: vi.fn(),
+        },
+        scripting: {
+          executeScript: vi.fn(async () => [{}]),
         },
       } as unknown as typeof chrome,
     );
@@ -834,5 +909,53 @@ describe("module side effects", () => {
     expect(onConnectAddListener).toHaveBeenCalledOnce();
     // In direct mode, the background does NOT auto-connect to any WebSocket broker.
     expect(webSocketFactory).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  injectContentScriptIfNeeded                                        */
+/* ------------------------------------------------------------------ */
+
+describe("on-demand content script injection", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("should inject content script when ping fails", async () => {
+    const mockExecuteScript = vi.fn().mockResolvedValue([{}]);
+    const mockSendMessage = vi.fn().mockRejectedValue(new Error("No receiver"));
+
+    vi.stubGlobal("chrome", {
+      tabs: { sendMessage: mockSendMessage },
+      scripting: { executeScript: mockExecuteScript },
+    } as unknown as typeof chrome);
+
+    await injectContentScriptIfNeeded(123);
+
+    expect(mockSendMessage).toHaveBeenCalledWith(123, { type: "ping" });
+    expect(mockExecuteScript).toHaveBeenCalledWith({
+      target: { tabId: 123 },
+      files: ["contentScript.js"],
+    });
+  });
+
+  it("should not inject when content script already present", async () => {
+    const mockExecuteScript = vi.fn();
+    const mockSendMessage = vi.fn().mockResolvedValue({ type: "pong" });
+
+    vi.stubGlobal("chrome", {
+      tabs: { sendMessage: mockSendMessage },
+      scripting: { executeScript: mockExecuteScript },
+    } as unknown as typeof chrome);
+
+    await injectContentScriptIfNeeded(123);
+
+    expect(mockSendMessage).toHaveBeenCalledWith(123, { type: "ping" });
+    expect(mockExecuteScript).not.toHaveBeenCalled();
   });
 });

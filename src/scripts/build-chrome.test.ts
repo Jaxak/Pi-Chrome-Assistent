@@ -58,26 +58,21 @@ describe("build:chrome", () => {
     expect(sidePanelScript).not.toContain("window.close()");
     expect(backgroundScript).toContain("startDomPicker");
     expect(backgroundScript).toContain('type: "startDomPicker"');
-    expect(backgroundScript).not.toContain("executeScript");
+    expect(backgroundScript).toContain("executeScript");
+    expect(backgroundScript).toContain("injectContentScriptIfNeeded");
     expect(contentScript).toContain("startDomPicker");
     expect(contentScript).toContain("__PI_CONTENT_SCRIPT_PLACEHOLDER_LISTENER_REGISTERED__");
   });
 
-  it("uses persistent content script with no scripting permission", async () => {
+  it("uses on-demand content script injection with scripting permission", async () => {
     await execFileAsync(process.execPath, [buildScriptPath], {
       cwd: projectRoot,
     });
 
     const manifest = JSON.parse(await readFile(path.join(chromeDistDir, "manifest.json"), "utf8"));
 
-    expect(manifest.content_scripts).toEqual([
-      {
-        matches: ["https://*/*", "http://*/*"],
-        js: ["contentScript.js"],
-        run_at: "document_idle",
-      },
-    ]);
-    expect(manifest.permissions).toEqual(expect.not.arrayContaining(["scripting"]));
+    expect(manifest.content_scripts).toBeUndefined();
+    expect(manifest.permissions).toEqual(expect.arrayContaining(["scripting"]));
   });
 
   it("allows the sidepanel page to open a persistent local broker WebSocket", async () => {

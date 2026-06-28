@@ -69,6 +69,7 @@ function createClientSocket(url: string): {
   messages: unknown[];
   waitForMessage: (filter?: (msg: unknown) => boolean) => Promise<unknown>;
   waitForOpen: () => Promise<void>;
+  waitForClose: () => Promise<{ code: number; reason: string }>;
   close: () => Promise<void>;
   onSocketClose: () => Promise<void>;
 } {
@@ -143,6 +144,26 @@ function createClientSocket(url: string): {
       }, 1000);
     });
 
+  const waitForClose = () =>
+    new Promise<{ code: number; reason: string }>((resolve, reject) => {
+      if (socket.readyState === WebSocket.CLOSED) {
+        resolve({ code: socket.closeCode ?? 0, reason: socket.closeReason ?? "" });
+        return;
+      }
+      const timer = setTimeout(
+        () => reject(new Error("WebSocket close timed out")),
+        5000,
+      );
+      socket.on("close", (code, reason) => {
+        clearTimeout(timer);
+        resolve({ code, reason: reason.toString() });
+      });
+      socket.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+
   const close = () =>
     new Promise<void>((resolve) => {
       if (socket.readyState === WebSocket.CLOSED) {
@@ -162,7 +183,7 @@ function createClientSocket(url: string): {
       socket.once("close", () => resolve());
     });
 
-  return { socket, messages, waitForMessage, waitForOpen, close, onSocketClose };
+  return { socket, messages, waitForMessage, waitForOpen, waitForClose, close, onSocketClose };
 }
 
 afterEach(() => {
@@ -1093,5 +1114,49 @@ describe("startDirectSessionServer", () => {
 
     await client.close();
     await server.close();
+  });
+
+  // ─── WebSocket maxPayload limit tests ───
+
+  it("closes connection when message exceeds 1MB maxPayload", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage: vi.fn(),
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client.waitForOpen();
+
+    // Wait for snapshot so we know connection is fully established
+    await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    // Send a message larger than 1MB (default ws limit is ~100MB)
+    const largePayload = JSON.stringify({
+      version: "1",
+      type: "session.chat.send",
+      payload: { message: "x".repeat(1_100_000) }, // ~1.1 MB
+    });
+
+    client.socket.send(largePayload);
+
+    // Connection should be closed by server with code 1009 (Message Too Big)
+    const closeInfo = await client.waitForClose();
+    expect(closeInfo.code).toBe(1009);
+
+    await server.close();
+  });
+
+  it("exports WEBSOCKET_MAX_PAYLOAD_BYTES constant equal to 1MB", async () => {
+    const { WEBSOCKET_MAX_PAYLOAD_BYTES } = await import("./sessionServer");
+    expect(WEBSOCKET_MAX_PAYLOAD_BYTES).toBe(1_048_576);
   });
 });

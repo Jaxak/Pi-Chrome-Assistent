@@ -19,6 +19,7 @@ import type { BrowserConnectLogger } from "./logging";
 
 export const DEFAULT_DIRECT_SESSION_PORT = 31_415;
 export const DIRECT_SESSION_PORT_SCAN_LIMIT = 100;
+export const WEBSOCKET_MAX_PAYLOAD_BYTES = 1_048_576; // 1 MB
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -93,6 +94,7 @@ export async function startDirectSessionServer(
   const wss = new WebSocketServer({
     host: options.host,
     port: options.port,
+    maxPayload: WEBSOCKET_MAX_PAYLOAD_BYTES,
   });
 
   return new Promise((resolve, reject) => {

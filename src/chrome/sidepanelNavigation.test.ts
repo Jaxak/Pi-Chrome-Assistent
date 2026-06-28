@@ -590,6 +590,7 @@ describe("sidepanel navigation", () => {
     runtime.port.emit({
       type: "assistant.snapshot",
       state: createConnectedState({
+        epoch: 1,
         snapshot: createDirectSnapshot({
           chat: {
             entries: [
@@ -617,6 +618,7 @@ describe("sidepanel navigation", () => {
     runtime.port.emit({
       type: "assistant.snapshot",
       state: createConnectedState({
+        epoch: 2,
         snapshot: createDirectSnapshot({
           chat: {
             entries: [

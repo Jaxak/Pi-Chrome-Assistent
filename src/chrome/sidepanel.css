@@ -173,11 +173,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .ant-input { width: 100%; min-height: 64px; resize: none; border: 1px solid var(--ant-color-border); border-radius: var(--ant-radius); outline: none; padding: 8px 11px; background: var(--ant-color-bg-container); color: var(--ant-color-text); }
 .ant-input::placeholder { color: var(--ant-color-text-tertiary); }
 .session-port-input {
-  flex: 1 1 auto;
+  flex: 0 0 80px;
   min-width: 0;
+  width: 80px;
   height: 32px;
   min-height: 32px;
-  padding: 4px 11px;
+  padding: 4px 8px;
   border: 1px solid var(--ant-color-border);
   border-radius: var(--ant-radius);
   background: var(--ant-color-bg-container);

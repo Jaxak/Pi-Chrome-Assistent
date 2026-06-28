@@ -174,13 +174,13 @@ function renderSessionConnection(elements: SidePanelElements, state: BackgroundA
 
   if (state.connection.connecting) {
     tone = "info";
-    statusText = `🔄 Подключаемся к 127.0.0.1:${port}…`;
+    statusText = `🔄 Подключаемся к ${port}…`;
   } else if (state.connection.online) {
     tone = "success";
     const sessionLabel = state.session
       ? `${state.session.alias ?? state.session.cwd.split("/").pop()} · `
       : "";
-    statusText = `✅ ${sessionLabel}Подключено к 127.0.0.1:${port}`;
+    statusText = `✅ ${sessionLabel}Подключено к ${port}`;
   } else if (state.connection.lastError) {
     tone = "error";
     statusText = `❌ ${state.connection.lastError}`;
@@ -363,7 +363,7 @@ function renderAssistantReconnecting(elements: SidePanelElements): void {
 
   if (elements.sessionHeadingStatus) {
     const port = currentSnapshot?.connection.configuredPort ?? DEFAULT_PORT;
-    elements.sessionHeadingStatus.textContent = `🔄 Переподключаемся к 127.0.0.1:${port}…`;
+    elements.sessionHeadingStatus.textContent = `🔄 Переподключаемся к ${port}…`;
     elements.sessionHeadingStatus.dataset.tone = "info";
   }
 

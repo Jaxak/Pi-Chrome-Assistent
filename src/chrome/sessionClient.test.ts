@@ -432,33 +432,44 @@ describe("SessionClient", () => {
     });
   });
 
-  it("reconnects on socket error", async () => {
+  it("does not reconnect on socket error when connection was never established", async () => {
     vi.useFakeTimers();
     try {
       const sockets = [new FakeWebSocket(), new FakeWebSocket()];
       let socketIndex = 0;
       const webSocketFactory = vi.fn(() => sockets[socketIndex++]);
       const firstSocket = sockets[0];
+      const onConnectionState = vi.fn();
       const client = new SessionClient({
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
-        onConnectionState: vi.fn(),
+        onConnectionState,
         reconnectDelaysMs: [25],
+        idleTimeoutMs: 0,
       });
 
       client.connect();
       firstSocket.emitOpen();
+      // No snapshot — everConnected stays false
       firstSocket.emitError();
       await flush();
 
       expect(firstSocket.closeCalls).toBe(1);
 
       firstSocket.emitClose();
-      await vi.advanceTimersByTimeAsync(25);
       await flush();
 
-      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+      // No reconnect should be scheduled because everConnected is false
+      await vi.advanceTimersByTimeAsync(100);
+      await flush();
+
+      expect(webSocketFactory).toHaveBeenCalledTimes(1);
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: 'Pi-сессия не найдена на порту 31415. Запустите Pi и нажмите «Подключить».',
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -466,7 +477,7 @@ describe("SessionClient", () => {
 
   // ─── Bounded backoff / retry-counter tests ───
 
-  it("bounded backoff ramps up delays across consecutive closes without snapshot", async () => {
+  it("bounded backoff ramps up delays across consecutive closes after snapshot", async () => {
     vi.useFakeTimers();
     try {
       const sockets: FakeWebSocket[] = [];
@@ -481,13 +492,16 @@ describe("SessionClient", () => {
         onSnapshot: vi.fn(),
         onConnectionState: vi.fn(),
         reconnectDelaysMs: [50, 100, 200],
+        idleTimeoutMs: 0,
       });
 
       client.connect();
       sockets[0]!.emitOpen();
-      // No snapshot — connection is "open" but not authoritative
+      // Send snapshot — everConnected = true
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
 
-      // Close #1 → should schedule reconnect at delay[0]=50
+      // Close #1 → reconnect at delay[0]=50
       sockets[0]!.emitClose();
       await flush();
 
@@ -495,9 +509,9 @@ describe("SessionClient", () => {
       await flush();
       expect(webSocketFactory).toHaveBeenCalledTimes(2);
       sockets[1]!.emitOpen();
-      // Still no snapshot
+      // No snapshot — counter keeps incrementing
 
-      // Close #2 → should schedule reconnect at delay[1]=100 (ramped up)
+      // Close #2 → reconnect at delay[1]=100 (ramped up)
       sockets[1]!.emitClose();
       await flush();
 
@@ -515,7 +529,7 @@ describe("SessionClient", () => {
     }
   });
 
-  it("reconnectAttempt is NOT reset after open without snapshot", async () => {
+  it("reconnectAttempt is NOT reset after open without snapshot but IS reset after snapshot", async () => {
     vi.useFakeTimers();
     try {
       const sockets: FakeWebSocket[] = [];
@@ -530,10 +544,16 @@ describe("SessionClient", () => {
         onSnapshot: vi.fn(),
         onConnectionState: vi.fn(),
         reconnectDelaysMs: [50, 100, 200],
+        idleTimeoutMs: 0,
       });
 
       client.connect();
       sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+      // everConnected = true, reconnectAttempt = 0
+
+      // Disconnect
       sockets[0]!.emitClose();
       await flush();
 
@@ -546,8 +566,7 @@ describe("SessionClient", () => {
       sockets[1]!.emitClose();
       await flush();
 
-      // If counter was reset to 0, next delay would be 50ms.
-      // With correct behavior (counter=1), next delay is 100ms.
+      // Counter was 0→1 after reconnect #1, now at 1, so delay = reconnectDelaysMs[1] = 100ms
       // Advance only 50ms — should NOT reconnect if counter persisted.
       await vi.advanceTimersByTimeAsync(50);
       await flush();
@@ -597,7 +616,7 @@ describe("SessionClient", () => {
     }
   });
 
-  it("reconnect after 3+ consecutive closes uses correct bounded delays", async () => {
+  it("reconnect after 3+ consecutive closes uses correct bounded delays (with max cap)", async () => {
     vi.useFakeTimers();
     try {
       const sockets: FakeWebSocket[] = [];
@@ -606,38 +625,52 @@ describe("SessionClient", () => {
         sockets.push(socket);
         return socket;
       });
+      const onConnectionState = vi.fn();
+      const delays = [10, 20, 30, 40, 50];
       const client = new SessionClient({
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
-        onConnectionState: vi.fn(),
-        reconnectDelaysMs: [50, 100, 200],
+        onConnectionState,
+        reconnectDelaysMs: delays,
+        idleTimeoutMs: 0,
       });
 
       client.connect();
+      sockets[0]!.emitOpen();
+      // Send snapshot — everConnected = true
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
 
-      // 5 consecutive close events — delays should be 50, 100, 200, 200, 200 (bounded)
-      const expectedDelays = [50, 100, 200, 200, 200];
+      // 5 consecutive close+reconnect cycles, each getting a snapshot to keep resetting counter
+      // Actually: we want to test the bounded cap of MAX_RECONNECT_ATTEMPTS
+      // Close 5 times without snapshots → should hit the cap
+      sockets[0]!.emitClose();
+      await flush();
+
+      // Reconnect attempts: 0→1 (delay[0]=10), 1→2 (delay[1]=20), 2→3 (delay[2]=30), 3→4 (delay[3]=40), 4→5 (delay[4]=50)
+      // After 5th attempt (reconnectAttempt=5 >= MAX_RECONNECT_ATTEMPTS), no more reconnect
       for (let i = 0; i < 5; i++) {
-        sockets[i]!.emitOpen();
-        // No snapshot — counter keeps incrementing
-        sockets[i]!.emitClose();
-        await flush();
-
-        // Before the expected delay, no reconnect should happen
-        const partialDelay = expectedDelays[i]! - 1;
-        if (partialDelay > 0) {
-          await vi.advanceTimersByTimeAsync(partialDelay);
-          await flush();
-          // Still i+1 sockets (the initial connect + i reconnects so far)
-          expect(webSocketFactory).toHaveBeenCalledTimes(i + 1);
-        }
-
-        // Now advance the remaining time to trigger the reconnect
-        await vi.advanceTimersByTimeAsync(1);
+        const expectedDelay = delays[i]!;
+        await vi.advanceTimersByTimeAsync(expectedDelay);
         await flush();
         expect(webSocketFactory).toHaveBeenCalledTimes(i + 2);
+        sockets[i + 1]!.emitOpen();
+        // No snapshot — everConnected stays true but counter increments
+        sockets[i + 1]!.emitClose();
+        await flush();
       }
+
+      // After 5th reconnect attempt, reconnectAttempt = 5 >= MAX_RECONNECT_ATTEMPTS
+      // No 6th reconnect should happen
+      await vi.advanceTimersByTimeAsync(100);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(6);
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: 'Соединение с Pi потеряно. Нажмите «Подключить» для восстановления.',
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -819,7 +852,7 @@ describe("SessionClient", () => {
 
   // ─── Reconnect persistence tests ───
 
-  it("keeps reconnecting after many consecutive close events", async () => {
+  it("stops reconnecting after MAX_RECONNECT_ATTEMPTS (no snapshot on reconnects)", async () => {
     vi.useFakeTimers();
     try {
       const sockets: FakeWebSocket[] = [];
@@ -829,31 +862,43 @@ describe("SessionClient", () => {
         return socket;
       });
       const onConnectionState = vi.fn();
+      const delays = [10, 20, 30, 40, 50];
       const client = new SessionClient({
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
         onConnectionState,
-        reconnectDelaysMs: [50, 100, 200],
+        reconnectDelaysMs: delays,
+        idleTimeoutMs: 0,
       });
 
       client.connect();
-
-      // First connect
       sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
       await flush();
-      // Close 5 times — should keep reconnecting past the 3-element delay array
+
+      // Close 5 times — should trigger up to 5 reconnects then stop
+      sockets[0]!.emitClose();
+      await flush();
+
       for (let i = 0; i < 5; i++) {
-        sockets[i]!.emitClose();
+        await vi.advanceTimersByTimeAsync(delays[i]!);
         await flush();
-        // Advance timer — each reconnect uses bounded delay
-        const delay = i < 3 ? [50, 100, 200][i]! : 200;
-        await vi.advanceTimersByTimeAsync(delay);
+        expect(webSocketFactory).toHaveBeenCalledTimes(i + 2);
+        sockets[i + 1]!.emitOpen();
+        sockets[i + 1]!.emitClose();
         await flush();
       }
 
-      // After 5 close events, we should have created 6 sockets (1 initial + 5 reconnects)
+      // No more reconnects after 5th attempt
+      await vi.advanceTimersByTimeAsync(200);
+      await flush();
       expect(webSocketFactory).toHaveBeenCalledTimes(6);
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: 'Соединение с Pi потеряно. Нажмите «Подключить» для восстановления.',
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -916,7 +961,7 @@ describe("SessionClient", () => {
     }
   });
 
-  it("reconnects to the new port after reconnectToPort when socket closes", async () => {
+  it("reconnects to the new port after reconnectToPort when socket closes (with snapshot)", async () => {
     vi.useFakeTimers();
     try {
       const sockets = [new FakeWebSocket(), new FakeWebSocket(), new FakeWebSocket()];
@@ -932,6 +977,7 @@ describe("SessionClient", () => {
         onSnapshot: vi.fn(),
         onConnectionState: vi.fn(),
         reconnectDelaysMs: [50],
+        idleTimeoutMs: 0,
       });
 
       // Initial connect to 31415
@@ -943,6 +989,8 @@ describe("SessionClient", () => {
       // Reconnect to new port 31416
       client.reconnectToPort(31416);
       sockets[1].emitOpen();
+      // Must send snapshot on the NEW port's socket to set everConnected=true
+      sockets[1].emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
       await flush();
       expect(urlsCalled[1]).toBe("ws://127.0.0.1:31416");
 
@@ -955,6 +1003,280 @@ describe("SessionClient", () => {
 
       // The reconnection must go to 31416, NOT back to the original 31415
       expect(urlsCalled[2]).toBe("ws://127.0.0.1:31416");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ─── everConnected / no-auto-reconnect tests ───
+
+  it("does not reconnect when connection was never established", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const onConnectionState = vi.fn();
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState,
+        reconnectDelaysMs: [50],
+        idleTimeoutMs: 0,
+      });
+
+      client.connect();
+      sockets[0]!.emitOpen();
+      // No snapshot — everConnected stays false
+      sockets[0]!.emitClose();
+      await flush();
+
+      // No reconnect timer should be scheduled
+      await vi.advanceTimersByTimeAsync(200);
+      await flush();
+
+      expect(webSocketFactory).toHaveBeenCalledTimes(1);
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: 'Pi-сессия не найдена на порту 31415. Запустите Pi и нажмите «Подключить».',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ─── Idle timeout tests ───
+
+  it("idle timeout closes connection after inactivity", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const onConnectionState = vi.fn();
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState,
+        reconnectDelaysMs: [50],
+        idleTimeoutMs: 5000,
+      });
+
+      client.connect();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+
+      // Advance to just before idle timeout — should still be connected
+      await vi.advanceTimersByTimeAsync(4999);
+      await flush();
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+
+      // Advance past idle timeout — connection should close
+      await vi.advanceTimersByTimeAsync(2);
+      await flush();
+
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: 'Сессия неактивна. Нажмите «Подключить» для восстановления.',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("idle timer resets on incoming session.event", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const onConnectionState = vi.fn();
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState,
+        reconnectDelaysMs: [50],
+        idleTimeoutMs: 5000,
+      });
+
+      client.connect();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+
+      // Advance 3000ms, then send a session.event — should reset idle timer
+      await vi.advanceTimersByTimeAsync(3000);
+      await flush();
+      const mirrorEvent: PiMirrorEvent = { type: "turn_start", turnId: "t1" };
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.event", payload: mirrorEvent });
+      await flush();
+
+      // Still connected — idle timer was reset
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+
+      // Advance 4999ms from the session.event — still connected
+      await vi.advanceTimersByTimeAsync(4999);
+      await flush();
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+
+      // Advance past idle timeout from session.event — should disconnect
+      await vi.advanceTimersByTimeAsync(2);
+      await flush();
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: 'Сессия неактивна. Нажмите «Подключить» для восстановления.',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("idle timer resets on incoming session.command.result", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const onConnectionState = vi.fn();
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState,
+        reconnectDelaysMs: [50],
+        idleTimeoutMs: 5000,
+      });
+
+      client.connect();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+
+      // Advance 4000ms, then send a command result — should reset idle timer
+      await vi.advanceTimersByTimeAsync(4000);
+      await flush();
+      sockets[0]!.emitMessage({
+        version: PROTOCOL_VERSION,
+        type: "session.command.result",
+        requestId: "req-1",
+        payload: { ok: true },
+      });
+      await flush();
+
+      // Advance 4999ms from command result — still connected
+      await vi.advanceTimersByTimeAsync(4999);
+      await flush();
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+
+      // Advance past idle timeout
+      await vi.advanceTimersByTimeAsync(2);
+      await flush();
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: 'Сессия неактивна. Нажмите «Подключить» для восстановления.',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("connect() resets everConnected and allows fresh connection attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      const webSocketFactory = vi.fn(() => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const onConnectionState = vi.fn();
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState,
+        reconnectDelaysMs: [50],
+        idleTimeoutMs: 0,
+      });
+
+      // First connect — fails (no snapshot)
+      client.connect();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitClose();
+      await flush();
+
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: 'Pi-сессия не найдена на порту 31415. Запустите Pi и нажмите «Подключить».',
+      });
+
+      // No reconnect happened
+      await vi.advanceTimersByTimeAsync(100);
+      await flush();
+      expect(webSocketFactory).toHaveBeenCalledTimes(1);
+
+      // Second connect() — should try again (everConnected reset)
+      client.connect();
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: true,
+        statusText: "Подключаемся к Pi-сессии…",
+      });
+
+      // This time Pi is available — send snapshot
+      sockets[1]!.emitOpen();
+      sockets[1]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
     } finally {
       vi.useRealTimers();
     }

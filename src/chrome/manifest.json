@@ -10,7 +10,7 @@
     "128": "icon128.png"
   },
   "permissions": ["activeTab", "storage", "sidePanel", "tabs"],
-  "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*", "<all_urls>"],
+  "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*"],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*"
   },

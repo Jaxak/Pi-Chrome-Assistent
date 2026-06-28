@@ -423,10 +423,12 @@ export class BackgroundAssistantStateServer {
     try {
       const savedPort = await this.storage.get<number>(SESSION_PORT_STORAGE_KEY);
       if (typeof savedPort === "number" && Number.isInteger(savedPort) && savedPort >= 1 && savedPort <= 65535) {
-        // Avoid duplicate connection if a session client already exists
-        if (this.sessionClient === undefined) {
-          this.handleSessionConnect(savedPort);
-        }
+        // Only restore the port value in UI — do NOT auto-connect.
+        // The user must click «Подключить» to establish a connection.
+        this.applyState({
+          kind: "connection_updated",
+          connection: { configuredPort: savedPort },
+        });
       }
     } catch {
       // Best-effort

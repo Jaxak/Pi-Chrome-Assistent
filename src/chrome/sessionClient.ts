@@ -38,11 +38,14 @@ export type SessionClientOptions = {
   onCommandResult?(result: { requestId: string; result: DirectCommandResult }): void;
   onSessionEvent?(event: PiMirrorEvent): void;
   reconnectDelaysMs?: number[];
+  idleTimeoutMs?: number;
 };
 
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
-const DEFAULT_RECONNECT_DELAYS_MS = [250, 500, 1_000];
+const DEFAULT_RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 3_000, 5_000];
+const MAX_RECONNECT_ATTEMPTS = 5;
+const DEFAULT_IDLE_TIMEOUT_MS = 60 * 60 * 1_000; // 60 минут
 
 function createBrowserWebSocket(url: string): SessionSocket {
   return new WebSocket(url) as unknown as SessionSocket;
@@ -87,9 +90,12 @@ export class SessionClient {
   private readonly onSessionEvent?: (event: PiMirrorEvent) => void;
   private socket: SessionSocket | undefined;
   private closedByClient = false;
+  private everConnected = false;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private lastReportedState: SessionConnectionState | undefined;
+  private readonly idleTimeoutMs: number;
 
   constructor(options: SessionClientOptions) {
     this.port = options.port;
@@ -100,17 +106,24 @@ export class SessionClient {
     this.onConnectionState = options.onConnectionState;
     this.onCommandResult = options.onCommandResult;
     this.onSessionEvent = options.onSessionEvent;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   }
 
   connect(): void {
     this.closedByClient = false;
+    this.everConnected = false;
+    this.reconnectAttempt = 0;
     this.clearReconnectTimer();
+    this.clearIdleTimer();
     this.doConnect(this.port);
   }
 
   reconnectToPort(port: number): void {
     this.port = port;
+    this.everConnected = false;
+    this.reconnectAttempt = 0;
     this.clearReconnectTimer();
+    this.clearIdleTimer();
     this.closedByClient = false;
 
     const currentSocket = this.socket;
@@ -172,7 +185,9 @@ export class SessionClient {
 
   close(): void {
     this.closedByClient = true;
+    this.everConnected = false;
     this.clearReconnectTimer();
+    this.clearIdleTimer();
 
     if (this.socket && (this.socket.readyState === SOCKET_CONNECTING || this.socket.readyState === SOCKET_OPEN)) {
       this.socket.close();
@@ -232,6 +247,8 @@ export class SessionClient {
       case "session.snapshot": {
         if (isDirectSessionSnapshot(envelope.payload)) {
           this.reconnectAttempt = 0;
+          this.everConnected = true;
+          this.resetIdleTimer();
           this.onSnapshot(envelope.payload);
           this.reportState(true, false, "Подключено к Pi-сессии");
         }
@@ -246,6 +263,7 @@ export class SessionClient {
       }
 
       case "session.command.result": {
+        this.resetIdleTimer();
         const payload = envelope.payload as { ok?: unknown; error?: unknown } | undefined;
         const result: DirectCommandResult = {
           ok: payload?.ok === true,
@@ -259,6 +277,7 @@ export class SessionClient {
       }
 
       case "session.event": {
+        this.resetIdleTimer();
         this.onSessionEvent?.(envelope.payload as PiMirrorEvent);
         return;
       }
@@ -278,7 +297,18 @@ export class SessionClient {
   }
 
   private scheduleReconnect(): void {
-    // Bounded infinite retry: after ramp-up stays at last delay
+    // No reconnect if we never connected successfully
+    if (!this.everConnected) {
+      this.reportState(false, false, `Pi-сессия не найдена на порту ${this.port}. Запустите Pi и нажмите «Подключить».`);
+      return;
+    }
+
+    // No more reconnect attempts allowed
+    if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      this.reportState(false, false, 'Соединение с Pi потеряно. Нажмите «Подключить» для восстановления.');
+      return;
+    }
+
     const delay = this.reconnectDelaysMs[Math.min(this.reconnectAttempt, this.reconnectDelaysMs.length - 1)];
     this.reconnectAttempt += 1;
 
@@ -293,6 +323,24 @@ export class SessionClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer !== undefined) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+  }
+
+  private resetIdleTimer(): void {
+    this.clearIdleTimer();
+    if (this.idleTimeoutMs <= 0) return;
+    this.idleTimer = setTimeout(() => {
+      if (!this.closedByClient) {
+        this.reportState(false, false, 'Сессия неактивна. Нажмите «Подключить» для восстановления.');
+        this.close();
+      }
+    }, this.idleTimeoutMs);
   }
 
   private reportState(online: boolean, connecting: boolean, statusText: string): void {

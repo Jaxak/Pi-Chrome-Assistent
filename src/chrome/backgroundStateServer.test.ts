@@ -626,7 +626,7 @@ describe("BackgroundAssistantStateServer", () => {
     expect("browserAuthorized" in snapshot.connection).toBe(false);
   });
 
-  it("auto-restores saved session port on first port connect — creates SessionClient", async () => {
+  it("auto-restores saved session port on first port connect — updates configuredPort only, no auto-connect", async () => {
     const { server, storage, sessionClients } = createServer();
     const port = new FakePort();
 
@@ -637,15 +637,13 @@ describe("BackgroundAssistantStateServer", () => {
     server.connectPort(port);
     await flushAsyncWork();
 
-    // A SessionClient should have been created for the saved port
-    expect(sessionClients).toHaveLength(1);
-    expect(sessionClients[0]?.port).toBe(31416);
-    expect(sessionClients[0]?.connect).toHaveBeenCalledTimes(1);
+    // No SessionClient should be created — the user must click «Подключить»
+    expect(sessionClients).toHaveLength(0);
 
-    // Connection state should reflect the restored port
+    // But the configuredPort should be restored in UI
     const snapshot = server.getSnapshot();
     expect(snapshot.connection.configuredPort).toBe(31416);
-    expect(snapshot.connection.connecting).toBe(true);
+    expect(snapshot.connection.connecting).toBe(false);
   });
 
   it("does NOT auto-connect when no saved port in storage", async () => {
@@ -679,6 +677,8 @@ describe("BackgroundAssistantStateServer", () => {
 
     expect(sessionClients).toHaveLength(0);
     expect(server.getSnapshot().connection.connecting).toBe(false);
+    // configuredPort stays at default
+    expect(server.getSnapshot().connection.configuredPort).toBe(31415);
   });
 
   // ─── Task 1: Additional restore/reconnect tests ───
@@ -704,7 +704,7 @@ describe("BackgroundAssistantStateServer", () => {
     expect(server.getSnapshot().connection.configuredPort).toBe(31415);
   });
 
-  it("restored SessionClient can go online after saved-port reconnect", async () => {
+  it("restored saved port requires explicit connect command to create SessionClient", async () => {
     const { server, storage, sessionClients } = createServer();
     const port = new FakePort();
 
@@ -715,10 +715,21 @@ describe("BackgroundAssistantStateServer", () => {
     server.connectPort(port);
     await flushAsyncWork();
 
-    // SessionClient created for saved port
-    expect(sessionClients).toHaveLength(1);
+    // No SessionClient created yet — only configuredPort was restored
+    expect(sessionClients).toHaveLength(0);
+    expect(server.getSnapshot().connection.configuredPort).toBe(31416);
+    expect(server.getSnapshot().connection.connecting).toBe(false);
 
-    // Simulate the restored client going online
+    // User clicks «Подключить» → explicit connect command
+    port.emitMessage({ type: "assistant.session.connect", port: 31416 });
+    await flushAsyncWork();
+
+    // Now SessionClient is created and connects
+    expect(sessionClients).toHaveLength(1);
+    expect(sessionClients[0]?.port).toBe(31416);
+    expect(sessionClients[0]?.connect).toHaveBeenCalledTimes(1);
+
+    // Simulate successful connection
     sessionClients[0]?.emitConnectionState({
       online: true,
       connecting: false,
@@ -727,7 +738,6 @@ describe("BackgroundAssistantStateServer", () => {
 
     expect(server.getSnapshot().connection.online).toBe(true);
     expect(server.getSnapshot().connection.configuredPort).toBe(31416);
-    expect(server.getSnapshot().connection.connecting).toBe(false);
   });
 
   it("stop() closes session client and clears it", async () => {

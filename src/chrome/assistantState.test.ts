@@ -760,4 +760,23 @@ describe("assistantState", () => {
       expect("auth" in state).toBe(false);
     });
   });
+
+  describe("message limit", () => {
+    it("should keep only last 500 messages in chat", () => {
+      let state = createInitialAssistantState();
+
+      // Add 600 messages via chat_event
+      for (let i = 0; i < 600; i++) {
+        state = reduceAssistantState(state, {
+          kind: "chat_event",
+          event: { kind: "user_message", text: `Msg ${i}`, timestamp: i },
+        });
+      }
+
+      expect(state.chat.messages.length).toBe(500);
+      // Should keep the latest messages
+      expect((state.chat.messages[0] as { text: string }).text).toBe("Msg 100");
+      expect((state.chat.messages[499] as { text: string }).text).toBe("Msg 599");
+    });
+  });
 });

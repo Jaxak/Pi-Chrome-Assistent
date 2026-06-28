@@ -1,6 +1,7 @@
 import type { PiMirrorEvent, SessionEntryLike } from "../shared/protocol";
 
 const DEFAULT_BUSY_LABEL = "Агент работает в фоне…";
+const MAX_CHAT_MESSAGES = 500;
 
 export type SidepanelChatMessage =
   | { role: "user"; text: string; timestamp: number }
@@ -34,6 +35,16 @@ export function createInitialSidePanelState(): SidePanelState {
   };
 }
 
+/**
+ * Trim message array to keep only the last MAX_CHAT_MESSAGES entries.
+ */
+function trimMessages(messages: SidepanelChatMessage[]): SidepanelChatMessage[] {
+  if (messages.length <= MAX_CHAT_MESSAGES) {
+    return messages;
+  }
+  return messages.slice(-MAX_CHAT_MESSAGES);
+}
+
 export function startSendingUserMessage(
   state: SidePanelState,
   message: string,
@@ -47,14 +58,14 @@ export function startSendingUserMessage(
 
   return {
     ...state,
-    messages: [
+    messages: trimMessages([
       ...state.messages,
       {
         role: "user",
         text,
         timestamp,
       },
-    ],
+    ]),
     agentBusy: true,
     busyLabel: DEFAULT_BUSY_LABEL,
     sending: true,
@@ -78,7 +89,7 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
     case "assistant_message_start":
       return {
         ...state,
-        messages: [
+        messages: trimMessages([
           ...state.messages,
           {
             role: "assistant",
@@ -87,7 +98,7 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
             streaming: true,
             timestamp: event.timestamp,
           },
-        ],
+        ]),
         agentBusy: true,
         busyLabel: DEFAULT_BUSY_LABEL,
         sending: false,
@@ -129,7 +140,7 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
     case "error":
       return {
         ...state,
-        messages: [
+        messages: trimMessages([
           ...state.messages,
           {
             role: "system",
@@ -137,7 +148,7 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
             tone: "error",
             timestamp: event.timestamp,
           },
-        ],
+        ]),
         agentBusy: false,
         sending: false,
         error: event.message,
@@ -223,7 +234,7 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
       }
       return {
         ...state,
-        messages: [
+        messages: trimMessages([
           ...state.messages,
           {
             role: "assistant",
@@ -232,7 +243,7 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
             streaming: true,
             timestamp: now,
           },
-        ],
+        ]),
         agentBusy: true,
         busyLabel: DEFAULT_BUSY_LABEL,
         sending: false,
@@ -273,7 +284,7 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
         const now = Date.now();
         return {
           ...state,
-          messages: [
+          messages: trimMessages([
             ...state.messages,
             {
               role: "assistant",
@@ -282,7 +293,7 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
               streaming: true,
               timestamp: now,
             },
-          ],
+          ]),
           agentBusy: true,
           busyLabel: DEFAULT_BUSY_LABEL,
           sending: false,

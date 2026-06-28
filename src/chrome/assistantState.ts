@@ -9,6 +9,17 @@ import {
 } from "./sidepanelState";
 
 const DEFAULT_DIRECT_SESSION_PORT = 31415;
+const MAX_CHAT_MESSAGES = 500;
+
+/**
+ * Trim message array to keep only the last MAX_CHAT_MESSAGES entries.
+ */
+function trimMessages(messages: SidepanelChatMessage[]): SidepanelChatMessage[] {
+  if (messages.length <= MAX_CHAT_MESSAGES) {
+    return messages;
+  }
+  return messages.slice(-MAX_CHAT_MESSAGES);
+}
 
 export type BackgroundAssistantState = {
   epoch: number;
@@ -340,7 +351,7 @@ function applySessionSnapshot(
       modelError: undefined,
     },
     chat: {
-      messages: mergedMessages,
+      messages: trimMessages(mergedMessages),
       agentBusy: snapshot.chat.agentBusy,
       busyLabel: snapshot.chat.busyLabel || state.chat.busyLabel,
       // Keep sending=true only if we preserved pending user messages (not streaming assistant)

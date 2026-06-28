@@ -141,6 +141,22 @@ describe("sidepanelState", () => {
   });
 });
 
+describe("message limit", () => {
+  it("should keep only last 500 messages", () => {
+    let state = createInitialSidePanelState();
+
+    // Add 600 user messages
+    for (let i = 0; i < 600; i++) {
+      state = startSendingUserMessage(state, `Message ${i}`, i);
+    }
+
+    expect(state.messages.length).toBe(500);
+    // Should keep the latest messages
+    expect((state.messages[0] as { text: string }).text).toBe("Message 100");
+    expect((state.messages[499] as { text: string }).text).toBe("Message 599");
+  });
+});
+
 describe("hydrateMessagesFromEntries", () => {
   it("hydrates user and assistant messages from entries", () => {
     const entries: SessionEntryLike[] = [

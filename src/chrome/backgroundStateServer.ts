@@ -1,4 +1,4 @@
-import type { ChatEvent, DirectSessionSnapshot, SelectionPayload } from "../shared/protocol";
+import type { ChatEvent, DirectSessionSnapshot, PiMirrorEvent, SelectionPayload } from "../shared/protocol";
 import {
   createInitialAssistantState,
   isChatSendDisabled,
@@ -54,6 +54,7 @@ export type BackgroundStateServerSessionClientOptions = {
   port: number;
   onSnapshot?: (snapshot: DirectSessionSnapshot) => void;
   onConnectionState?: (state: SessionConnectionState) => void;
+  onSessionEvent?: (event: PiMirrorEvent) => void;
 };
 
 export type BackgroundAssistantStateServerDependencies = {
@@ -88,6 +89,7 @@ export class BackgroundAssistantStateServer {
       port: options.port,
       onSnapshot: options.onSnapshot ?? (() => {}),
       onConnectionState: options.onConnectionState ?? (() => {}),
+      onSessionEvent: options.onSessionEvent,
     }));
     this.recordDiagnosticEntry = dependencies.recordDiagnostic ?? (async (diagnostic) => {
       await appendDiagnostic(this.storage, diagnostic);
@@ -234,6 +236,9 @@ export class BackgroundAssistantStateServer {
       },
       onConnectionState: (connectionState) => {
         this.applyConnectionState(connectionState);
+      },
+      onSessionEvent: (event) => {
+        this.applyState({ kind: "session.event", event });
       },
     });
 

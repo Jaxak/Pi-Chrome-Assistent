@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ChatEvent, DirectSessionSnapshot, SelectionPayload } from "../shared/protocol";
+import type { DirectSessionSnapshot, PiMirrorEvent, SelectionPayload } from "../shared/protocol";
 import type { SessionConnectionState } from "./sessionClient";
 import {
   BackgroundAssistantStateServer,
@@ -87,6 +87,7 @@ type FakeSessionClientOptions = {
   port?: number;
   onSnapshot?: (snapshot: DirectSessionSnapshot) => void;
   onConnectionState?: (state: SessionConnectionState) => void;
+  onSessionEvent?: (event: PiMirrorEvent) => void;
 };
 
 class FakeSessionClient {
@@ -121,6 +122,10 @@ class FakeSessionClient {
 
   emitConnectionState(state: SessionConnectionState): void {
     this.options.onConnectionState?.(state);
+  }
+
+  emitSessionEvent(event: PiMirrorEvent): void {
+    this.options.onSessionEvent?.(event);
   }
 }
 
@@ -813,5 +818,353 @@ describe("BackgroundAssistantStateServer", () => {
 
     const result = server.sendSelection(selection);
     expect(result.ok).toBe(false);
+  });
+
+  // ─── Task 7: snapshot + live event mirror flow tests ───
+
+  it("onSnapshot hydrates full history from entries (Task 7)", async () => {
+    const { server, sessionClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+    await flushAsyncWork();
+
+    const snapshot = createSnapshot({
+      chat: {
+        entries: [
+          {
+            type: "message" as const,
+            id: "e1",
+            timestamp: "2025-01-01T00:00:00Z",
+            message: {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: "Вопрос 1" }],
+            },
+          },
+          {
+            type: "message" as const,
+            id: "e2",
+            timestamp: "2025-01-01T00:00:01Z",
+            message: {
+              role: "assistant" as const,
+              id: "msg-a",
+              content: [{ type: "text" as const, text: "Ответ 1" }],
+            },
+          },
+          {
+            type: "message" as const,
+            id: "e3",
+            timestamp: "2025-01-01T00:00:02Z",
+            message: {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: "Вопрос 2" }],
+            },
+          },
+          {
+            type: "message" as const,
+            id: "e4",
+            timestamp: "2025-01-01T00:00:03Z",
+            message: {
+              role: "assistant" as const,
+              id: "msg-b",
+              content: [{ type: "text" as const, text: "Ответ 2" }],
+            },
+          },
+        ],
+        agentBusy: false,
+        busyLabel: "Агент работает в фоне…",
+      },
+    });
+
+    sessionClients[0]?.emitSnapshot(snapshot);
+
+    const state = server.getSnapshot();
+    expect(state.chat.messages).toHaveLength(4);
+    expect(state.chat.messages[0]).toMatchObject({ role: "user", text: "Вопрос 1" });
+    expect(state.chat.messages[1]).toMatchObject({ role: "assistant", messageId: "msg-a", text: "Ответ 1", streaming: false });
+    expect(state.chat.messages[2]).toMatchObject({ role: "user", text: "Вопрос 2" });
+    expect(state.chat.messages[3]).toMatchObject({ role: "assistant", messageId: "msg-b", text: "Ответ 2", streaming: false });
+  });
+
+  it("onSessionEvent(message_update) updates currently visible assistant response (Task 7)", async () => {
+    const { server, sessionClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    // Connect and establish session
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+    await flushAsyncWork();
+
+    // First hydrate with snapshot that has a message
+    server.applySessionSnapshot(createSnapshot({
+      chat: {
+        entries: [
+          {
+            type: "message" as const,
+            id: "e1",
+            timestamp: "2025-01-01T00:00:00Z",
+            message: {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: "Привет" }],
+            },
+          },
+        ],
+        agentBusy: true,
+        busyLabel: "Агент работает в фоне…",
+      },
+    }));
+
+    // Now emit a live session.event with message_start
+    sessionClients[0]?.emitSessionEvent({
+      type: "message_start",
+      message: { id: "live-1", role: "assistant" },
+    });
+
+    const afterStart = server.getSnapshot();
+    expect(afterStart.chat.messages).toHaveLength(2); // user + new assistant
+    const liveMsg = afterStart.chat.messages[1];
+    expect(liveMsg.role).toBe("assistant");
+    if (liveMsg.role === "assistant") {
+      expect(liveMsg.messageId).toBe("live-1");
+      expect(liveMsg.text).toBe("");
+      expect(liveMsg.streaming).toBe(true);
+    }
+
+    // Now emit a message_update with text_delta
+    sessionClients[0]?.emitSessionEvent({
+      type: "message_update",
+      message: { id: "live-1", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "Привет, " },
+    });
+
+    const afterUpdate = server.getSnapshot();
+    const updatedMsg = afterUpdate.chat.messages.find(
+      (m) => m.role === "assistant" && m.messageId === "live-1",
+    );
+    expect(updatedMsg).toBeDefined();
+    if (updatedMsg?.role === "assistant") {
+      expect(updatedMsg.text).toBe("Привет, ");
+      expect(updatedMsg.streaming).toBe(true);
+    }
+
+    // Emit another delta
+    sessionClients[0]?.emitSessionEvent({
+      type: "message_update",
+      message: { id: "live-1", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "как дела?" },
+    });
+
+    const afterSecond = server.getSnapshot();
+    const finalMsg = afterSecond.chat.messages.find(
+      (m) => m.role === "assistant" && m.messageId === "live-1",
+    );
+    if (finalMsg?.role === "assistant") {
+      expect(finalMsg.text).toBe("Привет, как дела?");
+    }
+  });
+
+  it("reconnect does not require /reload to see new live messages (Task 7)", async () => {
+    const { server, sessionClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    // Connect session
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+    await flushAsyncWork();
+
+    // Initial snapshot with one entry
+    const initialSnapshot = createSnapshot({
+      chat: {
+        entries: [
+          {
+            type: "message" as const,
+            id: "e1",
+            timestamp: "2025-01-01T00:00:00Z",
+            message: {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: "Привет" }],
+            },
+          },
+          {
+            type: "message" as const,
+            id: "e2",
+            timestamp: "2025-01-01T00:00:01Z",
+            message: {
+              role: "assistant" as const,
+              id: "msg-1",
+              content: [{ type: "text" as const, text: "Привет!" }],
+            },
+          },
+        ],
+        agentBusy: false,
+        busyLabel: "Агент работает в фоне…",
+      },
+    });
+    server.applySessionSnapshot(initialSnapshot);
+
+    // Live event streams a new message
+    sessionClients[0]?.emitSessionEvent({
+      type: "message_start",
+      message: { id: "live-new", role: "assistant" },
+    });
+    sessionClients[0]?.emitSessionEvent({
+      type: "message_update",
+      message: { id: "live-new", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "Новое сообщение" },
+    });
+
+    let state = server.getSnapshot();
+    const liveMsgAfterStream = state.chat.messages.find(
+      (m) => m.role === "assistant" && m.messageId === "live-new",
+    );
+    expect(liveMsgAfterStream).toBeDefined();
+    if (liveMsgAfterStream?.role === "assistant") {
+      expect(liveMsgAfterStream.text).toBe("Новое сообщение");
+    }
+
+    // Simulate reconnect: new snapshot with all entries including the new one
+    const reconnectSnapshot = createSnapshot({
+      chat: {
+        entries: [
+          {
+            type: "message" as const,
+            id: "e1",
+            timestamp: "2025-01-01T00:00:00Z",
+            message: {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: "Привет" }],
+            },
+          },
+          {
+            type: "message" as const,
+            id: "e2",
+            timestamp: "2025-01-01T00:00:01Z",
+            message: {
+              role: "assistant" as const,
+              id: "msg-1",
+              content: [{ type: "text" as const, text: "Привет!" }],
+            },
+          },
+          {
+            type: "message" as const,
+            id: "e3",
+            timestamp: "2025-01-01T00:00:04Z",
+            message: {
+              role: "assistant" as const,
+              id: "live-new",
+              content: [{ type: "text" as const, text: "Новое сообщение" }],
+            },
+          },
+        ],
+        agentBusy: false,
+        busyLabel: "Агент работает в фоне…",
+      },
+    });
+    server.applySessionSnapshot(reconnectSnapshot);
+
+    state = server.getSnapshot();
+    // All 3 messages present after reconnect snapshot
+    expect(state.chat.messages).toHaveLength(3);
+    expect(state.chat.messages.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "assistant",
+    ]);
+    const reconnectedLive = state.chat.messages.find(
+      (m) => m.role === "assistant" && m.messageId === "live-new",
+    );
+    expect(reconnectedLive).toBeDefined();
+    if (reconnectedLive?.role === "assistant") {
+      expect(reconnectedLive.text).toBe("Новое сообщение");
+    }
+  });
+
+  it("opening a new sidepanel port receives already-current mirrored state (Task 7)", async () => {
+    const { server, sessionClients } = createServer();
+    const portA = new FakePort();
+
+    await server.start();
+    server.connectPort(portA);
+
+    // Connect session via port A
+    portA.emitMessage({ type: "assistant.session.connect", port: 31415 });
+    await flushAsyncWork();
+
+    // Snapshot hydrates history
+    server.applySessionSnapshot(createSnapshot({
+      chat: {
+        entries: [
+          {
+            type: "message" as const,
+            id: "e1",
+            timestamp: "2025-01-01T00:00:00Z",
+            message: {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: "Привет" }],
+            },
+          },
+          {
+            type: "message" as const,
+            id: "e2",
+            timestamp: "2025-01-01T00:00:01Z",
+            message: {
+              role: "assistant" as const,
+              id: "msg-1",
+              content: [{ type: "text" as const, text: "Привет!" }],
+            },
+          },
+        ],
+        agentBusy: false,
+        busyLabel: "Агент работает в фоне…",
+      },
+    }));
+
+    // Live event streams a delta
+    sessionClients[0]?.emitSessionEvent({
+      type: "message_start",
+      message: { id: "live-x", role: "assistant" },
+    });
+    sessionClients[0]?.emitSessionEvent({
+      type: "message_update",
+      message: { id: "live-x", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "Стриминг..." },
+    });
+
+    // NOW connect a second sidepanel port
+    const portB = new FakePort();
+    server.connectPort(portB);
+
+    // portB should have received a snapshot with the current full state
+    const portBSnapshot = portB.postedMessages[0] as {
+      type?: string;
+      state?: ReturnType<typeof server.getSnapshot>;
+    };
+    expect(portBSnapshot.type).toBe("assistant.snapshot");
+
+    const portBState = portBSnapshot.state;
+    expect(portBState).toBeDefined();
+    if (!portBState) {
+      throw new Error("Ожидался assistant.snapshot state для нового sidepanel port");
+    }
+    // Should include both snapshot messages + live-streamed message
+    expect(portBState.chat.messages).toHaveLength(3);
+    expect(portBState.chat.messages.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "assistant",
+    ]);
+    const liveMsg = portBState.chat.messages.find(
+      (m) => m.role === "assistant" && m.messageId === "live-x",
+    );
+    expect(liveMsg).toBeDefined();
+    if (liveMsg?.role === "assistant") {
+      expect(liveMsg.text).toBe("Стриминг...");
+    }
   });
 });

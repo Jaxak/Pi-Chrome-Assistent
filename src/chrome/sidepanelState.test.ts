@@ -418,3 +418,38 @@ describe("applyMirrorEventToChatState", () => {
     expect(result.sending).toBe(false);
   });
 });
+
+describe("startSendingUserMessage", () => {
+  it("should ignore empty or whitespace-only messages", () => {
+    const state = createInitialSidePanelState();
+
+    expect(startSendingUserMessage(state, "", 123)).toBe(state);
+    expect(startSendingUserMessage(state, "   ", 123)).toBe(state);
+    expect(startSendingUserMessage(state, "\n\t", 123)).toBe(state);
+  });
+});
+
+describe("agent_busy event", () => {
+  it("should handle agent_busy event", () => {
+    let state = createInitialSidePanelState();
+
+    state = reduceSidePanelChatEvent(state, {
+      kind: "agent_busy",
+      busy: true,
+      label: "Думаю...",
+      timestamp: 123,
+    });
+
+    expect(state.agentBusy).toBe(true);
+    expect(state.busyLabel).toBe("Думаю...");
+
+    state = reduceSidePanelChatEvent(state, {
+      kind: "agent_busy",
+      busy: false,
+      label: "",
+      timestamp: 124,
+    });
+
+    expect(state.agentBusy).toBe(false);
+  });
+});

@@ -404,11 +404,7 @@ export class BackgroundAssistantStateServer {
   private async refreshDiagnostics(): Promise<void> {
     try {
       const diagnostics = await listDiagnostics(this.storage);
-      this.state = reduceAssistantState(
-        reduceAssistantState(this.state, { kind: "diagnostics_updated", diagnostics }),
-        { kind: "epoch_incremented" },
-      );
-      this.broadcastSnapshot();
+      this.applyState({ kind: "diagnostics_updated", diagnostics });
     } catch (error) {
       await this.recordDiagnostic(
         "assistant.diagnostics.refresh",
@@ -448,14 +444,10 @@ export class BackgroundAssistantStateServer {
       message,
     };
 
-    this.state = reduceAssistantState(
-      reduceAssistantState(this.state, {
-        kind: "diagnostics_updated",
-        diagnostics: [...this.state.diagnostics, diagnostic],
-      }),
-      { kind: "epoch_incremented" },
-    );
-    this.broadcastSnapshot();
+    this.applyState({
+      kind: "diagnostics_updated",
+      diagnostics: [...this.state.diagnostics, diagnostic],
+    });
 
     try {
       await this.recordDiagnosticEntry(diagnostic);

@@ -185,10 +185,90 @@ describe("mirror event validation", () => {
     expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
   });
 
+  it("accepts message_end mirror event with stopReason", () => {
+    const event: PiMirrorEvent = {
+      type: "message_end",
+      message: { id: "message-1", role: "assistant" },
+      stopReason: "end_turn",
+    };
+
+    expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
+  });
+
+  it("accepts turn_start mirror event", () => {
+    const event: PiMirrorEvent = { type: "turn_start", turnId: "turn-1" };
+    expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
+  });
+
+  it("accepts turn_end mirror event", () => {
+    const event: PiMirrorEvent = { type: "turn_end", turnId: "turn-1" };
+    expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
+  });
+
+  it("accepts tool_execution_start mirror event", () => {
+    const event: PiMirrorEvent = { type: "tool_execution_start", toolName: "read_file", input: { path: "/tmp/test" } };
+    expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
+  });
+
+  it("accepts tool_execution_update mirror event", () => {
+    const event: PiMirrorEvent = { type: "tool_execution_update", toolName: "read_file", output: "content" };
+    expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
+  });
+
+  it("accepts tool_execution_end mirror event", () => {
+    const event: PiMirrorEvent = { type: "tool_execution_end", toolName: "read_file", output: "content", error: "timeout" };
+    expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
+  });
+
+  it("accepts model_select mirror event", () => {
+    const event: PiMirrorEvent = { type: "model_select", provider: "anthropic", modelId: "claude-sonnet" };
+    expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
+  });
+
+  it("rejects message_update without message.id", () => {
+    expect(validatePiMirrorEvent({ type: "message_update", message: { role: "assistant" } })).toEqual({
+      ok: false,
+      error: "Missing message.id",
+    });
+  });
+
+  it("rejects message_update with invalid assistantMessageEvent type", () => {
+    expect(
+      validatePiMirrorEvent({
+        type: "message_update",
+        message: { id: "msg-1", role: "assistant" },
+        assistantMessageEvent: { type: "unknown_type", text_delta: "x" },
+      }),
+    ).toEqual({ ok: false, error: "Unsupported assistantMessageEvent type" });
+  });
+
   it("rejects unknown mirror event types", () => {
     expect(validatePiMirrorEvent({ type: "unknown" })).toEqual({
       ok: false,
       error: "Unknown mirror event type: unknown",
+    });
+  });
+
+  it("session.event envelope with PiMirrorEvent survives parseProtocolEnvelope roundtrip", () => {
+    const envelope = {
+      version: 1,
+      type: "session.event" as const,
+      payload: {
+        type: "message_update" as const,
+        message: { id: "msg-1", role: "assistant" as const },
+        assistantMessageEvent: { type: "text_delta" as const, text_delta: "Hello world" },
+      },
+    };
+
+    const json = JSON.stringify(envelope);
+    const parsed = parseProtocolEnvelope(json);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed!.type).toBe("session.event");
+    expect(parsed!.payload).toMatchObject({
+      type: "message_update",
+      message: { id: "msg-1", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "Hello world" },
     });
   });
 });

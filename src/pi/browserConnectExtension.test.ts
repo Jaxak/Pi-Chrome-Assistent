@@ -13,11 +13,13 @@ import { formatSelectionMessage } from "../shared/formatSelectionMessage";
 
 let capturedSessionServerOptions: DirectSessionServerOnAvailablePortOptions | undefined;
 const mockBroadcastSnapshot = vi.fn();
+const mockBroadcastEvent = vi.fn();
 const mockClose = vi.fn(async () => undefined);
 
 const fakeServer: DirectSessionServer = {
   port: 31416,
   broadcastSnapshot: mockBroadcastSnapshot,
+  broadcastEvent: mockBroadcastEvent,
   close: mockClose,
 };
 
@@ -101,6 +103,7 @@ afterEach(() => {
   vi.resetModules();
   capturedSessionServerOptions = undefined;
   mockBroadcastSnapshot.mockReset();
+  mockBroadcastEvent.mockReset();
   mockClose.mockReset();
 });
 
@@ -416,13 +419,135 @@ describe("Pi events", () => {
 
     messageStartHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
     messageUpdateHandler?.handler(
-      { message: { role: "assistant", id: "msg-1" }, assistantMessageEvent: { text_delta: "Hello" } },
+      { message: { role: "assistant", id: "msg-1" }, assistantMessageEvent: { type: "text_delta", text_delta: "Hello" } },
       ctx,
     );
     messageEndHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
     modelSelectHandler?.handler({}, ctx);
 
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(4);
+  });
+
+  it("message_start/message_update/message_end forward raw events via broadcastEvent", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const messageStartHandler = onCalls.find((c) => c.event === "message_start");
+    const messageUpdateHandler = onCalls.find((c) => c.event === "message_update");
+    const messageEndHandler = onCalls.find((c) => c.event === "message_end");
+
+    messageStartHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
+    messageUpdateHandler?.handler(
+      { message: { role: "assistant", id: "msg-1" }, assistantMessageEvent: { type: "text_delta", text_delta: "Hello" } },
+      ctx,
+    );
+    messageEndHandler?.handler({ message: { role: "assistant", id: "msg-1" }, stopReason: "end_turn" }, ctx);
+
+    // broadcastEvent should have been called 3 times (message_start, message_update, message_end)
+    expect(mockBroadcastEvent).toHaveBeenCalledTimes(3);
+
+    // Verify message_start event
+    expect(mockBroadcastEvent).toHaveBeenNthCalledWith(1, {
+      type: "message_start",
+      message: { id: "msg-1", role: "assistant" },
+    });
+
+    // Verify message_update with assistantMessageEvent
+    expect(mockBroadcastEvent).toHaveBeenNthCalledWith(2, {
+      type: "message_update",
+      message: { id: "msg-1", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "Hello" },
+    });
+
+    // Verify message_end with stopReason
+    expect(mockBroadcastEvent).toHaveBeenNthCalledWith(3, {
+      type: "message_end",
+      message: { id: "msg-1", role: "assistant" },
+      stopReason: "end_turn",
+    });
+  });
+
+  it("turn_start/turn_end forward raw events via broadcastEvent", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const turnStartHandler = onCalls.find((c) => c.event === "turn_start");
+    const turnEndHandler = onCalls.find((c) => c.event === "turn_end");
+
+    turnStartHandler?.handler({ turnId: "turn-1" }, ctx);
+    turnEndHandler?.handler({ turnId: "turn-1" }, ctx);
+
+    expect(mockBroadcastEvent).toHaveBeenCalledWith({
+      type: "turn_start",
+      turnId: "turn-1",
+    });
+    expect(mockBroadcastEvent).toHaveBeenCalledWith({
+      type: "turn_end",
+      turnId: "turn-1",
+    });
+  });
+
+  it("tool_execution_start/update/end forward raw events via broadcastEvent", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const toolStartHandler = onCalls.find((c) => c.event === "tool_execution_start");
+    const toolUpdateHandler = onCalls.find((c) => c.event === "tool_execution_update");
+    const toolEndHandler = onCalls.find((c) => c.event === "tool_execution_end");
+
+    toolStartHandler?.handler({ toolName: "read_file", input: { path: "/tmp/test" } }, ctx);
+    toolUpdateHandler?.handler({ toolName: "read_file", output: "content" }, ctx);
+    toolEndHandler?.handler({ toolName: "read_file", output: "content" }, ctx);
+
+    expect(mockBroadcastEvent).toHaveBeenCalledWith({
+      type: "tool_execution_start",
+      toolName: "read_file",
+      input: { path: "/tmp/test" },
+    });
+    expect(mockBroadcastEvent).toHaveBeenCalledWith({
+      type: "tool_execution_update",
+      toolName: "read_file",
+      output: "content",
+    });
+    expect(mockBroadcastEvent).toHaveBeenCalledWith({
+      type: "tool_execution_end",
+      toolName: "read_file",
+      output: "content",
+    });
+  });
+
+  it("broadcastEvent is not called before connect (no active server)", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, onCalls } = createFakePi();
+
+    browserConnectExtension(pi);
+
+    // Fire message_update BEFORE connecting (no active server)
+    const messageUpdateHandler = onCalls.find((c) => c.event === "message_update");
+    expect(() => {
+      messageUpdateHandler?.handler(
+        { message: { role: "assistant", id: "msg-1" }, assistantMessageEvent: { type: "text_delta", text_delta: "test" } },
+        ctx,
+      );
+    }).not.toThrow();
+
+    // Should not have called broadcastEvent (server is undefined)
+    expect(mockBroadcastEvent).not.toHaveBeenCalled();
   });
 });
 

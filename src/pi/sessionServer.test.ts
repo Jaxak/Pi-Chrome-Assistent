@@ -5,6 +5,7 @@ import type { BrowserConnectLogger } from "./logging";
 import { createMemoryLogger } from "./logging";
 import type {
   DirectSessionSnapshot,
+  PiMirrorEvent,
   SelectionPayload,
 } from "../shared/protocol";
 import type { DirectSessionServer } from "./sessionServer";
@@ -908,6 +909,300 @@ describe("startDirectSessionServer", () => {
     expect(msg).toMatchObject({ type: "session.snapshot" });
 
     await healthyClient.close();
+    await server.close();
+  });
+
+  // ─── session.event broadcast tests (Task 4) ───
+
+  it("broadcastEvent sends session.event envelope to single client", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage: vi.fn(),
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client.waitForOpen();
+    await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    const mirrorEvent: PiMirrorEvent = {
+      type: "message_start",
+      message: { id: "msg-1", role: "assistant" },
+    };
+    server.broadcastEvent(mirrorEvent);
+
+    const received = await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.event";
+    });
+
+    expect(received).toMatchObject({
+      version: 1,
+      type: "session.event",
+      payload: {
+        type: "message_start",
+        message: { id: "msg-1", role: "assistant" },
+      },
+    });
+
+    await client.close();
+    await server.close();
+  });
+
+  it("broadcastEvent sends message_update with assistantMessageEvent text_delta to client", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage: vi.fn(),
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client.waitForOpen();
+    await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    const mirrorEvent: PiMirrorEvent = {
+      type: "message_update",
+      message: { id: "msg-1", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "Hello" },
+    };
+    server.broadcastEvent(mirrorEvent);
+
+    const received = await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.event";
+    });
+
+    expect(received).toMatchObject({
+      version: 1,
+      type: "session.event",
+      payload: {
+        type: "message_update",
+        message: { id: "msg-1", role: "assistant" },
+        assistantMessageEvent: { type: "text_delta", text_delta: "Hello" },
+      },
+    });
+
+    await client.close();
+    await server.close();
+  });
+
+  it("broadcastEvent sends to all connected clients simultaneously", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage: vi.fn(),
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client1 = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client1.waitForOpen();
+    await client1.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    const client2 = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client2.waitForOpen();
+    await client2.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    // Small delay to ensure clients are ready
+    await new Promise((r) => setTimeout(r, 50));
+
+    const mirrorEvent: PiMirrorEvent = {
+      type: "message_end",
+      message: { id: "msg-1", role: "assistant" },
+      stopReason: "end_turn",
+    };
+    server.broadcastEvent(mirrorEvent);
+
+    const msg1 = await client1.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.event";
+    });
+    const msg2 = await client2.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.event";
+    });
+
+    expect(msg1).toMatchObject({
+      version: 1,
+      type: "session.event",
+      payload: { type: "message_end" },
+    });
+    expect(msg2).toMatchObject({
+      version: 1,
+      type: "session.event",
+      payload: { type: "message_end" },
+    });
+
+    await client1.close();
+    await client2.close();
+    await server.close();
+  });
+
+  it("broadcastEvent skips closed/ disconnected clients", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage: vi.fn(),
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client1 = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client1.waitForOpen();
+    await client1.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    // client2 connects then disconnects
+    const client2 = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client2.waitForOpen();
+    await client2.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+    await client2.close();
+
+    // Small delay to ensure client2 is fully closed
+    await new Promise((r) => setTimeout(r, 50));
+
+    // broadcastEvent should not throw even though client2 is disconnected
+    expect(() => {
+      server.broadcastEvent({
+        type: "message_start",
+        message: { id: "msg-1", role: "assistant" },
+      });
+    }).not.toThrow();
+
+    // client1 should still receive the event
+    const msg = await client1.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.event";
+    });
+    expect(msg).toMatchObject({ type: "session.event" });
+
+    await client1.close();
+    await server.close();
+  });
+
+  it("client sending session.event is ignored as server-initiated type", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage: vi.fn(),
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client.waitForOpen();
+    await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    // Client sends session.event — server should silently ignore it
+    client.socket.send(JSON.stringify({
+      version: 1,
+      type: "session.event",
+      payload: { type: "message_start", message: { id: "msg-1", role: "user" } },
+    }));
+
+    // Wait a bit to confirm no error response is sent
+    await new Promise((r) => setTimeout(r, 100));
+
+    // No session.error should have been received
+    const hasError = client.messages.some(
+      (msg) => (msg as { type?: string }).type === "session.error",
+    );
+    expect(hasError).toBe(false);
+
+    await client.close();
+    await server.close();
+  });
+
+  it("broadcastEvent supports all PiMirrorEvent types", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage: vi.fn(),
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client.waitForOpen();
+    await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    const events: PiMirrorEvent[] = [
+      { type: "turn_start", turnId: "turn-1" },
+      { type: "turn_end", turnId: "turn-1" },
+      { type: "tool_execution_start", toolName: "read_file", input: { path: "/tmp/test" } },
+      { type: "tool_execution_update", toolName: "read_file", output: "content" },
+      { type: "tool_execution_end", toolName: "read_file", output: "content" },
+      { type: "model_select", provider: "anthropic", modelId: "claude-sonnet" },
+    ];
+
+    for (const evt of events) {
+      server.broadcastEvent(evt);
+    }
+
+    // Should receive 6 session.event messages (one for each broadcastEvent call)
+    const eventMsgs = await Promise.all(
+      events.map(() =>
+        client.waitForMessage((msg) => {
+          const obj = msg as { type?: string };
+          return obj.type === "session.event";
+        }),
+      ),
+    );
+
+    expect(eventMsgs.length).toBe(6);
+    for (const received of eventMsgs) {
+      expect(received).toMatchObject({
+        version: 1,
+        type: "session.event",
+      });
+    }
+
+    await client.close();
     await server.close();
   });
 });

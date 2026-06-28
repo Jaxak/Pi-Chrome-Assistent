@@ -8,6 +8,7 @@ import {
   validateDirectSetModelPayload,
   type DirectCommandResult,
   type DirectSessionSnapshot,
+  type PiMirrorEvent,
   type SelectionPayload,
 } from "../shared/protocol";
 import type { BrowserConnectLogger } from "./logging";
@@ -29,6 +30,8 @@ export type DirectSessionServer = {
   port: number;
   /** Send a fresh snapshot to all currently-connected browser sockets. */
   broadcastSnapshot(): void;
+  /** Broadcast a raw Pi mirror event to all currently-connected browser sockets. */
+  broadcastEvent(event: PiMirrorEvent): void;
   /** Close the server and all connected client sockets. */
   close(): Promise<void>;
 };
@@ -136,6 +139,7 @@ export async function startDirectSessionServer(
       resolve({
         port,
         broadcastSnapshot: () => sendSnapshotToAll(wss.clients, options.buildSnapshot()),
+        broadcastEvent: (event: PiMirrorEvent) => sendEventToAll(wss.clients, event),
         close: () => closeServer(wss, heartbeatTimer),
       });
     });
@@ -265,6 +269,7 @@ function handleConnection(ws: WebSocket, options: DirectSessionServerOptions): v
       }
 
       case "session.snapshot":
+      case "session.event":
       case "session.command.result":
       case "session.error":
         // Server-initiated types — ignore from client
@@ -319,10 +324,26 @@ function sendError(ws: WebSocket, requestId: string | undefined, message: string
   });
 }
 
+function sendEvent(ws: WebSocket, event: PiMirrorEvent): void {
+  sendJson(ws, {
+    version: PROTOCOL_VERSION,
+    type: "session.event" as const,
+    payload: event,
+  });
+}
+
 function sendSnapshotToAll(clients: Iterable<WebSocket>, snapshot: DirectSessionSnapshot): void {
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) {
       sendSnapshot(ws, snapshot);
+    }
+  }
+}
+
+function sendEventToAll(clients: Iterable<WebSocket>, event: PiMirrorEvent): void {
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      sendEvent(ws, event);
     }
   }
 }

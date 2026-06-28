@@ -105,15 +105,27 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
     activeSessionServer?.broadcastSnapshot();
   };
 
-  // ----- Pi event handlers (broadcast snapshot on state changes) -----
+  // ----- Pi event handlers (broadcast snapshot + forward raw events) -----
 
   pi.on("model_select", (_event, ctx) => {
     latestCtx = ctx;
     broadcastSnapshot();
   });
 
-  pi.on("turn_end", (_event, ctx) => {
+  pi.on("turn_start", (event, _ctx) => {
+    activeSessionServer?.broadcastEvent({
+      type: "turn_start",
+      turnId: (event as { turnId?: string })?.turnId ?? "",
+    });
+    broadcastSnapshot();
+  });
+
+  pi.on("turn_end", (event, ctx) => {
     latestCtx = ctx;
+    activeSessionServer?.broadcastEvent({
+      type: "turn_end",
+      turnId: (event as { turnId?: string })?.turnId ?? "",
+    });
     broadcastSnapshot();
   });
 
@@ -122,15 +134,67 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
     broadcastSnapshot();
   });
 
-  pi.on("message_start", (_event, _ctx) => {
+  pi.on("message_start", (event, _ctx) => {
+    activeSessionServer?.broadcastEvent({
+      type: "message_start",
+      message: {
+        id: (event as { message?: { id?: string } })?.message?.id ?? "",
+        role: (event as { message?: { role?: string } })?.message?.role ?? "",
+      },
+    });
     broadcastSnapshot();
   });
 
-  pi.on("message_update", (_event, _ctx) => {
+  pi.on("message_update", (event, _ctx) => {
+    activeSessionServer?.broadcastEvent({
+      type: "message_update",
+      message: {
+        id: (event as { message?: { id?: string } })?.message?.id ?? "",
+        role: (event as { message?: { role?: string } })?.message?.role ?? "",
+      },
+      assistantMessageEvent: (event as { assistantMessageEvent?: { type?: string; text_delta?: string } })
+        ?.assistantMessageEvent,
+    });
     broadcastSnapshot();
   });
 
-  pi.on("message_end", (_event, _ctx) => {
+  pi.on("message_end", (event, _ctx) => {
+    activeSessionServer?.broadcastEvent({
+      type: "message_end",
+      message: {
+        id: (event as { message?: { id?: string } })?.message?.id ?? "",
+        role: (event as { message?: { role?: string } })?.message?.role ?? "",
+      },
+      stopReason: (event as { stopReason?: string })?.stopReason,
+    });
+    broadcastSnapshot();
+  });
+
+  pi.on("tool_execution_start", (event, _ctx) => {
+    activeSessionServer?.broadcastEvent({
+      type: "tool_execution_start",
+      toolName: (event as { toolName?: string })?.toolName ?? "",
+      input: (event as { input?: unknown })?.input,
+    });
+    broadcastSnapshot();
+  });
+
+  pi.on("tool_execution_update", (event, _ctx) => {
+    activeSessionServer?.broadcastEvent({
+      type: "tool_execution_update",
+      toolName: (event as { toolName?: string })?.toolName ?? "",
+      output: (event as { output?: unknown })?.output,
+    });
+    broadcastSnapshot();
+  });
+
+  pi.on("tool_execution_end", (event, _ctx) => {
+    activeSessionServer?.broadcastEvent({
+      type: "tool_execution_end",
+      toolName: (event as { toolName?: string })?.toolName ?? "",
+      output: (event as { output?: unknown })?.output,
+      error: (event as { error?: string })?.error,
+    });
     broadcastSnapshot();
   });
 

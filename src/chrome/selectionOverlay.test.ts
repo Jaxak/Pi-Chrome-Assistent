@@ -146,4 +146,95 @@ describe("createSelectionOverlay", () => {
 
     overlay.cleanup();
   });
+
+  it("locks page scroll when the comment modal is open", () => {
+    const overlay = createSelectionOverlay();
+    expect(document.body.style.overflow).toBe("");
+
+    overlay.showCommentModal({
+      onSubmit: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+    expect(document.body.style.overflow).toBe("hidden");
+
+    overlay.cleanup();
+    expect(document.body.style.overflow).toBe("");
+  });
+
+  it("restores original body overflow when modal is closed", () => {
+    document.body.style.overflow = "auto";
+    const overlay = createSelectionOverlay();
+
+    overlay.showCommentModal({
+      onSubmit: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+    expect(document.body.style.overflow).toBe("hidden");
+
+    overlay.cleanup();
+    expect(document.body.style.overflow).toBe("auto");
+
+    document.body.style.overflow = "";
+  });
+
+  it("traps focus: Tab from last element wraps to first", () => {
+    const overlay = createSelectionOverlay();
+    overlay.showCommentModal({
+      onSubmit: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+    const sendButton = document.querySelector(
+      "#pi-dom-picker-modal-root button:last-of-type"
+    ) as HTMLButtonElement;
+    expect(sendButton).not.toBeNull();
+
+    sendButton.focus();
+    expect(document.activeElement).toBe(sendButton);
+
+    const tabEvent = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+    });
+    sendButton.dispatchEvent(tabEvent);
+
+    expect(tabEvent.defaultPrevented).toBe(true);
+    const textarea = document.querySelector("#pi-dom-picker-modal-root textarea");
+    expect(document.activeElement).toBe(textarea);
+
+    overlay.cleanup();
+  });
+
+  it("traps focus: Shift+Tab from first element wraps to last", () => {
+    const overlay = createSelectionOverlay();
+    overlay.showCommentModal({
+      onSubmit: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+    const textarea = document.querySelector(
+      "#pi-dom-picker-modal-root textarea"
+    ) as HTMLTextAreaElement;
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+
+    const shiftTabEvent = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea.dispatchEvent(shiftTabEvent);
+
+    expect(shiftTabEvent.defaultPrevented).toBe(true);
+    const sendButton = document.querySelector(
+      "#pi-dom-picker-modal-root button:last-of-type"
+    ) as HTMLButtonElement;
+    expect(document.activeElement).toBe(sendButton);
+
+    overlay.cleanup();
+  });
 });

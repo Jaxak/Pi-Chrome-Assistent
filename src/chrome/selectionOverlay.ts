@@ -80,6 +80,9 @@ export function createSelectionOverlay(): SelectionOverlayControls {
     showCommentModal(options) {
       modalCleanup?.();
 
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+
       modalRoot = createModalRoot();
       const panel = document.createElement("div");
       const heading = document.createElement("h2");
@@ -159,6 +162,23 @@ export function createSelectionOverlay(): SelectionOverlayControls {
         }
       });
 
+      // --- Focus trap: Tab / Shift+Tab cycle within modal ---
+      panel.addEventListener("keydown", (event) => {
+        if (event.key !== "Tab") return;
+
+        const focusableElements = [textarea, cancelButton, sendButton];
+        const firstElement = focusableElements[0];
+        const lastElement = focusableElements[focusableElements.length - 1];
+
+        if (event.shiftKey && document.activeElement === firstElement) {
+          event.preventDefault();
+          lastElement.focus();
+        } else if (!event.shiftKey && document.activeElement === lastElement) {
+          event.preventDefault();
+          firstElement.focus();
+        }
+      });
+
       actions.append(cancelButton, sendButton);
       panel.append(heading, description, textarea, actions);
       modalRoot.append(panel);
@@ -169,6 +189,8 @@ export function createSelectionOverlay(): SelectionOverlayControls {
         if (modalRoot?.isConnected) {
           modalRoot.remove();
         }
+
+        document.body.style.overflow = originalOverflow;
 
         modalRoot = null;
         modalCleanup = undefined;

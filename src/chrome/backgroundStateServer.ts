@@ -261,6 +261,7 @@ export class BackgroundAssistantStateServer {
     };
 
     this.applyState({ kind: "connection_updated", connection });
+
   }
 
   private sendChatMessage(message: string): void {

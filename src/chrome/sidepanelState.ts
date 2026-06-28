@@ -306,7 +306,16 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
       };
     }
 
-    // turn_start, turn_end, tool_execution_*, model_select — safely ignored
+    case "turn_end": {
+      // turn_end signals the agent has finished its turn — ensure agentBusy is cleared
+      return {
+        ...state,
+        agentBusy: false,
+        sending: false,
+      };
+    }
+
+    // turn_start, tool_execution_*, model_select — safely ignored
     default:
       return state;
   }

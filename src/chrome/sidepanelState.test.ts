@@ -385,4 +385,20 @@ describe("applyMirrorEventToChatState", () => {
       text: "Existing",
     });
   });
+
+  it("сбрасывает agentBusy и sending при получении turn_end", () => {
+    const state = createInitialSidePanelState();
+    state.agentBusy = true;
+    state.sending = true;
+
+    const event: PiMirrorEvent = {
+      type: "turn_end",
+      turnId: "turn-1",
+    };
+
+    const result = applyMirrorEventToChatState(state, event);
+
+    expect(result.agentBusy).toBe(false);
+    expect(result.sending).toBe(false);
+  });
 });

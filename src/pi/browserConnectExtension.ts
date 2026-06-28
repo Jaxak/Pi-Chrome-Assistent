@@ -127,7 +127,9 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       type: "turn_end",
       turnId: (event as { turnId?: string })?.turnId ?? "",
     });
-    broadcastSnapshot();
+    // broadcastSnapshot() intentionally omitted here:
+    // turn_end event is sufficient to clear agentBusy; snapshot may contain
+    // stale isIdle state and overwrite agentBusy back to true (race condition).
   });
 
   pi.on("session_compact", (_event, ctx) => {

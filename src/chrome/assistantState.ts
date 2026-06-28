@@ -171,12 +171,53 @@ export function reduceAssistantState(
   }
 }
 
+/**
+ * Merge local messages with server-hydrated messages.
+ * Preserves user messages that were added locally but not yet present in server entries.
+ * This handles the race condition where Pi sends a snapshot before processing the user's message.
+ * Only preserves pending messages when state.sending is true (message was just sent).
+ */
+function mergeWithPendingUserMessages(
+  localMessages: SidepanelChatMessage[],
+  serverMessages: SidepanelChatMessage[],
+  sending: boolean,
+): SidepanelChatMessage[] {
+  // Only merge if we're currently sending (expecting a user message to appear)
+  if (!sending) {
+    return serverMessages;
+  }
+
+  // Find local user messages that are not in server messages
+  const serverUserTimestamps = new Set(
+    serverMessages
+      .filter((m): m is SidepanelChatMessage & { role: "user" } => m.role === "user")
+      .map((m) => m.timestamp),
+  );
+
+  const pendingUserMessages = localMessages.filter(
+    (m): m is SidepanelChatMessage & { role: "user" } =>
+      m.role === "user" && !serverUserTimestamps.has(m.timestamp),
+  );
+
+  if (pendingUserMessages.length === 0) {
+    return serverMessages;
+  }
+
+  // Insert pending user messages at the end (they were just sent)
+  return [...serverMessages, ...pendingUserMessages];
+}
+
 function applySessionSnapshot(
   state: BackgroundAssistantState,
   snapshot: DirectSessionSnapshot,
 ): BackgroundAssistantState {
   const entries = snapshot.chat.entries ?? [];
   const hydratedMessages = hydrateMessagesFromEntries(entries);
+
+  // Merge: preserve local user messages that are not yet in server entries.
+  // This prevents losing optimistically-added user messages when Pi sends
+  // a snapshot before it has processed the user's message.
+  const mergedMessages = mergeWithPendingUserMessages(state.chat.messages, hydratedMessages, state.chat.sending);
 
   return {
     ...state,
@@ -197,10 +238,11 @@ function applySessionSnapshot(
       modelError: undefined,
     },
     chat: {
-      messages: hydratedMessages,
+      messages: mergedMessages,
       agentBusy: snapshot.chat.agentBusy,
       busyLabel: snapshot.chat.busyLabel || state.chat.busyLabel,
-      sending: false,
+      // Keep sending=true if we preserved pending user messages (not yet in server entries)
+      sending: mergedMessages.length > hydratedMessages.length,
       error: undefined,
     },
   };

@@ -19,7 +19,6 @@ import type { BrowserConnectLogger } from "./logging";
 
 export const DEFAULT_DIRECT_SESSION_PORT = 31_415;
 export const DIRECT_SESSION_PORT_SCAN_LIMIT = 100;
-export const DIRECT_SESSION_HEARTBEAT_INTERVAL_MS = 20_000;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -51,8 +50,6 @@ export type DirectSessionServerOptions = {
   onSetModel(input: { provider: string; modelId: string }): Promise<DirectCommandResult> | DirectCommandResult;
   /** Logger for diagnostic messages. */
   logger: BrowserConnectLogger;
-  /** Override heartbeat interval for testing. */
-  heartbeatIntervalMs?: number;
 };
 
 export type DirectSessionServerOnAvailablePortOptions = {
@@ -72,17 +69,11 @@ export type DirectSessionServerOnAvailablePortOptions = {
   onSetModel(input: { provider: string; modelId: string }): Promise<DirectCommandResult> | DirectCommandResult;
   /** Logger for diagnostic messages. */
   logger: BrowserConnectLogger;
-  /** Override heartbeat interval for testing. */
-  heartbeatIntervalMs?: number;
 };
 
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
-
-type AliveWebSocket = WebSocket & {
-  isAlive?: boolean;
-};
 
 /**
  * Start a standalone WebSocket server for a single Pi session.
@@ -92,14 +83,12 @@ type AliveWebSocket = WebSocket & {
  * Incoming command envelopes (`session.chat.send`, `session.selection.send`,
  * `session.model.set`) are dispatched to the injected handlers.
  *
- * Server-side heartbeat (ping/pong) is used to detect and terminate
- * idle/broken connections, mirroring the pi-web-ui pattern.
+ * No heartbeat — for a local server with 1-2 clients this is unnecessary;
+ * the connection lives until either side explicitly closes it.
  */
 export async function startDirectSessionServer(
   options: DirectSessionServerOptions,
 ): Promise<DirectSessionServer> {
-  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DIRECT_SESSION_HEARTBEAT_INTERVAL_MS;
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   const wss = new WebSocketServer({
     host: options.host,
@@ -108,13 +97,6 @@ export async function startDirectSessionServer(
 
   return new Promise((resolve, reject) => {
     wss.on("connection", (ws) => {
-      const aliveWs = ws as AliveWebSocket;
-      aliveWs.isAlive = true;
-
-      ws.on("pong", () => {
-        aliveWs.isAlive = true;
-      });
-
       handleConnection(ws, options);
     });
 
@@ -122,33 +104,15 @@ export async function startDirectSessionServer(
       const address = wss.address();
       const port = typeof address === "object" && address !== null ? address.port : 0;
 
-      // Start heartbeat timer — ping all clients and terminate stale ones
-      heartbeatTimer = setInterval(() => {
-        for (const client of wss.clients) {
-          if ((client as WebSocket).readyState !== WebSocket.OPEN) continue;
-          const aliveClient = client as AliveWebSocket;
-          if (!aliveClient.isAlive) {
-            aliveClient.terminate();
-            continue;
-          }
-          aliveClient.isAlive = false;
-          client.ping();
-        }
-      }, heartbeatIntervalMs);
-
       resolve({
         port,
         broadcastSnapshot: () => sendSnapshotToAll(wss.clients, options.buildSnapshot()),
         broadcastEvent: (event: PiMirrorEvent) => sendEventToAll(wss.clients, event),
-        close: () => closeServer(wss, heartbeatTimer),
+        close: () => closeServer(wss),
       });
     });
 
     wss.on("error", (error) => {
-      if (heartbeatTimer !== null) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
       reject(error);
     });
   });
@@ -188,7 +152,6 @@ export async function startDirectSessionServerOnAvailablePort(
         onSelection: options.onSelection,
         onSetModel: options.onSetModel,
         logger: options.logger,
-        heartbeatIntervalMs: options.heartbeatIntervalMs,
       });
     } catch (error) {
       if (!isAddressInUseError(error)) {
@@ -352,15 +315,7 @@ function sendEventToAll(clients: Iterable<WebSocket>, event: PiMirrorEvent): voi
 // Cleanup
 // ---------------------------------------------------------------------------
 
-async function closeServer(
-  wss: WebSocketServer,
-  heartbeatTimer: ReturnType<typeof setInterval> | null,
-): Promise<void> {
-  // Clear heartbeat timer first
-  if (heartbeatTimer !== null) {
-    clearInterval(heartbeatTimer);
-  }
-
+async function closeServer(wss: WebSocketServer): Promise<void> {
   // Close all connected clients
   for (const ws of wss.clients) {
     try {

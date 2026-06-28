@@ -34,7 +34,7 @@ type SidePanelElements = {
   diagnosticsOutput: HTMLElement | null;
   sessionPortInput: HTMLInputElement | null;
   connectSessionButton: HTMLButtonElement | null;
-  sessionConnectionStatus: HTMLElement | null;
+  sessionHeadingStatus: HTMLElement | null;
   modelButton: HTMLButtonElement | null;
   modelMenu: HTMLElement | null;
   contextUsage: HTMLElement | null;
@@ -90,7 +90,7 @@ function getSidePanelElements(): SidePanelElements {
     diagnosticsOutput: document.querySelector<HTMLElement>("#diagnostics-output"),
     sessionPortInput: document.querySelector<HTMLInputElement>("#session-port-input"),
     connectSessionButton: document.querySelector<HTMLButtonElement>("#connect-session-button"),
-    sessionConnectionStatus: document.querySelector<HTMLElement>("#session-connection-status"),
+    sessionHeadingStatus: document.querySelector<HTMLElement>("#session-heading-status"),
     modelButton: document.querySelector<HTMLButtonElement>("#model-button"),
     modelMenu: document.querySelector<HTMLElement>("#model-menu"),
     contextUsage: document.querySelector<HTMLElement>("#context-usage"),
@@ -186,13 +186,13 @@ function renderSessionConnection(elements: SidePanelElements, state: BackgroundA
     statusText = `❌ ${state.connection.lastError}`;
   } else {
     tone = "warning";
-    statusText = `⚠️ Введите порт Pi-сессии и нажмите «Подключить». `;
+    statusText = `⚠️ Pi-сессия не подключена`;
   }
 
-  // Update connection status element
-  if (elements.sessionConnectionStatus) {
-    elements.sessionConnectionStatus.textContent = statusText;
-    elements.sessionConnectionStatus.dataset.tone = tone;
+  // Update heading status element (combined label + status)
+  if (elements.sessionHeadingStatus) {
+    elements.sessionHeadingStatus.textContent = statusText;
+    elements.sessionHeadingStatus.dataset.tone = tone;
   }
 
   updateDirectSendButtons(elements);
@@ -330,9 +330,9 @@ function renderAssistantUnavailable(elements: SidePanelElements): void {
   lastRenderedMessageSignatures = [];
 
   setBaseDiagnostics(elements, SIDEPANEL_UNAVAILABLE_TEXT);
-  if (elements.sessionConnectionStatus) {
-    elements.sessionConnectionStatus.textContent = "⚠️ Состояние боковой панели недоступно.";
-    elements.sessionConnectionStatus.dataset.tone = "warning";
+  if (elements.sessionHeadingStatus) {
+    elements.sessionHeadingStatus.textContent = "⚠️ Состояние боковой панели недоступно.";
+    elements.sessionHeadingStatus.dataset.tone = "warning";
   }
   renderChat(elements);
   updateDirectSendButtons(elements);
@@ -361,10 +361,10 @@ function clearReconnectTimer(): void {
 function renderAssistantReconnecting(elements: SidePanelElements): void {
   setBaseDiagnostics(elements, SIDEPANEL_RECONNECTING_TEXT);
 
-  if (elements.sessionConnectionStatus) {
+  if (elements.sessionHeadingStatus) {
     const port = currentSnapshot?.connection.configuredPort ?? DEFAULT_PORT;
-    elements.sessionConnectionStatus.textContent = `🔄 Переподключаемся к 127.0.0.1:${port}…`;
-    elements.sessionConnectionStatus.dataset.tone = "info";
+    elements.sessionHeadingStatus.textContent = `🔄 Переподключаемся к 127.0.0.1:${port}…`;
+    elements.sessionHeadingStatus.dataset.tone = "info";
   }
 
   setButtonDisabled(elements.sendButton, true);
@@ -515,8 +515,9 @@ function initializeSidePanel(): void {
   elements.connectSessionButton?.addEventListener("click", () => {
     const port = getPortInputValue(elements);
     if (port === undefined) {
-      if (elements.sessionConnectionStatus) {
-        elements.sessionConnectionStatus.textContent = PORT_ERROR_TEXT;
+      if (elements.sessionHeadingStatus) {
+        elements.sessionHeadingStatus.textContent = PORT_ERROR_TEXT;
+        elements.sessionHeadingStatus.dataset.tone = "error";
       }
       return;
     }

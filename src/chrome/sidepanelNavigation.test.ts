@@ -365,7 +365,7 @@ describe("sidepanel navigation", () => {
     });
     await flush();
 
-    const statusEl = document.querySelector("#session-connection-status");
+    const statusEl = document.querySelector("#session-heading-status");
     expect(statusEl?.textContent).toContain("✅");
     expect(statusEl?.textContent).toContain("Подключено");
     expect(statusEl?.textContent).toContain("31415");
@@ -382,9 +382,9 @@ describe("sidepanel navigation", () => {
     });
     await flush();
 
-    const statusEl = document.querySelector("#session-connection-status");
+    const statusEl = document.querySelector("#session-heading-status");
     expect(statusEl?.textContent).toContain("⚠️");
-    expect(statusEl?.textContent).toContain("Введите порт");
+    expect(statusEl?.textContent).toContain("не подключена");
   });
 
   it("renders status tone data attribute on connection element", async () => {
@@ -398,7 +398,7 @@ describe("sidepanel navigation", () => {
       state: createConnectedState({ connection: { configuredPort: 31415, online: true } }),
     });
     await flush();
-    let statusEl = document.querySelector<HTMLElement>("#session-connection-status");
+    let statusEl = document.querySelector<HTMLElement>("#session-heading-status");
     expect(statusEl?.dataset.tone).toBe("success");
 
     // Offline → warning tone
@@ -407,7 +407,7 @@ describe("sidepanel navigation", () => {
       state: createInitialAssistantState(),
     });
     await flush();
-    statusEl = document.querySelector<HTMLElement>("#session-connection-status");
+    statusEl = document.querySelector<HTMLElement>("#session-heading-status");
     expect(statusEl?.dataset.tone).toBe("warning");
   });
 
@@ -425,7 +425,7 @@ describe("sidepanel navigation", () => {
     });
     await flush();
 
-    const statusEl = document.querySelector<HTMLElement>("#session-connection-status");
+    const statusEl = document.querySelector<HTMLElement>("#session-heading-status");
     expect(statusEl?.textContent).toContain("❌");
     expect(statusEl?.textContent).toContain("Pi-сессия недоступна");
     expect(statusEl?.dataset.tone).toBe("error");
@@ -446,7 +446,7 @@ describe("sidepanel navigation", () => {
     });
     await flush();
 
-    const statusEl = document.querySelector<HTMLElement>("#session-connection-status");
+    const statusEl = document.querySelector<HTMLElement>("#session-heading-status");
     expect(statusEl?.textContent).toContain("🔄");
     expect(statusEl?.textContent).toContain("Подключаемся");
     expect(statusEl?.dataset.tone).toBe("info");

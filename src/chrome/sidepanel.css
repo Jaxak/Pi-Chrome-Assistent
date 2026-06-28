@@ -114,12 +114,23 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   gap: 8px;
   align-items: center;
 }
-.session-heading {
-  margin-bottom: 0;
+.session-heading-status {
+  margin: 0;
+  min-width: 0;
   white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ant-color-text-secondary);
 }
-.session-status {
-  margin-top: 6px;
+.session-heading-status[data-tone="warning"] { color: #d4a106; }
+.session-heading-status[data-tone="success"] { color: #389e0d; }
+.session-heading-status[data-tone="error"] { color: #cf1322; }
+.session-heading-status[data-tone="info"] { color: #1677ff; }
+@media (prefers-color-scheme: dark) {
+  .session-heading-status[data-tone="warning"] { color: #fadb14; }
+  .session-heading-status[data-tone="success"] { color: #73d13d; }
+  .session-heading-status[data-tone="error"] { color: #ff4d4f; }
+  .session-heading-status[data-tone="info"] { color: #4096ff; }
 }
 
 .chat-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }

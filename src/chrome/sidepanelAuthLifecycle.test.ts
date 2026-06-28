@@ -183,7 +183,7 @@ describe("sidepanel lifecycle", () => {
     await flush();
 
     // Session info should show with success emoji
-    const statusEl = document.querySelector("#session-connection-status");
+    const statusEl = document.querySelector("#session-heading-status");
     expect(statusEl?.textContent).toContain("✅");
     expect(statusEl?.textContent).toContain("Подключено");
     // Model info should render
@@ -244,7 +244,7 @@ describe("sidepanel lifecycle", () => {
     port.emit({ type: "assistant.snapshot", state: connectingState });
     await flush();
 
-    const statusEl = document.querySelector("#session-connection-status");
+    const statusEl = document.querySelector("#session-heading-status");
     expect(statusEl?.textContent).toContain("Подключаемся");
   });
 

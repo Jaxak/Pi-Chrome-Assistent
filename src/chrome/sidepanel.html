@@ -29,14 +29,13 @@
       </header>
 
       <section id="panel-assistant" class="ant-content" aria-label="Чат ассистента">
-        <section class="ant-card session-card" aria-labelledby="session-heading">
+        <section class="ant-card session-card" aria-labelledby="session-heading-status">
           <div class="ant-card-body">
             <div class="session-port-row">
-              <label class="field-label session-heading" id="session-heading" for="session-port-input">Сессия Pi</label>
+              <span class="session-heading-status" id="session-heading-status" data-tone="warning">⚠️ Pi-сессия не подключена</span>
               <input id="session-port-input" class="ant-input session-port-input" inputmode="numeric" pattern="[0-9]*" value="31415" />
               <button id="connect-session-button" class="button-secondary" type="button">Подключить</button>
             </div>
-            <p id="session-connection-status" class="panel__hint session-status">Введите порт Pi-сессии и нажмите «Подключить».</p>
           </div>
         </section>
 

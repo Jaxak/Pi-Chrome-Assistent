@@ -1,4 +1,4 @@
-import type { ChatEvent, DirectSessionSnapshot, PiMirrorEvent, TargetModelSummary, TargetContextUsage } from "../shared/protocol";
+import type { DirectSessionSnapshot, PiMirrorEvent, TargetModelSummary, TargetContextUsage } from "../shared/protocol";
 import type { DiagnosticEntry } from "./diagnostics";
 import {
   createInitialSidePanelState,
@@ -6,6 +6,7 @@ import {
   applyMirrorEventToChatState,
   reduceSidePanelChatEvent,
   type SidepanelChatMessage,
+  type SidePanelChatEvent,
 } from "./sidepanelState";
 
 const DEFAULT_DIRECT_SESSION_PORT = 31415;
@@ -60,7 +61,7 @@ export type BackgroundAssistantState = {
 export type AssistantStateEvent =
   | { kind: "connection_updated"; connection: Partial<BackgroundAssistantState["connection"]> }
   | { kind: "session_snapshot"; snapshot: DirectSessionSnapshot }
-  | { kind: "chat_event"; event: ChatEvent }
+  | { kind: "chat_event"; event: SidePanelChatEvent }
   | { kind: "session.event"; event: PiMirrorEvent }
   | { kind: "runtime_updated"; runtime: Partial<BackgroundAssistantState["runtime"]> }
   | { kind: "diagnostics_updated"; diagnostics: DiagnosticEntry[] }

@@ -5,7 +5,6 @@ import {
   createRequestId,
   isProtocolEnvelope,
   parseProtocolEnvelope,
-  validateChatEvent,
   validatePiMirrorEvent,
   validateSelectionPayload,
   validateDirectSendChatPayload,
@@ -18,6 +17,7 @@ import {
   type PiMirrorEvent,
   type SelectionPayload,
 } from "./protocol";
+import { validateSidePanelChatEvent } from "../chrome/sidepanelState";
 
 const validSelection: SelectionPayload = {
   url: "https://example.com/page",
@@ -325,50 +325,50 @@ describe("selection payload validation", () => {
   });
 });
 
-describe("validateChatEvent", () => {
+describe("validateSidePanelChatEvent", () => {
   it("should reject non-object payload", () => {
-    expect(validateChatEvent(null).ok).toBe(false);
-    expect(validateChatEvent(undefined).ok).toBe(false);
-    expect(validateChatEvent("string").ok).toBe(false);
+    expect(validateSidePanelChatEvent(null).ok).toBe(false);
+    expect(validateSidePanelChatEvent(undefined).ok).toBe(false);
+    expect(validateSidePanelChatEvent("string").ok).toBe(false);
   });
 
   it("should reject missing timestamp", () => {
-    expect(validateChatEvent({ kind: "user_message", text: "hi" }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "user_message", text: "hi" }).ok).toBe(false);
   });
 
   it("should validate user_message", () => {
-    expect(validateChatEvent({ kind: "user_message", text: "hi", timestamp: 123 }).ok).toBe(true);
-    expect(validateChatEvent({ kind: "user_message", text: "", timestamp: 123 }).ok).toBe(false);
-    expect(validateChatEvent({ kind: "user_message", timestamp: 123 }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "user_message", text: "hi", timestamp: 123 }).ok).toBe(true);
+    expect(validateSidePanelChatEvent({ kind: "user_message", text: "", timestamp: 123 }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "user_message", timestamp: 123 }).ok).toBe(false);
   });
 
   it("should validate agent_busy", () => {
-    expect(validateChatEvent({ kind: "agent_busy", busy: true, label: "Working", timestamp: 123 }).ok).toBe(true);
-    expect(validateChatEvent({ kind: "agent_busy", busy: true, timestamp: 123 }).ok).toBe(false);
-    expect(validateChatEvent({ kind: "agent_busy", label: "X", timestamp: 123 }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "agent_busy", busy: true, label: "Working", timestamp: 123 }).ok).toBe(true);
+    expect(validateSidePanelChatEvent({ kind: "agent_busy", busy: true, timestamp: 123 }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "agent_busy", label: "X", timestamp: 123 }).ok).toBe(false);
   });
 
   it("should validate assistant_message_start", () => {
-    expect(validateChatEvent({ kind: "assistant_message_start", messageId: "abc", timestamp: 123 }).ok).toBe(true);
-    expect(validateChatEvent({ kind: "assistant_message_start", messageId: "", timestamp: 123 }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "assistant_message_start", messageId: "abc", timestamp: 123 }).ok).toBe(true);
+    expect(validateSidePanelChatEvent({ kind: "assistant_message_start", messageId: "", timestamp: 123 }).ok).toBe(false);
   });
 
   it("should validate assistant_message_end", () => {
-    expect(validateChatEvent({ kind: "assistant_message_end", messageId: "abc", timestamp: 123 }).ok).toBe(true);
+    expect(validateSidePanelChatEvent({ kind: "assistant_message_end", messageId: "abc", timestamp: 123 }).ok).toBe(true);
   });
 
   it("should validate assistant_text_delta", () => {
-    expect(validateChatEvent({ kind: "assistant_text_delta", messageId: "abc", delta: "hi", timestamp: 123 }).ok).toBe(true);
-    expect(validateChatEvent({ kind: "assistant_text_delta", messageId: "", delta: "hi", timestamp: 123 }).ok).toBe(false);
-    expect(validateChatEvent({ kind: "assistant_text_delta", messageId: "abc", timestamp: 123 }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "assistant_text_delta", messageId: "abc", delta: "hi", timestamp: 123 }).ok).toBe(true);
+    expect(validateSidePanelChatEvent({ kind: "assistant_text_delta", messageId: "", delta: "hi", timestamp: 123 }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "assistant_text_delta", messageId: "abc", timestamp: 123 }).ok).toBe(false);
   });
 
   it("should validate error", () => {
-    expect(validateChatEvent({ kind: "error", message: "oops", timestamp: 123 }).ok).toBe(true);
-    expect(validateChatEvent({ kind: "error", message: "", timestamp: 123 }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "error", message: "oops", timestamp: 123 }).ok).toBe(true);
+    expect(validateSidePanelChatEvent({ kind: "error", message: "", timestamp: 123 }).ok).toBe(false);
   });
 
   it("should reject unknown event kind", () => {
-    expect(validateChatEvent({ kind: "unknown_kind", timestamp: 123 }).ok).toBe(false);
+    expect(validateSidePanelChatEvent({ kind: "unknown_kind", timestamp: 123 }).ok).toBe(false);
   });
 });

@@ -112,19 +112,6 @@ export type PiMirrorEvent =
   | { type: "tool_execution_end"; toolName: string; output?: unknown; error?: string }
   | { type: "model_select"; provider: string; modelId: string };
 
-/**
- * Legacy ChatEvent type — retained temporarily for backward compatibility
- * with production code in chrome/pi modules (Task 3+ migration).
- * Will be fully removed after mirror architecture is wired end-to-end.
- */
-export type ChatEvent =
-  | { kind: "user_message"; text: string; timestamp: number }
-  | { kind: "agent_busy"; busy: boolean; label: string; timestamp: number }
-  | { kind: "assistant_message_start"; messageId: string; timestamp: number }
-  | { kind: "assistant_text_delta"; messageId: string; delta: string; timestamp: number }
-  | { kind: "assistant_message_end"; messageId: string; timestamp: number }
-  | { kind: "error"; message: string; timestamp: number };
-
 export type DeliveryResult = {
   ok: boolean;
   error?: string;
@@ -317,73 +304,6 @@ export function validatePiMirrorEvent(value: unknown): ValidationResult {
 
     default:
       return { ok: false, error: `Unknown mirror event type: ${type}` };
-  }
-}
-
-/**
- * Legacy ChatEvent validator — retained for backward compatibility with
- * production code in chrome/pi modules (Task 3+ migration).
- */
-export function validateChatEvent(value: unknown): ValidationResult {
-  if (!value || typeof value !== "object") {
-    return { ok: false, error: "Payload must be an object" };
-  }
-
-  const event = value as Partial<ChatEvent> & { kind?: unknown; timestamp?: unknown };
-
-  if (!hasFiniteTimestamp(event.timestamp)) {
-    return { ok: false, error: "Missing timestamp" };
-  }
-
-  switch (event.kind) {
-    case "user_message":
-      return isNonEmptyString((event as Partial<Extract<ChatEvent, { kind: "user_message" }>>).text)
-        ? { ok: true }
-        : { ok: false, error: "Missing text" };
-
-    case "agent_busy": {
-      const busyEvent = event as Partial<Extract<ChatEvent, { kind: "agent_busy" }>>;
-      if (typeof busyEvent.busy !== "boolean") {
-        return { ok: false, error: "Missing busy" };
-      }
-
-      if (typeof busyEvent.label !== "string") {
-        return { ok: false, error: "Missing label" };
-      }
-
-      return { ok: true };
-    }
-
-    case "assistant_message_start":
-    case "assistant_message_end":
-      return isNonEmptyString(
-        (event as Partial<Extract<ChatEvent, { kind: "assistant_message_start" | "assistant_message_end" }>>)
-          .messageId,
-      )
-        ? { ok: true }
-        : { ok: false, error: "Missing messageId" };
-
-    case "assistant_text_delta": {
-      const deltaEvent = event as Partial<Extract<ChatEvent, { kind: "assistant_text_delta" }>>;
-
-      if (!isNonEmptyString(deltaEvent.messageId)) {
-        return { ok: false, error: "Missing messageId" };
-      }
-
-      if (typeof deltaEvent.delta !== "string") {
-        return { ok: false, error: "Missing delta" };
-      }
-
-      return { ok: true };
-    }
-
-    case "error":
-      return isNonEmptyString((event as Partial<Extract<ChatEvent, { kind: "error" }>>).message)
-        ? { ok: true }
-        : { ok: false, error: "Missing message" };
-
-    default:
-      return { ok: false, error: "Unknown chat event kind" };
   }
 }
 

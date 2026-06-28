@@ -1,4 +1,4 @@
-import type { ChatEvent, DirectSessionSnapshot, PiMirrorEvent, SelectionPayload } from "../shared/protocol";
+import type { DirectSessionSnapshot, PiMirrorEvent, SelectionPayload } from "../shared/protocol";
 import {
   createInitialAssistantState,
   isChatSendDisabled,

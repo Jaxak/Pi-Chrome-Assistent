@@ -1,5 +1,7 @@
 import type { PiMirrorEvent, SessionEntryLike } from "../shared/protocol";
 
+import type { ValidationResult } from "../shared/protocol";
+
 const DEFAULT_BUSY_LABEL = "Агент работает в фоне…";
 const MAX_CHAT_MESSAGES = 500;
 
@@ -343,5 +345,78 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
     // turn_start, tool_execution_*, model_select — safely ignored
     default:
       return state;
+  }
+}
+
+// ---- Validation helpers for SidePanelChatEvent ----
+
+function hasFiniteTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function validateSidePanelChatEvent(value: unknown): ValidationResult {
+  if (!value || typeof value !== "object") {
+    return { ok: false, error: "Payload must be an object" };
+  }
+
+  const event = value as Partial<SidePanelChatEvent> & { kind?: unknown; timestamp?: unknown };
+
+  if (!hasFiniteTimestamp(event.timestamp)) {
+    return { ok: false, error: "Missing timestamp" };
+  }
+
+  switch (event.kind) {
+    case "user_message":
+      return isNonEmptyString((event as Partial<Extract<SidePanelChatEvent, { kind: "user_message" }>>).text)
+        ? { ok: true }
+        : { ok: false, error: "Missing text" };
+
+    case "agent_busy": {
+      const busyEvent = event as Partial<Extract<SidePanelChatEvent, { kind: "agent_busy" }>>;
+      if (typeof busyEvent.busy !== "boolean") {
+        return { ok: false, error: "Missing busy" };
+      }
+
+      if (typeof busyEvent.label !== "string") {
+        return { ok: false, error: "Missing label" };
+      }
+
+      return { ok: true };
+    }
+
+    case "assistant_message_start":
+    case "assistant_message_end":
+      return isNonEmptyString(
+        (event as Partial<Extract<SidePanelChatEvent, { kind: "assistant_message_start" | "assistant_message_end" }>>)
+          .messageId,
+      )
+        ? { ok: true }
+        : { ok: false, error: "Missing messageId" };
+
+    case "assistant_text_delta": {
+      const deltaEvent = event as Partial<Extract<SidePanelChatEvent, { kind: "assistant_text_delta" }>>;
+
+      if (!isNonEmptyString(deltaEvent.messageId)) {
+        return { ok: false, error: "Missing messageId" };
+      }
+
+      if (typeof deltaEvent.delta !== "string") {
+        return { ok: false, error: "Missing delta" };
+      }
+
+      return { ok: true };
+    }
+
+    case "error":
+      return isNonEmptyString((event as Partial<Extract<SidePanelChatEvent, { kind: "error" }>>).message)
+        ? { ok: true }
+        : { ok: false, error: "Missing message" };
+
+    default:
+      return { ok: false, error: "Unknown chat event kind" };
   }
 }

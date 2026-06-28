@@ -100,11 +100,12 @@ export async function startDomPicker(
   const now = dependencies.now ?? Date.now;
   const activeTabGetter = dependencies.getActiveTab;
 
-  // Resolve initial tabId candidate
+  // Resolve initial tabId candidate (and optionally its URL)
   let tabId: number | undefined =
     typeof input.tabId === "number" && Number.isInteger(input.tabId)
       ? input.tabId
       : undefined;
+  let resolvedTabUrl: string | undefined = undefined;
 
   if (tabId === undefined) {
     if (activeTabGetter) {
@@ -113,14 +114,16 @@ export async function startDomPicker(
         return { ok: false, error: "Не удалось определить вкладку для DOM picker." };
       }
       tabId = tab.id;
+      resolvedTabUrl = tab.url;
     } else {
       return { ok: false, error: "Не удалось определить вкладку для DOM picker." };
     }
   }
 
-  // Try the resolved tabId
+  // Try the resolved tabId — pass URL from the active tab when available
   const result = await tryInjectDomPicker(
     tabId,
+    resolvedTabUrl,
     backgroundStorage,
     now,
   );
@@ -136,6 +139,7 @@ export async function startDomPicker(
     if (fallbackTab?.id !== undefined && fallbackTab.id !== tabId) {
       return tryInjectDomPicker(
         fallbackTab.id,
+        fallbackTab.url,
         backgroundStorage,
         now,
       );
@@ -147,19 +151,32 @@ export async function startDomPicker(
 
 async function tryInjectDomPicker(
   tabId: number,
+  tabUrl: string | undefined,
   backgroundStorage: StorageAdapter,
   now: () => number,
 ): Promise<{ ok?: boolean; error?: string }> {
   try {
-    const tab = await chrome.tabs.get(tabId);
+    // If URL was not provided by caller, try to obtain it from chrome.tabs.get().
+    // This may fail if the extension lacks the "tabs" permission (activeTab
+    // only grants temporary URL access to the active tab on user gesture).
+    // In that case we skip the URL guard and let chrome.scripting handle it.
+    if (tabUrl === undefined) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        tabUrl = tab.url;
+      } catch {
+        // Cannot determine URL without "tabs" permission — proceed and let
+        // the scripting API fail gracefully on non-injectable pages.
+      }
+    }
 
-    if (!canInjectIntoTabUrl(tab.url)) {
+    if (tabUrl !== undefined && !canInjectIntoTabUrl(tabUrl)) {
       const userMessage = "DOM picker можно запускать только на обычных http/https страницах.";
       await recordDiagnostic(
         backgroundStorage,
         now,
         "startDomPicker",
-        `${userMessage} URL: ${tab.url ?? "неизвестен"}`,
+        `${userMessage} URL: ${tabUrl ?? "неизвестен"}`,
       );
       return { ok: false, error: userMessage };
     }

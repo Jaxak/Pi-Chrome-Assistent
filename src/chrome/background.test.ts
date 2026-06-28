@@ -326,13 +326,12 @@ describe("startDomPicker", () => {
   it("uses getActiveTab fallback when tabId is not provided but activeTabGetter is available", async () => {
     const storage = new FakeStorageAdapter();
     const getActiveTab = vi.fn(async () => ({ id: 999, url: "https://example.com/active" } as chrome.tabs.Tab));
-    const get = vi.fn(async () => ({ id: 999, url: "https://example.com/active" } as chrome.tabs.Tab));
     const sendMessage = vi.fn()
       .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping
     const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
-      tabs: { get, query: getActiveTab, sendMessage },
+      tabs: { query: getActiveTab, sendMessage },
       scripting: { executeScript },
     } as unknown as typeof chrome);
 
@@ -341,7 +340,7 @@ describe("startDomPicker", () => {
       { storage, now: () => 1_710_000_000_123, getActiveTab },
     );
     expect(result).toEqual({ ok: true });
-    expect(get).toHaveBeenCalledWith(999);
+    // chrome.tabs.get is NOT called — URL is obtained from getActiveTab, avoiding the need for "tabs" permission
     expect(sendMessage).toHaveBeenCalledWith(999, { type: "ping" });
     expect(sendMessage).toHaveBeenCalledWith(999, { type: "startDomPicker" });
   });
@@ -485,7 +484,6 @@ describe("startDomPicker", () => {
     const getActiveTab = vi.fn(async () => ({ id: 999, url: "https://example.com/valid" } as chrome.tabs.Tab));
     const get = vi.fn(async (id: number) => {
       if (id === 555) return { id: 555, url: "chrome://extensions" } as chrome.tabs.Tab;
-      if (id === 999) return { id: 999, url: "https://example.com/valid" } as chrome.tabs.Tab;
       throw new Error(`No tab with id: ${id}`);
     });
     const sendMessage = vi.fn()
@@ -506,18 +504,18 @@ describe("startDomPicker", () => {
     // Should have fallen back to active tab 999
     expect(result).toEqual({ ok: true });
     expect(getActiveTab).toHaveBeenCalled();
-    expect(get).toHaveBeenCalledWith(999);
+    // chrome.tabs.get IS called for tabId 555 (URL not known from input)
+    expect(get).toHaveBeenCalledWith(555);
+    // chrome.tabs.get is NOT called for fallback tab 999 — URL obtained from getActiveTab
     expect(sendMessage).toHaveBeenCalledWith(999, { type: "ping" });
     expect(sendMessage).toHaveBeenCalledWith(999, { type: "startDomPicker" });
   });
 
-  it("falls back to activeTab when provided tabId is invalid (tabs.get throws) (hardening)", async () => {
+  it("proceeds with injection when tabs.get throws (no tabs permission) — URL guard is skipped (hardening)", async () => {
     const storage = new FakeStorageAdapter();
     const getActiveTab = vi.fn(async () => ({ id: 888, url: "https://example.com/fallback" } as chrome.tabs.Tab));
-    const get = vi.fn(async (id: number) => {
-      if (id === 99999) throw new Error("No tab with id: 99999");
-      if (id === 888) return { id: 888, url: "https://example.com/fallback" } as chrome.tabs.Tab;
-      throw new Error(`No tab with id: ${id}`);
+    const get = vi.fn(async () => {
+      throw new Error("No tab with this id (simulates missing tabs permission)");
     });
     const sendMessage = vi.fn()
       .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping
@@ -533,11 +531,14 @@ describe("startDomPicker", () => {
       { storage, now: () => 1_710_000_000_123, getActiveTab },
     );
 
-    // Should have fallen back to active tab 888
+    // When tabs.get fails and URL is unknown, we skip the URL guard and proceed
+    // with injection directly on the given tabId (chrome.scripting will fail
+    // naturally if the tab is truly non-injectable)
     expect(result).toEqual({ ok: true });
-    expect(getActiveTab).toHaveBeenCalled();
-    expect(sendMessage).toHaveBeenCalledWith(888, { type: "ping" });
-    expect(sendMessage).toHaveBeenCalledWith(888, { type: "startDomPicker" });
+    // getActiveTab is NOT called — we proceed with the provided tabId
+    expect(getActiveTab).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(99999, { type: "ping" });
+    expect(sendMessage).toHaveBeenCalledWith(99999, { type: "startDomPicker" });
   });
 
   it("returns Russian error when both provided tabId and activeTab fallback are non-injectable (hardening)", async () => {
@@ -565,18 +566,18 @@ describe("startDomPicker", () => {
     expect(result.error).toContain("http");
   });
 
-  it("returns Russian error when tabs.get fails and activeTab fallback is also non-injectable (hardening)", async () => {
+  it("proceeds with injection when tabs.get fails — URL guard is skipped gracefully (hardening)", async () => {
     const storage = new FakeStorageAdapter();
     const getActiveTab = vi.fn(async () => ({ id: 777, url: "about:blank" } as chrome.tabs.Tab));
-    const get = vi.fn(async (id: number) => {
-      if (id === 99999) throw new Error("No tab");
-      if (id === 777) return { id: 777, url: "about:blank" } as chrome.tabs.Tab;
-      throw new Error(`No tab with id: ${id}`);
+    const get = vi.fn(async () => {
+      throw new Error("No tab (simulates missing tabs permission)");
     });
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, source: "contentScript" }); // ping
     const executeScript = vi.fn(async () => [{}]);
 
     vi.stubGlobal("chrome", {
-      tabs: { get, query: getActiveTab, sendMessage: vi.fn() },
+      tabs: { get, query: getActiveTab, sendMessage },
       scripting: { executeScript },
     } as unknown as typeof chrome);
 
@@ -585,8 +586,10 @@ describe("startDomPicker", () => {
       { storage, now: () => 1_710_000_000_123, getActiveTab },
     );
 
-    expect(result).toMatchObject({ ok: false });
-    expect(result.error).toContain("http");
+    // When tabs.get fails and URL is unknown, we skip the URL guard
+    // and proceed with injection on the given tabId
+    expect(result).toEqual({ ok: true });
+    expect(getActiveTab).not.toHaveBeenCalled();
   });
 });
 

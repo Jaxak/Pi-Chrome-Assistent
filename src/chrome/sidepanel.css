@@ -113,7 +113,16 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   display: flex;
   gap: 8px;
   align-items: center;
-  justify-content: space-between;
+}
+.session-port-left {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+.session-port-right {
+  flex: 1 1 50%;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
 }
 .session-heading-status {
   margin: 0;
@@ -174,9 +183,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .ant-input { width: 100%; min-height: 64px; resize: none; border: 1px solid var(--ant-color-border); border-radius: var(--ant-radius); outline: none; padding: 8px 11px; background: var(--ant-color-bg-container); color: var(--ant-color-text); }
 .ant-input::placeholder { color: var(--ant-color-text-tertiary); }
 .session-port-input {
-  flex: 0 0 80px;
+  flex: 1 1 50%;
   min-width: 0;
-  width: 80px;
   height: 32px;
   min-height: 32px;
   padding: 4px 8px;
@@ -203,6 +211,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.session-port-right .button-secondary {
+  flex: 1 1 50%;
+  min-width: 0;
 }
 
 .composer-runtime { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--ant-color-text-secondary); font-size: 12px; }

@@ -1,7 +1,7 @@
 import { cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 import { build } from "vite";
 
@@ -10,6 +10,23 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 const chromeSrcDir = path.join(projectRoot, "src", "chrome");
 const chromeDistDir = path.join(projectRoot, "dist", "chrome");
+
+// Проверка наличия rsvg-convert
+const rsvgCheck = spawnSync("which", ["rsvg-convert"], { stdio: "pipe" });
+if (rsvgCheck.status !== 0) {
+  console.error(`
+❌ Не найдена утилита rsvg-convert.
+
+Для сборки Chrome-расширения требуется librsvg2-bin:
+
+  Ubuntu/Debian:  sudo apt install librsvg2-bin
+  macOS:          brew install librsvg
+  Fedora:         sudo dnf install librsvg2-tools
+
+После установки повторите сборку.
+`);
+  process.exit(1);
+}
 
 const staticFiles = ["manifest.json", "sidepanel.html", "sidepanel.css", "crosshair.js", "icon.svg"];
 const scriptEntries = [

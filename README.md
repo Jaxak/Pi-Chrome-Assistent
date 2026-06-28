@@ -30,6 +30,23 @@ pi install git:https://github.com/Jaxak/Pi-Chrome-Assistent.git
 
 ---
 
+## Требования для сборки
+
+Для сборки Chrome-расширения из исходников требуется:
+
+- **Node.js** ≥ 24.0.0
+- **rsvg-convert** (для генерации PNG-иконок из SVG)
+
+### Установка rsvg-convert
+
+| ОС | Команда |
+|----|---------|
+| Ubuntu/Debian | `sudo apt install librsvg2-bin` |
+| macOS | `brew install librsvg` |
+| Fedora | `sudo dnf install librsvg2-tools` |
+
+---
+
 ## Быстрый старт
 
 ### 1. Авторизуйте браузер

@@ -126,6 +126,128 @@ function getAssistantTextDelta(event: unknown): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Merge helpers — append-only overlap merge of session history + transient
+// ---------------------------------------------------------------------------
+
+/**
+ * Produce a stable signature string for a single ChatEvent.
+ * Used to detect exact structural equality during overlap detection.
+ */
+function eventSignature(evt: ChatEvent): string {
+  switch (evt.kind) {
+    case "user_message":
+      return `user|${evt.text}|${evt.timestamp}`;
+    case "agent_busy":
+      return `busy|${evt.busy}|${evt.label}|${evt.timestamp}`;
+    case "assistant_message_start":
+      return `ast_start|${evt.messageId}|${evt.timestamp}`;
+    case "assistant_text_delta":
+      return `ast_delta|${evt.messageId}|${evt.delta}|${evt.timestamp}`;
+    case "assistant_message_end":
+      return `ast_end|${evt.messageId}|${evt.timestamp}`;
+    case "error":
+      return `err|${evt.message}|${evt.timestamp}`;
+  }
+}
+
+/**
+ * Find the length of the longest overlap between the suffix of `base` and the prefix of `overlay`.
+ * Returns the number of consecutive events at the start of `overlay` that match
+ * the tail of `base` by exact signature.
+ */
+function findOverlapIndex(base: ChatEvent[], overlay: ChatEvent[]): number {
+  if (base.length === 0 || overlay.length === 0) return 0;
+
+  const maxOverlap = Math.min(base.length, overlay.length);
+  for (let len = maxOverlap; len >= 1; len--) {
+    let match = true;
+    for (let i = 0; i < len; i++) {
+      if (eventSignature(base[base.length - len + i]) !== eventSignature(overlay[i])) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return len;
+  }
+  return 0;
+}
+
+/**
+ * Merge authoritative session history with transient overlay events
+ * using append-only overlap merge.
+ *
+ * Strategy:
+ * - sessionHistory is the authoritative base.
+ * - transient is the recent overlay (in-memory events since last persist).
+ * - Find the longest prefix of transient that exactly matches a suffix of
+ *   sessionHistory (by event signatures).
+ * - Append the non-overlapping suffix of transient to sessionHistory.
+ *
+ * This avoids eating new events that merely share text with older history entries.
+ */
+export function mergeChatEvents(
+  sessionHistory: ChatEvent[],
+  transient: ChatEvent[],
+): ChatEvent[] {
+  if (transient.length === 0) return [...sessionHistory];
+  if (sessionHistory.length === 0) return [...transient];
+
+  const overlap = findOverlapIndex(sessionHistory, transient);
+  const newEvents = transient.slice(overlap);
+
+  return [...sessionHistory, ...newEvents];
+}
+
+// ---------------------------------------------------------------------------
+// Session history from sessionManager
+// ---------------------------------------------------------------------------
+
+/** Build authoritative chat events from sessionManager branch entries. */
+export function buildChatEventsFromSessionBranch(options: {
+  ctx: ExtensionContext | undefined;
+  now: () => number;
+}): ChatEvent[] {
+  const branch = options.ctx?.sessionManager?.getBranch?.() ?? [];
+  const events: ChatEvent[] = [];
+  const baseTs = options.now();
+
+  for (const entry of branch) {
+    if (entry.type !== "message") continue;
+
+    const msg = entry.message;
+    const ts = msg.timestamp
+      ? (msg.timestamp as number)
+      : baseTs;
+
+    if (msg.role === "user") {
+      const text = extractTextContent(msg.content);
+      if (text.length > 0) {
+        events.push({ kind: "user_message", text, timestamp: ts });
+      }
+    } else if (msg.role === "assistant") {
+      const id = (msg as { id?: string }).id ?? entry.id;
+      events.push({ kind: "assistant_message_start", messageId: id, timestamp: ts });
+      const text = extractTextContent(msg.content);
+      if (text.length > 0) {
+        events.push({ kind: "assistant_text_delta", messageId: id, delta: text, timestamp: ts });
+      }
+      events.push({ kind: "assistant_message_end", messageId: id, timestamp: ts });
+    }
+  }
+
+  return events;
+}
+
+function extractTextContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((c) => typeof c === "object" && c !== null && "text" in c)
+    .map((c) => (c as { text?: string }).text ?? "")
+    .join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Extension default export
 // ---------------------------------------------------------------------------
 
@@ -211,6 +333,11 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
     const ctx = latestCtx;
     const runtime = buildDirectRuntimeState({ ctx: ctx as Parameters<typeof buildDirectRuntimeState>[0]["ctx"] });
 
+    // Merge authoritative session history with transient in-memory events,
+    // avoiding duplicates when transient events have already been persisted.
+    const sessionHistory = buildChatEventsFromSessionBranch({ ctx, now: Date.now });
+    const mergedEvents = mergeChatEvents(sessionHistory, chatEvents);
+
     const modelSummary: TargetModelSummary | undefined =
       typeof ctx?.model?.provider === "string" && typeof ctx.model.id === "string"
         ? {
@@ -229,7 +356,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
         connectedAt: connectedAt ?? Date.now(),
       },
       chat: {
-        events: chatEvents,
+        events: mergedEvents,
         agentBusy: ctx ? !ctx.isIdle() : false,
         busyLabel: "Агент работает в фоне…",
       },

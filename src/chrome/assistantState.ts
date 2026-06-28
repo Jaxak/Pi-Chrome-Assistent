@@ -148,6 +148,9 @@ function applySessionSnapshot(
   state: BackgroundAssistantState,
   snapshot: DirectSessionSnapshot,
 ): BackgroundAssistantState {
+  const chatEvents = snapshot.chat.events ?? [];
+  const hydratedMessages = materializeChatMessages(chatEvents);
+
   return {
     ...state,
     connection: {
@@ -167,11 +170,24 @@ function applySessionSnapshot(
       modelError: undefined,
     },
     chat: {
-      ...state.chat,
+      messages: hydratedMessages,
       agentBusy: snapshot.chat.agentBusy,
       busyLabel: snapshot.chat.busyLabel || state.chat.busyLabel,
+      sending: false,
+      error: undefined,
     },
   };
+}
+
+function materializeChatMessages(events: ChatEvent[]): import("./sidepanelState").SidepanelChatMessage[] {
+  const sidePanelState = createInitialSidePanelState();
+  let result = sidePanelState;
+
+  for (const event of events) {
+    result = reduceSidePanelChatEvent(result, event);
+  }
+
+  return result.messages;
 }
 
 export function formatAssistantStatus(state: BackgroundAssistantState): string {

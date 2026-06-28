@@ -6,6 +6,7 @@ import {
   type StorageAdapter,
 } from "./diagnostics";
 import { BackgroundAssistantStateServer } from "./backgroundStateServer";
+import type { SelectionPayload } from "../shared/protocol";
 
 const storage = chromeStorageAdapter();
 
@@ -16,12 +17,14 @@ export type StartDomPickerInput = {
 export type StartDomPickerDependencies = {
   storage?: StorageAdapter;
   now?: () => number;
+  getActiveTab?: () => Promise<chrome.tabs.Tab | undefined>;
 };
 
 export type BackgroundMessageListenerDependencies = {
   storage?: StorageAdapter;
   getActiveTab?: () => Promise<chrome.tabs.Tab | undefined>;
   now?: () => number;
+  sendSelection?: (selection: SelectionPayload) => { ok: true } | { ok: false; error: string };
 };
 
 export type BackgroundMessageListener = (
@@ -77,14 +80,58 @@ export async function startDomPicker(
 ): Promise<{ ok?: boolean; error?: string }> {
   const backgroundStorage = dependencies.storage ?? storage;
   const now = dependencies.now ?? Date.now;
-  const tabId = typeof input.tabId === "number" && Number.isInteger(input.tabId)
-    ? input.tabId
-    : undefined;
+  const activeTabGetter = dependencies.getActiveTab;
+
+  // Resolve initial tabId candidate
+  let tabId: number | undefined =
+    typeof input.tabId === "number" && Number.isInteger(input.tabId)
+      ? input.tabId
+      : undefined;
 
   if (tabId === undefined) {
-    return { ok: false, error: "Не удалось определить вкладку для DOM picker." };
+    if (activeTabGetter) {
+      const tab = await activeTabGetter();
+      if (tab?.id === undefined) {
+        return { ok: false, error: "Не удалось определить вкладку для DOM picker." };
+      }
+      tabId = tab.id;
+    } else {
+      return { ok: false, error: "Не удалось определить вкладку для DOM picker." };
+    }
   }
 
+  // Try the resolved tabId
+  const result = await tryInjectDomPicker(
+    tabId,
+    backgroundStorage,
+    now,
+  );
+
+  if (result.ok !== false) {
+    return result;
+  }
+
+  // Fallback: if the primary tabId failed (invalid tab or non-injectable),
+  // try active tab — but only if it differs from the one we already tried.
+  if (activeTabGetter) {
+    const fallbackTab = await activeTabGetter();
+    if (fallbackTab?.id !== undefined && fallbackTab.id !== tabId) {
+      return tryInjectDomPicker(
+        fallbackTab.id,
+        backgroundStorage,
+        now,
+      );
+    }
+  }
+
+  return result;
+}
+
+async function tryInjectDomPicker(
+  tabId: number,
+  backgroundStorage: StorageAdapter,
+  now: () => number,
+): Promise<{ ok?: boolean; error?: string }> {
   try {
     const tab = await chrome.tabs.get(tabId);
 
@@ -154,7 +201,7 @@ export function createBackgroundMessageListener(
 ): BackgroundMessageListener {
   const backgroundStorage = dependencies.storage ?? storage;
   const now = dependencies.now ?? Date.now;
-  const activeTabGetter = dependencies.getActiveTab ?? getActiveTab;
+  const sendSelectionDep = dependencies.sendSelection;
 
   return (
     message: unknown,
@@ -181,7 +228,11 @@ export function createBackgroundMessageListener(
         {
           tabId: typeof requestMessage.tabId === "number" ? requestMessage.tabId : undefined,
         },
-        { storage: backgroundStorage, now },
+        {
+          storage: backgroundStorage,
+          now,
+          getActiveTab: dependencies.getActiveTab,
+        },
       ).then(sendResponse);
 
       return true;
@@ -234,6 +285,19 @@ export function createBackgroundMessageListener(
       return true;
     }
 
+    if (requestMessage.type === "sendSelection") {
+      const selection = (requestMessage as { selection?: unknown }).selection;
+      if (selection && typeof selection === "object") {
+        const result = sendSelectionDep
+          ? sendSelectionDep(selection as SelectionPayload)
+          : { ok: false, error: "Pi-сессия не подключена." };
+        sendResponse(result);
+      } else {
+        sendResponse({ ok: false, error: "Некорректное сообщение sendSelection" });
+      }
+      return false;
+    }
+
     return false;  };
 }
 
@@ -241,7 +305,7 @@ export function createBackgroundMessageListener(
 
 const stateServer = new BackgroundAssistantStateServer({
   storage,
-  startDomPicker: (input) => startDomPicker(input, { storage }),
+  startDomPicker: (input) => startDomPicker(input, { storage, getActiveTab }),
 });
 
 if (typeof chrome !== "undefined") {
@@ -260,5 +324,7 @@ if (typeof chrome !== "undefined") {
     }
   });
 
-  chrome.runtime.onMessage.addListener(createBackgroundMessageListener());
+  chrome.runtime.onMessage.addListener(createBackgroundMessageListener({
+    sendSelection: (selection) => stateServer.sendSelection(selection),
+  }));
 }

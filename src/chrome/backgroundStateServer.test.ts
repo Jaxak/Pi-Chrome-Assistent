@@ -101,9 +101,10 @@ class FakeSessionClient {
     void message;
     return this.sendChatMessageResult;
   });
+  sendSelectionResult = true;
   readonly sendSelection = vi.fn((selection: SelectionPayload): boolean => {
     void selection;
-    return true;
+    return this.sendSelectionResult;
   });
   readonly setModel = vi.fn((input: { provider: string; modelId: string }): boolean => {
     void input;
@@ -443,6 +444,65 @@ describe("BackgroundAssistantStateServer", () => {
     expect(server.getSnapshot().chat.agentBusy).toBe(false);
   });
 
+  it("materializes chat.events from session_snapshot into visible messages", () => {
+    const { server } = createServer();
+    const snapshot = createSnapshot({
+      chat: {
+        events: [
+          { kind: "user_message", text: "Привет, Pi!", timestamp: 1_710_000_000_100 },
+          { kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_200 },
+          { kind: "assistant_text_delta", messageId: "msg-1", delta: "Привет!", timestamp: 1_710_000_000_300 },
+          { kind: "assistant_message_end", messageId: "msg-1", timestamp: 1_710_000_000_400 },
+        ],
+        agentBusy: false,
+        busyLabel: "Агент работает в фоне…",
+      },
+    });
+    server.applySessionSnapshot(snapshot);
+
+    const state = server.getSnapshot();
+    expect(state.chat.messages).toHaveLength(2);
+    expect(state.chat.messages[0]).toEqual({
+      role: "user",
+      text: "Привет, Pi!",
+      timestamp: 1_710_000_000_100,
+    });
+    expect(state.chat.messages[1]).toEqual({
+      role: "assistant",
+      messageId: "msg-1",
+      text: "Привет!",
+      streaming: false,
+      timestamp: 1_710_000_000_200,
+    });
+  });
+
+  it("preserves chat history across multiple session_snapshot applications (reconnect)", () => {
+    const { server } = createServer();
+    const snapshot = createSnapshot({
+      chat: {
+        events: [
+          { kind: "user_message", text: "Вопрос", timestamp: 1_710_000_000_100 },
+          { kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_200 },
+          { kind: "assistant_text_delta", messageId: "msg-1", delta: "Ответ", timestamp: 1_710_000_000_300 },
+          { kind: "assistant_message_end", messageId: "msg-1", timestamp: 1_710_000_000_400 },
+        ],
+        agentBusy: false,
+        busyLabel: "Агент работает в фоне…",
+      },
+    });
+
+    // First snapshot
+    server.applySessionSnapshot(snapshot);
+    const firstState = server.getSnapshot();
+
+    // Simulate reconnect: same snapshot again
+    server.applySessionSnapshot(snapshot);
+    const secondState = server.getSnapshot();
+
+    expect(secondState.chat.messages).toEqual(firstState.chat.messages);
+    expect(secondState.chat.messages).toHaveLength(2);
+  });
+
   it("isChatSendDisabled returns true when not online", () => {
     const { server } = createServer();
 
@@ -656,5 +716,74 @@ describe("BackgroundAssistantStateServer", () => {
 
     expect(sessionClients[0]?.close).toHaveBeenCalledTimes(1);
     expect(server.getSnapshot().connection.online).toBe(false);
+  });
+
+  it("sends selection through sessionClient and returns result", async () => {
+    const { server, sessionClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+    await flushAsyncWork();
+    server.applySessionSnapshot(createSnapshot());
+
+    const selection: SelectionPayload = {
+      url: "https://example.com",
+      title: "Example",
+      selectedText: "выделенный текст",
+      selectedHtml: "<span>текст</span>",
+      capturedAt: 1_710_000_000_000,
+    };
+
+    const result = server.sendSelection(selection);
+    expect(result).toEqual({ ok: true });
+    expect(sessionClients[0]?.sendSelection).toHaveBeenCalledWith(selection);
+  });
+
+  it("sendSelection returns error when no session client", async () => {
+    const { server } = createServer();
+
+    const selection: SelectionPayload = {
+      url: "https://example.com",
+      title: "Example",
+      selectedText: "текст",
+      selectedHtml: "<span>текст</span>",
+      capturedAt: 1_710_000_000_000,
+    };
+
+    const result = server.sendSelection(selection);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("Pi-сессия не подключена");
+    }
+  });
+
+  it("sendSelection returns error when session client send fails", async () => {
+    const { server, sessionClients } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+    await flushAsyncWork();
+    server.applySessionSnapshot(createSnapshot());
+
+    if (sessionClients[0]) {
+      sessionClients[0].sendSelectionResult = false;
+    }
+
+    const selection: SelectionPayload = {
+      url: "https://example.com",
+      title: "Example",
+      selectedText: "текст",
+      selectedHtml: "<span>текст</span>",
+      capturedAt: 1_710_000_000_000,
+    };
+
+    const result = server.sendSelection(selection);
+    expect(result.ok).toBe(false);
   });
 });

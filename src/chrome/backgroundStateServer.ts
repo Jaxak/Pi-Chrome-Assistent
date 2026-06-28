@@ -141,6 +141,14 @@ export class BackgroundAssistantStateServer {
     this.applyState({ kind: "session_snapshot", snapshot });
   }
 
+  sendSelection(selection: SelectionPayload): { ok: true } | { ok: false; error: string } {
+    const sent = this.sessionClient?.sendSelection?.(selection);
+    if (sent === true) {
+      return { ok: true };
+    }
+    return { ok: false, error: "Pi-сессия не подключена." };
+  }
+
   private handlePortMessage(message: unknown): void {
     const command = message && typeof message === "object"
       ? (message as { type?: unknown; port?: unknown; message?: unknown; provider?: unknown; modelId?: unknown; tabId?: unknown })

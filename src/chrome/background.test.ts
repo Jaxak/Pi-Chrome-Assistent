@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StorageAdapter, DiagnosticEntry } from "./diagnostics";
+import type { SelectionPayload } from "../shared/protocol";
 import {
   configureSidePanelOnActionClick,
   createBackgroundMessageListener,
@@ -141,6 +142,41 @@ describe("startDomPicker", () => {
     expect(result).toEqual({ ok: false, error: "Не удалось определить вкладку для DOM picker." });
   });
 
+  it("uses getActiveTab fallback when tabId is not provided but activeTabGetter is available", async () => {
+    const storage = new FakeStorageAdapter();
+    const getActiveTab = vi.fn(async () => ({ id: 999, url: "https://example.com/active" } as chrome.tabs.Tab));
+    const get = vi.fn(async () => ({ id: 999, url: "https://example.com/active" } as chrome.tabs.Tab));
+    const executeScript = vi.fn(async () => undefined);
+    const sendMessage = vi.fn(async () => ({ ok: true }));
+
+    vi.stubGlobal("chrome", {
+      tabs: { get, query: getActiveTab, sendMessage },
+      scripting: { executeScript },
+    } as unknown as typeof chrome);
+
+    const result = await startDomPicker(
+      {},
+      { storage, now: () => 1_710_000_000_123, getActiveTab },
+    );
+    expect(result).toEqual({ ok: true });
+    expect(get).toHaveBeenCalledWith(999);
+    expect(executeScript).toHaveBeenCalledWith({
+      target: { tabId: 999 },
+      files: ["contentScript.js"],
+    });
+  });
+
+  it("returns Russian error when getActiveTab fallback also fails", async () => {
+    const storage = new FakeStorageAdapter();
+    const getActiveTab = vi.fn(async () => undefined);
+
+    const result = await startDomPicker(
+      {},
+      { storage, now: () => 1_710_000_000_123, getActiveTab },
+    );
+    expect(result).toEqual({ ok: false, error: "Не удалось определить вкладку для DOM picker." });
+  });
+
   it("returns a Russian error for non-http(s) tab URLs", async () => {
     const storage = new FakeStorageAdapter();
     const get = vi.fn(async () => ({ id: 555, url: "chrome://extensions" } as chrome.tabs.Tab));
@@ -229,6 +265,115 @@ describe("startDomPicker", () => {
 
     expect(sendMessage).toHaveBeenCalledWith(321, { type: "startDomPicker" });
   });
+
+  it("falls back to activeTab when provided tabId is for a non-injectable tab (hardening)", async () => {
+    const storage = new FakeStorageAdapter();
+    const getActiveTab = vi.fn(async () => ({ id: 999, url: "https://example.com/valid" } as chrome.tabs.Tab));
+    const get = vi.fn(async (id: number) => {
+      if (id === 555) return { id: 555, url: "chrome://extensions" } as chrome.tabs.Tab;
+      if (id === 999) return { id: 999, url: "https://example.com/valid" } as chrome.tabs.Tab;
+      throw new Error(`No tab with id: ${id}`);
+    });
+    const executeScript = vi.fn(async () => undefined);
+    const sendMessage = vi.fn(async () => ({ ok: true }));
+
+    vi.stubGlobal("chrome", {
+      tabs: { get, query: getActiveTab, sendMessage },
+      scripting: { executeScript },
+    } as unknown as typeof chrome);
+
+    // tabId 555 is chrome:// — non-injectable
+    const result = await startDomPicker(
+      { tabId: 555 },
+      { storage, now: () => 1_710_000_000_123, getActiveTab },
+    );
+
+    // Should have fallen back to active tab 999
+    expect(result).toEqual({ ok: true });
+    expect(getActiveTab).toHaveBeenCalled();
+    expect(get).toHaveBeenCalledWith(999);
+    expect(executeScript).toHaveBeenCalledWith({
+      target: { tabId: 999 },
+      files: ["contentScript.js"],
+    });
+  });
+
+  it("falls back to activeTab when provided tabId is invalid (tabs.get throws) (hardening)", async () => {
+    const storage = new FakeStorageAdapter();
+    const getActiveTab = vi.fn(async () => ({ id: 888, url: "https://example.com/fallback" } as chrome.tabs.Tab));
+    const get = vi.fn(async (id: number) => {
+      if (id === 99999) throw new Error("No tab with id: 99999");
+      if (id === 888) return { id: 888, url: "https://example.com/fallback" } as chrome.tabs.Tab;
+      throw new Error(`No tab with id: ${id}`);
+    });
+    const executeScript = vi.fn(async () => undefined);
+    const sendMessage = vi.fn(async () => ({ ok: true }));
+
+    vi.stubGlobal("chrome", {
+      tabs: { get, query: getActiveTab, sendMessage },
+      scripting: { executeScript },
+    } as unknown as typeof chrome);
+
+    const result = await startDomPicker(
+      { tabId: 99999 },
+      { storage, now: () => 1_710_000_000_123, getActiveTab },
+    );
+
+    // Should have fallen back to active tab 888
+    expect(result).toEqual({ ok: true });
+    expect(getActiveTab).toHaveBeenCalled();
+    expect(executeScript).toHaveBeenCalledWith({
+      target: { tabId: 888 },
+      files: ["contentScript.js"],
+    });
+  });
+
+  it("returns Russian error when both provided tabId and activeTab fallback are non-injectable (hardening)", async () => {
+    const storage = new FakeStorageAdapter();
+    const getActiveTab = vi.fn(async () => ({ id: 777, url: "chrome://newtab" } as chrome.tabs.Tab));
+    const get = vi.fn(async (id: number) => {
+      if (id === 555) return { id: 555, url: "chrome://extensions" } as chrome.tabs.Tab;
+      if (id === 777) return { id: 777, url: "chrome://newtab" } as chrome.tabs.Tab;
+      throw new Error(`No tab with id: ${id}`);
+    });
+
+    vi.stubGlobal("chrome", {
+      tabs: { get, query: getActiveTab, sendMessage: vi.fn() },
+      scripting: { executeScript: vi.fn() },
+    } as unknown as typeof chrome);
+
+    const result = await startDomPicker(
+      { tabId: 555 },
+      { storage, now: () => 1_710_000_000_123, getActiveTab },
+    );
+
+    // Both the provided tabId's tab and the fallback are chrome:// — should error
+    expect(result).toMatchObject({ ok: false });
+    expect(result.error).toContain("http");
+  });
+
+  it("returns Russian error when tabs.get fails and activeTab fallback is also non-injectable (hardening)", async () => {
+    const storage = new FakeStorageAdapter();
+    const getActiveTab = vi.fn(async () => ({ id: 777, url: "about:blank" } as chrome.tabs.Tab));
+    const get = vi.fn(async (id: number) => {
+      if (id === 99999) throw new Error("No tab");
+      if (id === 777) return { id: 777, url: "about:blank" } as chrome.tabs.Tab;
+      throw new Error(`No tab with id: ${id}`);
+    });
+
+    vi.stubGlobal("chrome", {
+      tabs: { get, query: getActiveTab, sendMessage: vi.fn() },
+      scripting: { executeScript: vi.fn() },
+    } as unknown as typeof chrome);
+
+    const result = await startDomPicker(
+      { tabId: 99999 },
+      { storage, now: () => 1_710_000_000_123, getActiveTab },
+    );
+
+    expect(result).toMatchObject({ ok: false });
+    expect(result.error).toContain("http");
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -264,11 +409,38 @@ describe("createBackgroundMessageListener", () => {
     expect(sendMessage).toHaveBeenCalledWith(555, { type: "startDomPicker" });
   });
 
-  it("returns Russian error when startDomPicker has no tabId", async () => {
+  it("returns Russian error when startDomPicker has no tabId and no getActiveTab", async () => {
     const listener = createBackgroundMessageListener();
     await expect(invokeMessageListener(listener, { type: "startDomPicker" })).resolves.toEqual({
       ok: false,
       error: "Не удалось определить вкладку для DOM picker.",
+    });
+  });
+
+  it("uses getActiveTab fallback in startDomPicker message when no tabId", async () => {
+    const executeScript = vi.fn(async () => undefined);
+    const sendMessage = vi.fn(async () => ({ ok: true }));
+    const get = vi.fn(async () => ({ id: 42, url: "https://example.com" } as chrome.tabs.Tab));
+    const getActiveTab = vi.fn(async () => ({ id: 42, url: "https://example.com" } as chrome.tabs.Tab));
+
+    vi.stubGlobal("chrome", {
+      scripting: { executeScript },
+      tabs: { get, sendMessage },
+    } as unknown as typeof chrome);
+
+    const listener = createBackgroundMessageListener({
+      storage: new FakeStorageAdapter(),
+      getActiveTab,
+    });
+
+    await expect(
+      invokeMessageListener(listener, { type: "startDomPicker" }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(getActiveTab).toHaveBeenCalled();
+    expect(executeScript).toHaveBeenCalledWith({
+      target: { tabId: 42 },
+      files: ["contentScript.js"],
     });
   });
 
@@ -357,7 +529,78 @@ describe("createBackgroundMessageListener", () => {
     expect(sendResponse).not.toHaveBeenCalled();
   });
 
+  it("handles sendSelection message and proxies to session server", async () => {
+    const sendSelectionSpy = vi.fn<
+      (selection: SelectionPayload) => { ok: true } | { ok: false; error: string }
+    >((selection) => {
+      void selection;
+      return { ok: true };
+    });
+    const listener = createBackgroundMessageListener({
+      storage: new FakeStorageAdapter(),
+      sendSelection: sendSelectionSpy,
+    });
 
+    const selection = {
+      url: "https://example.com",
+      title: "Example",
+      selectedText: "выделенный текст",
+      selectedHtml: "<span>текст</span>",
+      capturedAt: 1_710_000_000_000,
+    };
+
+    await expect(
+      invokeMessageListener(listener, { type: "sendSelection", selection }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(sendSelectionSpy).toHaveBeenCalledWith(selection);
+  });
+
+  it("returns Russian error when sendSelection server call fails", async () => {
+    const sendSelectionSpy = vi.fn(() => ({
+      ok: false,
+      error: "Pi-сессия не подключена.",
+    }));
+    const listener = createBackgroundMessageListener({
+      storage: new FakeStorageAdapter(),
+      sendSelection: sendSelectionSpy,
+    });
+
+    const selection = {
+      url: "https://example.com",
+      title: "Example",
+      selectedText: "текст",
+      selectedHtml: "<span>текст</span>",
+      capturedAt: 1_710_000_000_000,
+    };
+
+    await expect(
+      invokeMessageListener(listener, { type: "sendSelection", selection }),
+    ).resolves.toEqual({ ok: false, error: "Pi-сессия не подключена." });
+  });
+
+  it("returns Russian error when sendSelection server is offline", async () => {
+    const sendSelectionSpy = vi.fn(() => ({
+      ok: false,
+      error: "Pi-сессия не подключена.",
+    }));
+    const listener = createBackgroundMessageListener({
+      storage: new FakeStorageAdapter(),
+      sendSelection: sendSelectionSpy,
+    });
+
+    const selection = {
+      url: "https://example.com",
+      title: "Page",
+      selectedText: "выделение",
+      selectedHtml: "<div>выделение</div>",
+      capturedAt: 1_710_000_000_000,
+    };
+
+    const result = await invokeMessageListener(listener, { type: "sendSelection", selection });
+    expect((result as { ok: boolean; error: string }).ok).toBe(false);
+    expect((result as { error: string }).error).toContain("Pi-сессия не подключена");
+  });
 });
 
 /* ------------------------------------------------------------------ */

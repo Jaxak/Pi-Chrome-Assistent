@@ -109,6 +109,202 @@ describe("assistantState", () => {
       expect(nextState.connection.configuredPort).toBe(31416);
       expect(nextState.connection.online).toBe(true);
     });
+
+    it("materializes chat.events from snapshot into visible chat messages", () => {
+      const state = createInitialAssistantState();
+      const snapshot = createDirectSnapshot({
+        chat: {
+          events: [
+            { kind: "user_message", text: "Привет, Pi!", timestamp: 1_710_000_000_100 },
+            { kind: "agent_busy", busy: true, label: "Агент работает в фоне…", timestamp: 1_710_000_000_101 },
+            { kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_200 },
+            { kind: "assistant_text_delta", messageId: "msg-1", delta: "Привет!", timestamp: 1_710_000_000_300 },
+            { kind: "assistant_text_delta", messageId: "msg-1", delta: " Как могу помочь?", timestamp: 1_710_000_000_400 },
+            { kind: "assistant_message_end", messageId: "msg-1", timestamp: 1_710_000_000_500 },
+          ],
+          agentBusy: false,
+          busyLabel: "Агент работает в фоне…",
+        },
+      });
+
+      const nextState = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot,
+      });
+
+      // User message should be materialized
+      expect(nextState.chat.messages).toHaveLength(2);
+      expect(nextState.chat.messages[0]).toEqual({
+        role: "user",
+        text: "Привет, Pi!",
+        timestamp: 1_710_000_000_100,
+      });
+      // Assistant message with accumulated text, non-streaming
+      expect(nextState.chat.messages[1]).toEqual({
+        role: "assistant",
+        messageId: "msg-1",
+        text: "Привет! Как могу помочь?",
+        streaming: false,
+        timestamp: 1_710_000_000_200,
+      });
+    });
+
+    it("preserves chat messages across reconnect with session_snapshot", () => {
+      // Initial connection with some chat history
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot({
+          chat: {
+            events: [
+              { kind: "user_message", text: "Первый вопрос", timestamp: 1_710_000_000_100 },
+              { kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_200 },
+              { kind: "assistant_text_delta", messageId: "msg-1", delta: "Ответ на первый вопрос", timestamp: 1_710_000_000_300 },
+              { kind: "assistant_message_end", messageId: "msg-1", timestamp: 1_710_000_000_400 },
+            ],
+            agentBusy: false,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      });
+
+      const messagesBeforeReconnect = [...state.chat.messages];
+
+      // Simulate reconnect: new snapshot with same history
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot({
+          chat: {
+            events: [
+              { kind: "user_message", text: "Первый вопрос", timestamp: 1_710_000_000_100 },
+              { kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_200 },
+              { kind: "assistant_text_delta", messageId: "msg-1", delta: "Ответ на первый вопрос", timestamp: 1_710_000_000_300 },
+              { kind: "assistant_message_end", messageId: "msg-1", timestamp: 1_710_000_000_400 },
+            ],
+            agentBusy: false,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      });
+
+      // Messages should be preserved after reconnect
+      expect(state.chat.messages).toEqual(messagesBeforeReconnect);
+      expect(state.chat.messages).toHaveLength(2);
+    });
+
+    it("materializes snapshot chat events when chat was already populated from prior state", () => {
+      let state = createInitialAssistantState();
+
+      // First, some local chat state from user messages
+      state = reduceAssistantState(state, {
+        kind: "chat_event",
+        event: { kind: "user_message", text: "Локальное сообщение", timestamp: 1_710_000_000_050 },
+      });
+
+      // Then a snapshot arrives with its own events — should materialize from snapshot
+      const snapshot = createDirectSnapshot({
+        chat: {
+          events: [
+            { kind: "user_message", text: "Привет, Pi!", timestamp: 1_710_000_000_100 },
+            { kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_200 },
+            { kind: "assistant_text_delta", messageId: "msg-1", delta: "Привет!", timestamp: 1_710_000_000_300 },
+            { kind: "assistant_message_end", messageId: "msg-1", timestamp: 1_710_000_000_400 },
+          ],
+          agentBusy: false,
+          busyLabel: "Агент работает в фоне…",
+        },
+      });
+
+      const nextState = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot,
+      });
+
+      expect(nextState.chat.messages).toHaveLength(2);
+      expect(nextState.chat.messages[0].role).toBe("user");
+      expect(nextState.chat.messages[0].text).toBe("Привет, Pi!");
+      expect(nextState.chat.messages[1].role).toBe("assistant");
+      expect(nextState.chat.messages[1].text).toBe("Привет!");
+    });
+
+    it("clears chat messages when snapshot.chat.events is empty — no bleed from prior session (hardening)", () => {
+      let state = createInitialAssistantState();
+
+      // First, populate state with messages from a prior session
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot({
+          chat: {
+            events: [
+              { kind: "user_message", text: "Старый вопрос", timestamp: 1_710_000_000_100 },
+              { kind: "assistant_message_start", messageId: "old-1", timestamp: 1_710_000_000_200 },
+              { kind: "assistant_text_delta", messageId: "old-1", delta: "Старый ответ", timestamp: 1_710_000_000_300 },
+              { kind: "assistant_message_end", messageId: "old-1", timestamp: 1_710_000_000_400 },
+            ],
+            agentBusy: false,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      });
+
+      // Verify prior messages are present
+      expect(state.chat.messages).toHaveLength(2);
+
+      // Now apply a snapshot with empty chat.events (new/empty session)
+      const emptySnapshot = createDirectSnapshot({
+        session: { ...createDirectSnapshot().session, sessionName: "new-empty-session" },
+        chat: {
+          events: [],
+          agentBusy: false,
+          busyLabel: "Агент работает в фоне…",
+        },
+      });
+
+      const nextState = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: emptySnapshot,
+      });
+
+      // Messages must be cleared — no bleed from prior session
+      expect(nextState.chat.messages).toEqual([]);
+    });
+
+    it("clears chat messages when snapshot.chat.events is undefined — authoritative empty (hardening)", () => {
+      let state = createInitialAssistantState();
+
+      // Populate with messages
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot({
+          chat: {
+            events: [
+              { kind: "user_message", text: "Сообщение", timestamp: 1_710_000_000_100 },
+            ],
+            agentBusy: false,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      });
+      expect(state.chat.messages).toHaveLength(1);
+
+      // Apply snapshot where chat.events is explicitly undefined
+      const snapshotNoEvents: DirectSessionSnapshot = {
+        ...createDirectSnapshot(),
+        chat: {
+          agentBusy: false,
+          busyLabel: "Агент работает в фоне…",
+        },
+      };
+      delete (snapshotNoEvents.chat as { events?: unknown }).events;
+
+      const nextState = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: snapshotNoEvents,
+      });
+
+      // Messages must be cleared
+      expect(nextState.chat.messages).toEqual([]);
+    });
   });
 
   describe("reduceAssistantState - connection_updated", () => {

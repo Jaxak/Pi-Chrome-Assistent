@@ -556,6 +556,42 @@ describe("createBackgroundMessageListener", () => {
     expect(sendSelectionSpy).toHaveBeenCalledWith(selection);
   });
 
+  it("DOM picker sendSelection uses direct command path (not mirror snapshot)", async () => {
+    // Task 9: Confirm DOM picker flow goes through session.selection.send
+    // (direct command path), NOT through mirror snapshot/entry pipeline.
+    const sendSelectionSpy = vi.fn<
+      (selection: SelectionPayload) => { ok: true } | { ok: false; error: string }
+    >((selection) => {
+      void selection;
+      return { ok: true };
+    });
+    const listener = createBackgroundMessageListener({
+      storage: new FakeStorageAdapter(),
+      sendSelection: sendSelectionSpy,
+    });
+
+    // Selection from DOM picker carries URL + selected content
+    const selection = {
+      url: "https://example.com/article",
+      title: "Статья",
+      selectedText: "выделенный текст для Pi",
+      selectedHtml: "<p>выделенный текст для Pi</p>",
+      comment: "Объясни этот фрагмент",
+      capturedAt: 1_710_000_000_000,
+    };
+
+    const result = await invokeMessageListener(listener, {
+      type: "sendSelection",
+      selection,
+    });
+
+    // The selection is forwarded to the session server (which sends
+    // session.selection.send over WebSocket) — NOT via mirror snapshot
+    expect(result).toEqual({ ok: true });
+    expect(sendSelectionSpy).toHaveBeenCalledTimes(1);
+    expect(sendSelectionSpy).toHaveBeenCalledWith(selection);
+  });
+
   it("returns Russian error when sendSelection server call fails", async () => {
     const sendSelectionSpy = vi.fn(() => ({
       ok: false,

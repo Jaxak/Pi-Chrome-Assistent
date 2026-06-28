@@ -63,6 +63,7 @@ export type BackgroundAssistantStateServerDependencies = {
   sessionClientFactory?: (options: BackgroundStateServerSessionClientOptions) => BackgroundStateServerSessionClient;
   recordDiagnostic?: (diagnostic: BackgroundStateServerDiagnostic) => Promise<void> | void;
   startDomPicker?: (input: { tabId?: number }) => Promise<{ ok?: boolean; error?: string }>;
+  stopDomPicker?: () => Promise<void>;
 };
 
 type ConnectedPort = {
@@ -77,6 +78,7 @@ export class BackgroundAssistantStateServer {
   private readonly sessionClientFactory: (options: BackgroundStateServerSessionClientOptions) => BackgroundStateServerSessionClient;
   private readonly recordDiagnosticEntry: (diagnostic: BackgroundStateServerDiagnostic) => Promise<void> | void;
   private readonly startDomPickerCommand: ((input: { tabId?: number }) => Promise<{ ok?: boolean; error?: string }>) | undefined;
+  private readonly stopDomPickerCommand: (() => Promise<void>) | undefined;
   private readonly ports = new Map<ChromeRuntimePortLike, ConnectedPort>();
   private state: BackgroundAssistantState = createInitialAssistantState();
   private sessionClient: BackgroundStateServerSessionClient | undefined;
@@ -95,6 +97,7 @@ export class BackgroundAssistantStateServer {
       await appendDiagnostic(this.storage, diagnostic);
     });
     this.startDomPickerCommand = dependencies.startDomPicker;
+    this.stopDomPickerCommand = dependencies.stopDomPicker;
   }
 
   connectPort(port: ChromeRuntimePortLike): void {
@@ -379,6 +382,11 @@ export class BackgroundAssistantStateServer {
   }
 
   private async stopDomPicker(): Promise<void> {
+    if (this.stopDomPickerCommand) {
+      await this.stopDomPickerCommand();
+      return;
+    }
+    // Fallback to direct Chrome API call for production
     try {
       const tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
       if (tab?.id !== undefined) {

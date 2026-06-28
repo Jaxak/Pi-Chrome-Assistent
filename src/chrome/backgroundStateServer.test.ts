@@ -1223,7 +1223,22 @@ describe("BackgroundAssistantStateServer", () => {
     );
   });
 
-  it("handles assistant.stopDomPicker command", async () => {
+  it("handles assistant.stopDomPicker command via injected DI", async () => {
+    const stopDomPicker = vi.fn().mockResolvedValue(undefined);
+    const { server } = createServer({ stopDomPicker });
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.stopDomPicker" });
+    await flushAsyncWork();
+
+    expect(stopDomPicker).toHaveBeenCalledTimes(1);
+    expect(stopDomPicker).toHaveBeenCalledWith();
+  });
+
+  it("handles assistant.stopDomPicker command (fallback)", async () => {
     const queryTabs = vi.fn(async () => [{ id: 99, url: "https://example.com" }]);
     const sendMessage = vi.fn(async () => ({ ok: true }));
 
@@ -1246,7 +1261,7 @@ describe("BackgroundAssistantStateServer", () => {
     vi.unstubAllGlobals();
   });
 
-  it("stopDomPicker is best-effort and does not throw when content script is unreachable", async () => {
+  it("stopDomPicker fallback is best-effort and does not throw when content script is unreachable", async () => {
     const queryTabs = vi.fn(async () => [{ id: 99, url: "https://example.com" }]);
     const sendMessage = vi.fn(async () => {
       throw new Error("Receiving end does not exist");

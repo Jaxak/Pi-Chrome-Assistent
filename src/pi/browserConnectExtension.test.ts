@@ -402,9 +402,13 @@ describe("injected direct server handlers", () => {
 });
 
 describe("Pi events", () => {
-  it("message_start/message_update/message_end and model_select call server.broadcastSnapshot after connected", async () => {
-    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+  it("message_start/message_update/message_end and model_select call server.broadcastSnapshot after connected (throttled)", async () => {
+    const { default: browserConnectExtension, createThrottledBroadcast } = await import("./browserConnectExtension");
     const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
+
+    // Control time via mock
+    let fakeNow = Date.now();
+    vi.spyOn(globalThis.Date, "now").mockImplementation(() => fakeNow);
 
     browserConnectExtension(pi);
 
@@ -423,10 +427,19 @@ describe("Pi events", () => {
       ctx,
     );
     messageEndHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
-    modelSelectHandler?.handler({}, ctx);
 
     // message_start and message_update do NOT call broadcastSnapshot (to avoid race conditions)
-    // Only message_end and model_select trigger snapshot broadcasts
+    // Only message_end triggers snapshot broadcast
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+
+    // model_select fires within throttle window — should be throttled
+    modelSelectHandler?.handler({}, ctx);
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+
+    // Advance time past throttle window
+    fakeNow += 150;
+    modelSelectHandler?.handler({}, ctx);
+    // Now it should fire again
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(2);
   });
 
@@ -697,6 +710,138 @@ describe("mirror snapshot — entries from sessionManager.getBranch()", () => {
 
     const snapshot = capturedSessionServerOptions!.buildSnapshot();
     expect(snapshot.chat.busyLabel).toBe("Агент работает в фоне…");
+  });
+});
+
+describe("createThrottledBroadcast", () => {
+  it("calls fn immediately on first call", async () => {
+    const { createThrottledBroadcast } = await import("./browserConnectExtension");
+    const fn = vi.fn();
+    const { call } = createThrottledBroadcast(fn, 100);
+
+    call();
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips subsequent calls within throttle window", async () => {
+    const { createThrottledBroadcast } = await import("./browserConnectExtension");
+    const fn = vi.fn();
+    const { call, _setNow } = createThrottledBroadcast(fn, 100);
+
+    let fakeNow = 0;
+    _setNow(() => fakeNow);
+
+    call(); // t=0, executes
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    fakeNow = 50; // within 100ms window
+    call();
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    fakeNow = 99; // still within window
+    call();
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows call after throttle window passes", async () => {
+    const { createThrottledBroadcast } = await import("./browserConnectExtension");
+    const fn = vi.fn();
+    const { call, _setNow } = createThrottledBroadcast(fn, 100);
+
+    let fakeNow = 0;
+    _setNow(() => fakeNow);
+
+    call(); // t=0
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    fakeNow = 100; // exactly at window boundary
+    call();
+    expect(fn).toHaveBeenCalledTimes(2);
+
+    fakeNow = 250; // well past boundary
+    call();
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it("flush resets throttle allowing immediate call", async () => {
+    const { createThrottledBroadcast } = await import("./browserConnectExtension");
+    const fn = vi.fn();
+    const { call, flush, _setNow } = createThrottledBroadcast(fn, 100);
+
+    let fakeNow = 0;
+    _setNow(() => fakeNow);
+
+    call(); // t=0, executes
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    fakeNow = 50; // within window
+    call();
+    expect(fn).toHaveBeenCalledTimes(1); // throttled
+
+    flush(); // reset throttle
+    call(); // should execute now even though time hasn't advanced
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("broadcastSnapshot throttling in extension", () => {
+  it("throttles broadcastSnapshot across rapid Pi events", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
+
+    let fakeNow = Date.now();
+    vi.spyOn(globalThis.Date, "now").mockImplementation(() => fakeNow);
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const messageEndHandler = onCalls.find((c) => c.event === "message_end");
+    const modelSelectHandler = onCalls.find((c) => c.event === "model_select");
+
+    // First message_end — executes immediately
+    messageEndHandler?.handler({ message: { id: "m1", role: "assistant" } }, ctx);
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+
+    // Second message_end immediately — throttled
+    messageEndHandler?.handler({ message: { id: "m2", role: "assistant" } }, ctx);
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+
+    // model_select also throttled
+    modelSelectHandler?.handler({}, ctx);
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+
+    // Advance past throttle window
+    fakeNow += 150;
+
+    // model_select now executes
+    modelSelectHandler?.handler({}, ctx);
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("session_shutdown flushes pending throttle", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
+
+    let fakeNow = Date.now();
+    vi.spyOn(globalThis.Date, "now").mockImplementation(() => fakeNow);
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const messageEndHandler = onCalls.find((c) => c.event === "message_end");
+    const shutdownHandler = onCalls.find((c) => c.event === "session_shutdown");
+
+    // Trigger snapshot
+    messageEndHandler?.handler({ message: { id: "m1", role: "assistant" } }, ctx);
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+
+    // Shutdown flushes the throttle — verify it doesn't throw
+    await expect(shutdownHandler?.handler({}, ctx)).resolves.not.toThrow();
+    expect(mockClose).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -23,6 +23,36 @@ import { getChromeAssistentLogPath } from "./chromeAssistentPaths";
 
 const STATUS_KEY = "chrome-assistent-connect";
 const COMMAND_NAME = "chrome-assistent-connect";
+const BROADCAST_SNAPSHOT_THROTTLE_MS = 100;
+
+// ---------------------------------------------------------------------------
+// Throttle helper — exported for testing
+// ---------------------------------------------------------------------------
+
+export function createThrottledBroadcast(
+  fn: () => void,
+  delayMs: number,
+): { call: () => void; flush: () => void; _setNow: (n: () => number) => void } {
+  let lastCallTime = -Infinity;
+  let _now = Date.now;
+
+  const call = () => {
+    const now = _now();
+    if (now - lastCallTime < delayMs) return;
+    lastCallTime = now;
+    fn();
+  };
+
+  const flush = () => {
+    lastCallTime = -Infinity;
+  };
+
+  const _setNow = (customNow: () => number) => {
+    _now = customNow;
+  };
+
+  return { call, flush, _setNow };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers — exported for testing
@@ -102,8 +132,13 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   let connectedAt: number | undefined;
 
 
+  const throttledBroadcast = createThrottledBroadcast(
+    () => activeSessionServer?.broadcastSnapshot(),
+    BROADCAST_SNAPSHOT_THROTTLE_MS,
+  );
+
   const broadcastSnapshot = () => {
-    activeSessionServer?.broadcastSnapshot();
+    throttledBroadcast.call();
   };
 
   // ----- Pi event handlers (broadcast snapshot + forward raw events) -----
@@ -226,6 +261,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    throttledBroadcast.flush();
     if (activeSessionServer) {
       const server = activeSessionServer;
       activeSessionServer = undefined;

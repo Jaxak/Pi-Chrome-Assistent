@@ -31,6 +31,7 @@ export type BackgroundAssistantState = {
     agentBusy: boolean;
     busyLabel: string;
     sending: boolean;
+    activeToolsCount: number;
     error?: string;
   };
   runtime: {
@@ -69,6 +70,7 @@ export function createInitialAssistantState(): BackgroundAssistantState {
       agentBusy: chat.agentBusy,
       busyLabel: chat.busyLabel,
       sending: chat.sending,
+      activeToolsCount: 0,
       error: chat.error,
     },
     runtime: {
@@ -122,6 +124,40 @@ export function reduceAssistantState(
     }
 
     case "session.event": {
+      // Handle tool execution events directly - update counter
+      if (event.event.type === "tool_execution_start") {
+        return {
+          ...state,
+          chat: {
+            ...state.chat,
+            activeToolsCount: state.chat.activeToolsCount + 1,
+          },
+        };
+      }
+      
+      if (event.event.type === "tool_execution_end") {
+        return {
+          ...state,
+          chat: {
+            ...state.chat,
+            activeToolsCount: Math.max(0, state.chat.activeToolsCount - 1),
+          },
+        };
+      }
+      
+      // Handle turn_end - reset tools counter
+      if (event.event.type === "turn_end") {
+        return {
+          ...state,
+          chat: {
+            ...state.chat,
+            agentBusy: false,
+            sending: false,
+            activeToolsCount: 0,
+          },
+        };
+      }
+      
       const sidePanelState = {
         bridgeOnline: state.connection.online,
         messages: state.chat.messages,
@@ -136,6 +172,7 @@ export function reduceAssistantState(
       return {
         ...state,
         chat: {
+          ...state.chat,
           messages: nextChat.messages,
           agentBusy: nextChat.agentBusy,
           busyLabel: nextChat.busyLabel,
@@ -173,38 +210,103 @@ export function reduceAssistantState(
 
 /**
  * Merge local messages with server-hydrated messages.
- * Preserves user messages that were added locally but not yet present in server entries.
- * This handles the race condition where Pi sends a snapshot before processing the user's message.
- * Only preserves pending messages when state.sending is true (message was just sent).
+ * Preserves:
+ * 1. User messages that were added locally but not yet present in server entries
+ *    (handles race condition where Pi sends a snapshot before processing user's message)
+ * 2. Streaming assistant messages that are not yet in server entries
+ *    (entries only contain completed messages from sessionManager.getBranch())
  */
-function mergeWithPendingUserMessages(
+function mergeWithPendingMessages(
   localMessages: SidepanelChatMessage[],
   serverMessages: SidepanelChatMessage[],
   sending: boolean,
 ): SidepanelChatMessage[] {
-  // Only merge if we're currently sending (expecting a user message to appear)
-  if (!sending) {
-    return serverMessages;
+  // Collect IDs of assistant messages already in server snapshot
+  const serverAssistantIds = new Set(
+    serverMessages
+      .filter((m): m is SidepanelChatMessage & { role: "assistant" } => m.role === "assistant")
+      .map((m) => m.messageId),
+  );
+
+  // Find local assistant messages
+  const localAssistantMessages = localMessages.filter(
+    (m): m is SidepanelChatMessage & { role: "assistant" } => m.role === "assistant",
+  );
+
+  // For each server assistant message, check if we have a local version with more text
+  const mergedServerMessages = serverMessages.map((serverMsg) => {
+    if (serverMsg.role !== "assistant") {
+      return serverMsg;
+    }
+    
+    const localVersion = localAssistantMessages.find(
+      (m) => m.messageId === serverMsg.messageId,
+    );
+    
+    // If local version has more text, use it instead
+    if (localVersion && localVersion.text.length > serverMsg.text.length) {
+      return localVersion;
+    }
+    
+    return serverMsg;
+  });
+
+  // Find assistant messages not in server at all.
+  // Only keep STREAMING messages as pending - completed messages should already
+  // be in the server snapshot (even if with different messageId).
+  // Also deduplicate by text content to handle messageId mismatches.
+  const serverAssistantTexts = new Set(
+    serverMessages
+      .filter((m): m is SidepanelChatMessage & { role: "assistant" } => m.role === "assistant")
+      .map((m) => m.text),
+  );
+  
+  const pendingAssistantMessages = localAssistantMessages.filter(
+    (m) => m.streaming && 
+           !serverAssistantIds.has(m.messageId) &&
+           !serverAssistantTexts.has(m.text),
+  );
+
+  // Find pending user messages (only if we're currently sending)
+  let pendingUserMessages: Array<SidepanelChatMessage & { role: "user" }> = [];
+  if (sending) {
+    const serverUserTimestamps = new Set(
+      serverMessages
+        .filter((m): m is SidepanelChatMessage & { role: "user" } => m.role === "user")
+        .map((m) => m.timestamp),
+    );
+
+    pendingUserMessages = localMessages.filter(
+      (m): m is SidepanelChatMessage & { role: "user" } =>
+        m.role === "user" && !serverUserTimestamps.has(m.timestamp),
+    );
   }
 
-  // Find local user messages that are not in server messages
+  if (pendingAssistantMessages.length === 0 && pendingUserMessages.length === 0) {
+    return mergedServerMessages;
+  }
+
+  // Append pending user messages and assistant messages at the end
+  return [...mergedServerMessages, ...pendingUserMessages, ...pendingAssistantMessages];
+}
+
+/**
+ * Check if there are pending user messages that were preserved during merge.
+ * Used to determine if `sending` flag should remain true.
+ */
+function hasPendingUserMessages(
+  localMessages: SidepanelChatMessage[],
+  serverMessages: SidepanelChatMessage[],
+): boolean {
   const serverUserTimestamps = new Set(
     serverMessages
       .filter((m): m is SidepanelChatMessage & { role: "user" } => m.role === "user")
       .map((m) => m.timestamp),
   );
 
-  const pendingUserMessages = localMessages.filter(
-    (m): m is SidepanelChatMessage & { role: "user" } =>
-      m.role === "user" && !serverUserTimestamps.has(m.timestamp),
+  return localMessages.some(
+    (m) => m.role === "user" && !serverUserTimestamps.has(m.timestamp),
   );
-
-  if (pendingUserMessages.length === 0) {
-    return serverMessages;
-  }
-
-  // Insert pending user messages at the end (they were just sent)
-  return [...serverMessages, ...pendingUserMessages];
 }
 
 function applySessionSnapshot(
@@ -217,7 +319,7 @@ function applySessionSnapshot(
   // Merge: preserve local user messages that are not yet in server entries.
   // This prevents losing optimistically-added user messages when Pi sends
   // a snapshot before it has processed the user's message.
-  const mergedMessages = mergeWithPendingUserMessages(state.chat.messages, hydratedMessages, state.chat.sending);
+  const mergedMessages = mergeWithPendingMessages(state.chat.messages, hydratedMessages, state.chat.sending);
 
   return {
     ...state,
@@ -241,8 +343,10 @@ function applySessionSnapshot(
       messages: mergedMessages,
       agentBusy: snapshot.chat.agentBusy,
       busyLabel: snapshot.chat.busyLabel || state.chat.busyLabel,
-      // Keep sending=true if we preserved pending user messages (not yet in server entries)
-      sending: mergedMessages.length > hydratedMessages.length,
+      // Keep sending=true only if we preserved pending user messages (not streaming assistant)
+      sending: state.chat.sending && hasPendingUserMessages(state.chat.messages, hydratedMessages),
+      // Preserve tools counter; reset only on turn_end or when agent becomes idle
+      activeToolsCount: snapshot.runtime.isIdle ? 0 : state.chat.activeToolsCount,
       error: undefined,
     },
   };

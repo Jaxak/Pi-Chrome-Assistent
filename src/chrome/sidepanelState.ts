@@ -208,7 +208,8 @@ export function hydrateMessagesFromEntries(entries: SessionEntryLike[]): Sidepan
 export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirrorEvent): SidePanelState {
   switch (event.type) {
     case "message_start": {
-      if (event.message.role !== "assistant") {
+      // Accept assistant messages; also accept empty role as assistant (fallback for incomplete events)
+      if (event.message.role !== "assistant" && event.message.role !== "") {
         return state;
       }
       const messageId = event.message.id;
@@ -240,8 +241,9 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
     }
 
     case "message_update": {
-      const messageId = event.message.id;
-      if (event.message.role !== "assistant") {
+      let messageId = event.message.id;
+      // Accept assistant messages; also accept empty role as assistant (fallback for incomplete events)
+      if (event.message.role !== "assistant" && event.message.role !== "") {
         return state;
       }
       const delta = event.assistantMessageEvent?.type === "text_delta"
@@ -252,10 +254,21 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
         return state;
       }
 
+      // If messageId is empty, find the last streaming assistant message
+      if (!messageId) {
+        const lastStreaming = [...state.messages].reverse().find(
+          (m) => m.role === "assistant" && m.streaming === true,
+        );
+        if (lastStreaming && lastStreaming.role === "assistant") {
+          messageId = lastStreaming.messageId;
+        }
+      }
+
       // If message doesn't exist yet, create it (handles out-of-order)
       const idx = state.messages.findIndex(
         (m) => m.role === "assistant" && m.messageId === messageId,
       );
+      
       if (idx < 0) {
         const now = Date.now();
         return {
@@ -290,7 +303,8 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
 
     case "message_end": {
       const messageId = event.message.id;
-      if (event.message.role !== "assistant") {
+      // Accept assistant messages; also accept empty role as assistant (fallback for incomplete events)
+      if (event.message.role !== "assistant" && event.message.role !== "") {
         return state;
       }
       return {

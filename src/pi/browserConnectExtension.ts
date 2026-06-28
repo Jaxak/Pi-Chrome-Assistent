@@ -138,37 +138,50 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("message_start", (event, _ctx) => {
+    const messageId = (event as { message?: { id?: string } })?.message?.id || `gen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     activeSessionServer?.broadcastEvent({
       type: "message_start",
       message: {
-        id: (event as { message?: { id?: string } })?.message?.id ?? "",
-        role: (event as { message?: { role?: string } })?.message?.role ?? "",
+        id: messageId,
+        role: (event as { message?: { role?: string } })?.message?.role || "assistant",
       },
     });
-    broadcastSnapshot();
+    // NOTE: broadcastSnapshot() intentionally omitted here.
+    // The streaming message is not yet in sessionManager.getBranch(),
+    // so snapshot would not contain it. The event itself is sufficient.
   });
 
   pi.on("message_update", (event, _ctx) => {
     const rawAssistantMessageEvent = (event as {
-      assistantMessageEvent?: { type?: string; text_delta?: string };
+      assistantMessageEvent?: { type?: string; delta?: string; text_delta?: string };
     })?.assistantMessageEvent;
 
+    // Use event message id, or find last streaming message if id is empty
+    const eventMessageId = (event as { message?: { id?: string } })?.message?.id ?? "";
+    
+    // Pi sends text in "delta" field, but protocol expects "text_delta"
+    const textDelta = rawAssistantMessageEvent?.type === "text_delta"
+      ? (rawAssistantMessageEvent.delta ?? rawAssistantMessageEvent.text_delta ?? "")
+      : undefined;
+    
     activeSessionServer?.broadcastEvent({
       type: "message_update",
       message: {
-        id: (event as { message?: { id?: string } })?.message?.id ?? "",
-        role: (event as { message?: { role?: string } })?.message?.role ?? "",
+        id: eventMessageId,
+        role: (event as { message?: { role?: string } })?.message?.role || "assistant",
       },
-      ...(rawAssistantMessageEvent?.type === "text_delta" && typeof rawAssistantMessageEvent.text_delta === "string"
+      ...(textDelta !== undefined && textDelta.length > 0
         ? {
             assistantMessageEvent: {
               type: "text_delta" as const,
-              text_delta: rawAssistantMessageEvent.text_delta,
+              text_delta: textDelta,
             },
           }
         : {}),
     });
-    broadcastSnapshot();
+    // NOTE: broadcastSnapshot() intentionally omitted here.
+    // The streaming message text is accumulating via events; snapshot would
+    // overwrite with stale data from sessionManager.getBranch().
   });
 
   pi.on("message_end", (event, ctx) => {
@@ -177,7 +190,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       type: "message_end",
       message: {
         id: (event as { message?: { id?: string } })?.message?.id ?? "",
-        role: (event as { message?: { role?: string } })?.message?.role ?? "",
+        role: (event as { message?: { role?: string } })?.message?.role || "assistant",
       },
       stopReason: (event as { stopReason?: string })?.stopReason,
     });

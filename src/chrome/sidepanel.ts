@@ -267,7 +267,15 @@ function renderModelMenu(elements: SidePanelElements): void {
 
 function renderChat(elements: SidePanelElements): void {
   const chat = currentSnapshot?.chat;
-  const messages = chat?.messages ?? [];
+  const allMessages = chat?.messages ?? [];
+  
+  // Filter out empty messages (no text) - but keep streaming messages as they may be filling
+  const messages = allMessages.filter((m) => {
+    const text = (m as { text?: string }).text ?? "";
+    const streaming = (m as { streaming?: boolean }).streaming ?? false;
+    // Show message if it has text OR if it's currently streaming (will get text soon)
+    return text.length > 0 || streaming;
+  });
 
   if (elements.messageList) {
     const currentSignatures = messages.map((message) => JSON.stringify(message));
@@ -292,7 +300,8 @@ function renderChat(elements: SidePanelElements): void {
   if (elements.agentWorking) {
     const busyLabel = chat?.busyLabel ?? "Агент работает в фоне…";
     const agentBusy = chat?.agentBusy ?? false;
-    updateAgentWorkingElement(elements.agentWorking, busyLabel, agentBusy);
+    const activeToolsCount = currentSnapshot?.chat.activeToolsCount ?? 0;
+    updateAgentWorkingElement(elements.agentWorking, busyLabel, agentBusy, activeToolsCount);
   }
 
   renderRuntimeInfo(elements);

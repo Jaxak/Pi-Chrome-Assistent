@@ -425,7 +425,9 @@ describe("Pi events", () => {
     messageEndHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
     modelSelectHandler?.handler({}, ctx);
 
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(4);
+    // message_start and message_update do NOT call broadcastSnapshot (to avoid race conditions)
+    // Only message_end and model_select trigger snapshot broadcasts
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it("message_start/message_update/message_end forward raw events via broadcastEvent", async () => {

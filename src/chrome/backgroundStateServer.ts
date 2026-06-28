@@ -223,15 +223,12 @@ export class BackgroundAssistantStateServer {
     this.sessionClient?.close();
     this.sessionClient = undefined;
 
-    this.applyState({
-      kind: "connection_updated",
-      connection: {
-        online: false,
-        connecting: true,
-        configuredPort: port,
-        lastError: undefined,
-      },
-    });
+    // Reset state to initial when connecting to a new session
+    // This clears chat history from the previous session
+    this.state = createInitialAssistantState();
+    this.state.connection.configuredPort = port;
+    this.state.connection.connecting = true;
+    this.broadcastSnapshot();
 
     // Create new session client
     this.sessionClient = this.sessionClientFactory({

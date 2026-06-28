@@ -47,7 +47,8 @@ export type SessionEntryLike = {
       | "custom"
       | "branchSummary"
       | "compactionSummary";
-    content: unknown;
+    id?: string;
+    content?: unknown;
     stopReason?: string;
     errorMessage?: string;
   };

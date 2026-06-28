@@ -44,7 +44,7 @@ describe("build:chrome", () => {
     expect(sidePanelHtml).toContain('id="send-button"');
     expect(sidePanelHtml).toContain('DOM picker');
     expect(sidePanelHtml).toContain('Настройки');
-    expect(sidePanelHtml).toContain('Авторизация');
+    expect(sidePanelHtml).not.toContain('Авторизация');
     expect(sidePanelHtml).toContain('Dev-журнал');
     expect(sidePanelSource).not.toContain('chrome.runtime.sendMessage({ type: "listTargets" })');
     expect(sidePanelSource).not.toContain('chrome.runtime.sendMessage({ type: "getBrowserAuthState" })');

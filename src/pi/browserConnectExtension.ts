@@ -5,6 +5,7 @@ import type {
   DirectCommandResult,
   DirectSessionSnapshot,
   SelectionPayload,
+  SessionEntryLike,
   TargetModelSummary,
 } from "../shared/protocol";
 import { formatSelectionMessage } from "../shared/formatSelectionMessage";
@@ -146,14 +147,24 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("message_update", (event, _ctx) => {
+    const rawAssistantMessageEvent = (event as {
+      assistantMessageEvent?: { type?: string; text_delta?: string };
+    })?.assistantMessageEvent;
+
     activeSessionServer?.broadcastEvent({
       type: "message_update",
       message: {
         id: (event as { message?: { id?: string } })?.message?.id ?? "",
         role: (event as { message?: { role?: string } })?.message?.role ?? "",
       },
-      assistantMessageEvent: (event as { assistantMessageEvent?: { type?: string; text_delta?: string } })
-        ?.assistantMessageEvent,
+      ...(rawAssistantMessageEvent?.type === "text_delta" && typeof rawAssistantMessageEvent.text_delta === "string"
+        ? {
+            assistantMessageEvent: {
+              type: "text_delta" as const,
+              text_delta: rawAssistantMessageEvent.text_delta,
+            },
+          }
+        : {}),
     });
     broadcastSnapshot();
   });
@@ -209,12 +220,56 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
 
   // ----- Snapshot builder — authoritative entries from sessionManager -----
 
+  const toSessionEntryLike = (entry: unknown): SessionEntryLike | null => {
+    const candidate = entry as {
+      type?: unknown;
+      id?: unknown;
+      timestamp?: unknown;
+      message?: {
+        role?: unknown;
+        id?: unknown;
+        content?: unknown;
+        stopReason?: unknown;
+        errorMessage?: unknown;
+      };
+    };
+
+    if (candidate.type !== "message") {
+      return null;
+    }
+
+    const role = candidate.message?.role;
+    if (
+      role !== "user" &&
+      role !== "assistant" &&
+      role !== "toolResult" &&
+      role !== "custom" &&
+      role !== "branchSummary" &&
+      role !== "compactionSummary"
+    ) {
+      return null;
+    }
+
+    return {
+      type: "message",
+      id: typeof candidate.id === "string" ? candidate.id : "",
+      timestamp: typeof candidate.timestamp === "string" ? candidate.timestamp : new Date().toISOString(),
+      message: {
+        role,
+        ...(typeof candidate.message?.id === "string" ? { id: candidate.message.id } : {}),
+        ...(candidate.message?.content !== undefined ? { content: candidate.message.content } : {}),
+        ...(typeof candidate.message?.stopReason === "string" ? { stopReason: candidate.message.stopReason } : {}),
+        ...(typeof candidate.message?.errorMessage === "string" ? { errorMessage: candidate.message.errorMessage } : {}),
+      },
+    };
+  };
+
   const buildSnapshot = (): DirectSessionSnapshot => {
     const ctx = latestCtx;
     const runtime = buildDirectRuntimeState({ ctx: ctx as Parameters<typeof buildDirectRuntimeState>[0]["ctx"] });
 
     // Authoritative history: raw session entries from Pi sessionManager
-    const entries = ctx?.sessionManager?.getBranch?.() ?? [];
+    const entries = (ctx?.sessionManager?.getBranch?.() ?? []).map(toSessionEntryLike).filter((entry): entry is SessionEntryLike => entry !== null);
 
     const modelSummary: TargetModelSummary | undefined =
       typeof ctx?.model?.provider === "string" && typeof ctx.model.id === "string"

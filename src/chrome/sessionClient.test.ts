@@ -77,7 +77,7 @@ function createSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectS
       connectedAt: 1_710_000_000_000,
     },
     chat: {
-      events: [],
+      entries: [],
       agentBusy: false,
       busyLabel: "Агент работает в фоне…",
     },

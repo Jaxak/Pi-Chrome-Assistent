@@ -220,7 +220,7 @@ describe("assistantState", () => {
       );
       expect(assistantMsgs).toHaveLength(1);
       expect(assistantMsgs[0].text).toBe("Привет!");
-      expect(assistantMsgs[0].streaming).toBe(true);
+      expect(assistantMsgs[0]).toMatchObject({ streaming: true });
     });
 
     it("reconnect с теми же entries воспроизводит тот же чат без зависимости от локального состояния", () => {
@@ -378,7 +378,7 @@ describe("assistantState", () => {
       const streamingMsgs = state.chat.messages.filter(
         (m) => m.role === "assistant" && m.messageId === "live-end",
       );
-      expect(streamingMsgs[0].streaming).toBe(true);
+      expect(streamingMsgs[0]).toMatchObject({ streaming: true });
 
       // message_end завершает
       state = reduceAssistantState(state, {
@@ -392,7 +392,7 @@ describe("assistantState", () => {
       const finishedMsgs = state.chat.messages.filter(
         (m) => m.role === "assistant" && m.messageId === "live-end",
       );
-      expect(finishedMsgs[0].streaming).toBe(false);
+      expect(finishedMsgs[0]).toMatchObject({ streaming: false });
       expect(state.chat.agentBusy).toBe(false);
       expect(state.chat.sending).toBe(false);
     });
@@ -503,7 +503,7 @@ describe("assistantState", () => {
       let state = createInitialAssistantState();
       state = reduceAssistantState(state, {
         kind: "session_snapshot",
-        snapshot: createDirectSnapshot({ chat: { agentBusy: true, busyLabel: "…" } }),
+        snapshot: createDirectSnapshot({ chat: { entries: [], agentBusy: true, busyLabel: "…" } }),
       });
       state = reduceAssistantState(state, {
         kind: "chat_event",

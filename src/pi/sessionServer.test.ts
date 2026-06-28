@@ -26,6 +26,7 @@ function createTestSnapshot(overrides?: Partial<DirectSessionSnapshot>): DirectS
       ...overrides?.session,
     },
     chat: {
+      entries: [],
       agentBusy: false,
       busyLabel: "Агент работает в фоне…",
       ...overrides?.chat,
@@ -681,7 +682,7 @@ describe("startDirectSessionServer", () => {
 
   it("broadcastSnapshot sends fresh snapshot to all connected clients", async () => {
     const { startDirectSessionServer } = await import("./sessionServer");
-    let currentSnapshot = createTestSnapshot({ chat: { agentBusy: false, busyLabel: "Агент работает в фоне…" } });
+    let currentSnapshot = createTestSnapshot({ chat: { entries: [], agentBusy: false, busyLabel: "Агент работает в фоне…" } });
     const server = await startDirectSessionServer({
       host: "127.0.0.1",
       port: 0,
@@ -708,7 +709,7 @@ describe("startDirectSessionServer", () => {
 
     // Update snapshot and broadcast
     currentSnapshot = createTestSnapshot({
-      chat: { agentBusy: true, busyLabel: "Агент занят" },
+      chat: { entries: [], agentBusy: true, busyLabel: "Агент занят" },
     });
 
     // Small delay to ensure clients are ready

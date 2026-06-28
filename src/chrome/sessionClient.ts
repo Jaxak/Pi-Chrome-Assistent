@@ -4,6 +4,7 @@ import {
   parseProtocolEnvelope,
   type DirectCommandResult,
   type DirectSessionSnapshot,
+  type PiMirrorEvent,
   type SelectionPayload,
 } from "../shared/protocol";
 
@@ -35,6 +36,7 @@ export type SessionClientOptions = {
   onSnapshot(snapshot: DirectSessionSnapshot): void;
   onConnectionState(state: SessionConnectionState): void;
   onCommandResult?(result: { requestId: string; result: DirectCommandResult }): void;
+  onSessionEvent?(event: PiMirrorEvent): void;
   reconnectDelaysMs?: number[];
 };
 
@@ -82,6 +84,7 @@ export class SessionClient {
   private readonly onSnapshot: (snapshot: DirectSessionSnapshot) => void;
   private readonly onConnectionState: (state: SessionConnectionState) => void;
   private readonly onCommandResult?: (result: { requestId: string; result: DirectCommandResult }) => void;
+  private readonly onSessionEvent?: (event: PiMirrorEvent) => void;
   private socket: SessionSocket | undefined;
   private closedByClient = false;
   private reconnectAttempt = 0;
@@ -96,6 +99,7 @@ export class SessionClient {
     this.onSnapshot = options.onSnapshot;
     this.onConnectionState = options.onConnectionState;
     this.onCommandResult = options.onCommandResult;
+    this.onSessionEvent = options.onSessionEvent;
   }
 
   connect(): void {
@@ -251,6 +255,11 @@ export class SessionClient {
           requestId: envelope.requestId ?? "",
           result,
         });
+        return;
+      }
+
+      case "session.event": {
+        this.onSessionEvent?.(envelope.payload as PiMirrorEvent);
         return;
       }
     }

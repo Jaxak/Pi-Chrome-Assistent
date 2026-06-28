@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { PROTOCOL_VERSION } from "../shared/constants";
-import type { DirectSessionSnapshot, ProtocolEnvelope } from "../shared/protocol";
+import type { DirectSessionSnapshot, PiMirrorEvent, ProtocolEnvelope } from "../shared/protocol";
 import { SessionClient, type SessionClientOptions } from "./sessionClient";
 
 type SocketEventName = "open" | "message" | "error" | "close";
@@ -638,6 +638,180 @@ describe("SessionClient", () => {
         await flush();
         expect(webSocketFactory).toHaveBeenCalledTimes(i + 2);
       }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ─── session.event tests ───
+
+  it("delivers session.event payload to onSessionEvent callback", async () => {
+    const socket = new FakeWebSocket();
+    const onSessionEvent = vi.fn();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+      onSessionEvent,
+    });
+
+    client.connect();
+    socket.emitOpen();
+
+    const mirrorEvent: PiMirrorEvent = {
+      type: "message_start",
+      message: { id: "msg-1", role: "user" },
+    };
+    socket.emitMessage({ version: PROTOCOL_VERSION, type: "session.event", payload: mirrorEvent });
+    await flush();
+
+    expect(onSessionEvent).toHaveBeenCalledWith(mirrorEvent);
+  });
+
+  it("delivers session.event for all PiMirrorEvent variants", async () => {
+    const socket = new FakeWebSocket();
+    const onSessionEvent = vi.fn();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+      onSessionEvent,
+    });
+
+    client.connect();
+    socket.emitOpen();
+
+    const events: PiMirrorEvent[] = [
+      { type: "message_start", message: { id: "m1", role: "user" } },
+      { type: "message_update", message: { id: "m2", role: "assistant" }, assistantMessageEvent: { type: "text_delta", text_delta: "Hello" } },
+      { type: "message_end", message: { id: "m2", role: "assistant" }, stopReason: "end_turn" },
+      { type: "turn_start", turnId: "t1" },
+      { type: "turn_end", turnId: "t1" },
+      { type: "tool_execution_start", toolName: "read_file", input: { path: "foo.ts" } },
+      { type: "tool_execution_update", toolName: "read_file", output: { content: "code" } },
+      { type: "tool_execution_end", toolName: "read_file", output: { size: 42 } },
+      { type: "model_select", provider: "openai", modelId: "gpt-4" },
+    ];
+
+    for (const evt of events) {
+      socket.emitMessage({ version: PROTOCOL_VERSION, type: "session.event", payload: evt });
+    }
+    await flush();
+
+    expect(onSessionEvent).toHaveBeenCalledTimes(events.length);
+    for (let i = 0; i < events.length; i++) {
+      expect(onSessionEvent).toHaveBeenNthCalledWith(i + 1, events[i]);
+    }
+  });
+
+  it("session.event does NOT call onSessionEvent when callback is not provided", async () => {
+    const socket = new FakeWebSocket();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+    });
+
+    client.connect();
+    socket.emitOpen();
+
+    const mirrorEvent: PiMirrorEvent = {
+      type: "turn_start",
+      turnId: "t1",
+    };
+    // Should not throw
+    socket.emitMessage({ version: PROTOCOL_VERSION, type: "session.event", payload: mirrorEvent });
+    await flush();
+  });
+
+  it("session.snapshot still updates connection state alongside session.event", async () => {
+    const socket = new FakeWebSocket();
+    const onSnapshot = vi.fn();
+    const onConnectionState = vi.fn();
+    const onSessionEvent = vi.fn();
+    const snapshot = createSnapshot();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot,
+      onConnectionState,
+      onSessionEvent,
+    });
+
+    client.connect();
+    socket.emitOpen();
+
+    // Send snapshot first
+    socket.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: snapshot });
+    await flush();
+
+    expect(onSnapshot).toHaveBeenCalledWith(snapshot);
+    expect(onConnectionState).toHaveBeenCalledWith({
+      online: true,
+      connecting: false,
+      statusText: "Подключено к Pi-сессии",
+    });
+
+    // Then send a session.event — snapshot callback must NOT be called again
+    const mirrorEvent: PiMirrorEvent = { type: "message_start", message: { id: "m1", role: "user" } };
+    socket.emitMessage({ version: PROTOCOL_VERSION, type: "session.event", payload: mirrorEvent });
+    await flush();
+
+    expect(onSessionEvent).toHaveBeenCalledWith(mirrorEvent);
+    expect(onSnapshot).toHaveBeenCalledTimes(1); // still only once
+  });
+
+  it("reconnect still works after receiving session.event", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets = [new FakeWebSocket(), new FakeWebSocket()];
+      let socketIndex = 0;
+      const webSocketFactory = vi.fn(() => sockets[socketIndex++]);
+      const onSessionEvent = vi.fn();
+      const onConnectionState = vi.fn();
+      const client = new SessionClient({
+        port: 31415,
+        webSocketFactory,
+        onSnapshot: vi.fn(),
+        onConnectionState,
+        onSessionEvent,
+        reconnectDelaysMs: [50],
+      });
+
+      client.connect();
+      sockets[0]!.emitOpen();
+      await flush();
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+      await flush();
+
+      // Receive a session.event while connected
+      const mirrorEvent: PiMirrorEvent = { type: "message_start", message: { id: "m1", role: "user" } };
+      sockets[0]!.emitMessage({ version: PROTOCOL_VERSION, type: "session.event", payload: mirrorEvent });
+      await flush();
+      expect(onSessionEvent).toHaveBeenCalledWith(mirrorEvent);
+
+      // Now close — reconnect should work normally
+      sockets[0]!.emitClose();
+      await flush();
+
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: false,
+        statusText: "Pi-сессия недоступна",
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+
+      expect(webSocketFactory).toHaveBeenCalledTimes(2);
+      expect(onConnectionState).toHaveBeenLastCalledWith({
+        online: false,
+        connecting: true,
+        statusText: "Подключаемся к Pi-сессии…",
+      });
     } finally {
       vi.useRealTimers();
     }

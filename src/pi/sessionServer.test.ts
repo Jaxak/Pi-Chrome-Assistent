@@ -1116,6 +1116,172 @@ describe("startDirectSessionServer", () => {
     await server.close();
   });
 
+  // ─── Rate limiting tests (M3) ───
+
+  it("rejects messages when rate limit is exceeded", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const onChatMessage = vi.fn().mockResolvedValue({ ok: true });
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage,
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client.waitForOpen();
+
+    // Consume initial snapshot
+    await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    // Send 10 messages rapidly (limit is 5 per second)
+    for (let i = 0; i < 10; i++) {
+      client.socket.send(JSON.stringify({
+        version: 1,
+        type: "session.chat.send",
+        requestId: `req-${i}`,
+        payload: { message: `Message ${i}` },
+      }));
+    }
+
+    // Wait for responses
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Should have processed only 5 messages (the rate limit)
+    expect(onChatMessage).toHaveBeenCalledTimes(5);
+
+    await client.close();
+    await server.close();
+  });
+
+  it("sends session.error with rate-limit message for rejected messages", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const onChatMessage = vi.fn().mockResolvedValue({ ok: true });
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage,
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client.waitForOpen();
+
+    // Consume initial snapshot
+    await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    // Send 10 messages rapidly (limit is 5 per second)
+    for (let i = 0; i < 10; i++) {
+      client.socket.send(JSON.stringify({
+        version: 1,
+        type: "session.chat.send",
+        requestId: `rate-req-${i}`,
+        payload: { message: `Msg ${i}` },
+      }));
+    }
+
+    // Wait for responses
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Should have received exactly 5 rate-limit errors
+    const rateErrors = client.messages.filter(
+      (msg) => {
+        const obj = msg as { type?: string; requestId?: string; payload?: { error?: string } };
+        return (
+          obj.type === "session.error" &&
+          obj.payload?.error?.includes("Превышен лимит")
+        );
+      },
+    );
+    expect(rateErrors.length).toBe(5);
+
+    // Each error should carry the original requestId
+    for (const err of rateErrors) {
+      const obj = err as { requestId?: string };
+      expect(obj.requestId).toBeDefined();
+      expect(obj.requestId).toMatch(/^rate-req-/);
+    }
+
+    await client.close();
+    await server.close();
+  });
+
+  it("resets rate limit after window expires", async () => {
+    const { startDirectSessionServer } = await import("./sessionServer");
+    const onChatMessage = vi.fn().mockResolvedValue({ ok: true });
+    const server = await startDirectSessionServer({
+      host: "127.0.0.1",
+      port: 0,
+      buildSnapshot: () => createTestSnapshot(),
+      onChatMessage,
+      onSelection: vi.fn(),
+      onSetModel: vi.fn(),
+      logger: TEST_LOGGER,
+    });
+
+    const client = createClientSocket(`ws://127.0.0.1:${server.port}`);
+    await client.waitForOpen();
+
+    // Consume initial snapshot
+    await client.waitForMessage((msg) => {
+      const obj = msg as { type?: string };
+      return obj.type === "session.snapshot";
+    });
+
+    // Send 5 messages to exhaust the limit
+    for (let i = 0; i < 5; i++) {
+      client.socket.send(JSON.stringify({
+        version: 1,
+        type: "session.chat.send",
+        requestId: `burst-${i}`,
+        payload: { message: `Burst ${i}` },
+      }));
+    }
+
+    // Wait for responses
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(onChatMessage).toHaveBeenCalledTimes(5);
+
+    // Wait for the rate-limit window to expire (1 second)
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Send one more message — should be accepted
+    client.socket.send(JSON.stringify({
+      version: 1,
+      type: "session.chat.send",
+      requestId: "after-window",
+      payload: { message: "After window" },
+    }));
+
+    const response = await client.waitForMessage((msg) => {
+      const obj = msg as { requestId?: string };
+      return obj.requestId === "after-window";
+    });
+
+    expect(response).toMatchObject({
+      type: "session.command.result",
+      requestId: "after-window",
+      payload: { ok: true },
+    });
+    expect(onChatMessage).toHaveBeenCalledTimes(6);
+
+    await client.close();
+    await server.close();
+  });
+
   // ─── WebSocket maxPayload limit tests ───
 
   it("closes connection when message exceeds 1MB maxPayload", async () => {

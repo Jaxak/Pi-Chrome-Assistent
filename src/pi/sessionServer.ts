@@ -22,6 +22,43 @@ export const DIRECT_SESSION_PORT_SCAN_LIMIT = 100;
 export const WEBSOCKET_MAX_PAYLOAD_BYTES = 1_048_576; // 1 MB
 
 // ---------------------------------------------------------------------------
+// Rate limiting (M3)
+// ---------------------------------------------------------------------------
+
+const RATE_LIMIT_MESSAGES_PER_SECOND = 5;
+const RATE_LIMIT_WINDOW_MS = 1000;
+
+/**
+ * Sliding-window rate limiter that tracks timestamps of accepted messages.
+ * Allows at most `maxMessages` messages within `windowMs` milliseconds.
+ */
+class RateLimiter {
+  private timestamps: number[] = [];
+  private readonly maxMessages: number;
+  private readonly windowMs: number;
+
+  constructor(maxMessages: number, windowMs: number) {
+    this.maxMessages = maxMessages;
+    this.windowMs = windowMs;
+  }
+
+  tryConsume(): boolean {
+    const now = Date.now();
+    const cutoff = now - this.windowMs;
+
+    // Remove expired timestamps
+    this.timestamps = this.timestamps.filter((ts) => ts > cutoff);
+
+    if (this.timestamps.length >= this.maxMessages) {
+      return false;
+    }
+
+    this.timestamps.push(now);
+    return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -169,6 +206,8 @@ export async function startDirectSessionServerOnAvailablePort(
 }
 
 function handleConnection(ws: WebSocket, options: DirectSessionServerOptions): void {
+  const rateLimiter = new RateLimiter(RATE_LIMIT_MESSAGES_PER_SECOND, RATE_LIMIT_WINDOW_MS);
+
   // Immediately send authoritative snapshot on connect
   sendSnapshot(ws, options.buildSnapshot());
 
@@ -189,6 +228,12 @@ function handleConnection(ws: WebSocket, options: DirectSessionServerOptions): v
     if (!envelope) {
       // Malformed message — send error
       sendError(ws, undefined, "Не удалось разобрать сообщение");
+      return;
+    }
+
+    // Rate limiting (M3) — check after parsing so we can include requestId
+    if (!rateLimiter.tryConsume()) {
+      sendError(ws, envelope.requestId, "Превышен лимит сообщений. Подождите.");
       return;
     }
 

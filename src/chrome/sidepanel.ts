@@ -177,10 +177,7 @@ function renderSessionConnection(elements: SidePanelElements, state: BackgroundA
     statusText = `🔄 Подключаемся к ${port}…`;
   } else if (state.connection.online) {
     tone = "success";
-    const sessionLabel = state.session
-      ? `${state.session.alias ?? state.session.cwd.split("/").pop()} · `
-      : "";
-    statusText = `✅ ${sessionLabel}Подключено к ${port}`;
+    statusText = `✅ Подключено к ${port}`;
   } else if (state.connection.lastError) {
     tone = "error";
     statusText = `❌ ${state.connection.lastError}`;

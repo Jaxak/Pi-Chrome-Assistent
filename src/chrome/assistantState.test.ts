@@ -9,34 +9,11 @@ import {
   type BackgroundAssistantState,
   type AssistantStateEvent,
 } from "./assistantState";
+import { createDirectSnapshot } from "./test-utils";
 
 const DEFAULT_PORT = 31415;
 
-function createDirectSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectSessionSnapshot {
-  return {
-    session: {
-      cwd: "/repo",
-      gitBranch: "main",
-      pid: 1234,
-      sessionName: "test-session",
-      alias: "frontend",
-      connectedAt: 1_710_000_000_000,
-    },
-    chat: {
-      entries: [],
-      agentBusy: false,
-      busyLabel: "Агент работает в фоне…",
-    },
-    runtime: {
-      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
-      availableModels: [{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }],
-      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
-      isIdle: true,
-      updatedAt: 1_710_000_000_500,
-    },
-    ...overrides,
-  };
-}
+
 
 describe("assistantState", () => {
   describe("createInitialAssistantState", () => {

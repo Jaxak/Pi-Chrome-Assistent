@@ -8,6 +8,7 @@ import {
   type ChromeRuntimePortLike,
 } from "./backgroundStateServer";
 import { isChatSendDisabled } from "./assistantState";
+import { createDirectSnapshot } from "./test-utils";
 
 class FakePort implements ChromeRuntimePortLike {
   readonly name = "sidepanel";
@@ -129,31 +130,7 @@ class FakeSessionClient {
   }
 }
 
-function createSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectSessionSnapshot {
-  return {
-    session: {
-      cwd: "/repo",
-      gitBranch: "main",
-      pid: 1234,
-      sessionName: "test-session",
-      alias: "frontend",
-      connectedAt: 1_710_000_000_000,
-    },
-    chat: {
-      entries: [],
-      agentBusy: false,
-      busyLabel: "Агент работает в фоне…",
-    },
-    runtime: {
-      model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
-      availableModels: [{ provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" }],
-      contextUsage: { tokens: 1000, maxTokens: 200000, percent: 0.5 },
-      isIdle: true,
-      updatedAt: 1_710_000_000_500,
-    },
-    ...overrides,
-  };
-}
+
 
 function createServer(overrides: Partial<ConstructorParameters<typeof BackgroundAssistantStateServer>[0]> = {}) {
   const storage = new FakeStorage();
@@ -261,7 +238,7 @@ describe("BackgroundAssistantStateServer", () => {
       },
     });
     // Use applySessionSnapshot directly
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     expect(server.getSnapshot().connection.online).toBe(true);
     expect(server.getSnapshot().session).toMatchObject({
@@ -311,7 +288,7 @@ describe("BackgroundAssistantStateServer", () => {
     // Connect to a port to create a session client
     port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     port.emitMessage({ type: "assistant.sendChatMessage", message: " Привет Pi " });
     await flushAsyncWork();
@@ -332,7 +309,7 @@ describe("BackgroundAssistantStateServer", () => {
     // Connect to create session client
     port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     port.emitMessage({ type: "assistant.model.set", provider: "anthropic", modelId: "claude-sonnet" });
 
@@ -384,7 +361,7 @@ describe("BackgroundAssistantStateServer", () => {
     server.connectPort(portA);
     server.connectPort(portB);
 
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     const expected = { type: "assistant.snapshot", state: server.getSnapshot() };
     expect(portA.postedMessages.at(-1)).toEqual(expected);
@@ -401,7 +378,7 @@ describe("BackgroundAssistantStateServer", () => {
     server.connectPort(disconnectedPort);
     disconnectedPort.disconnect();
 
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     expect(connectedPort.postedMessages).toHaveLength(2);
     expect(disconnectedPort.postedMessages).toHaveLength(1);
@@ -418,7 +395,7 @@ describe("BackgroundAssistantStateServer", () => {
     expect(() => server.connectPort(throwingPort)).not.toThrow();
     server.connectPort(healthyPort);
 
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     expect(healthyPort.postedMessages.at(-1)).toEqual({ type: "assistant.snapshot", state: server.getSnapshot() });
     expect(throwingPort.postedMessages).toHaveLength(0);
@@ -443,7 +420,7 @@ describe("BackgroundAssistantStateServer", () => {
 
   it("handles session chat events via sessionClient snapshot", () => {
     const { server } = createServer();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     // Chat events are part of the snapshot, not separate
     expect(server.getSnapshot().chat.agentBusy).toBe(false);
@@ -451,7 +428,7 @@ describe("BackgroundAssistantStateServer", () => {
 
   it("snapshot с chat.entries рендерит полную историю сообщений", () => {
     const { server } = createServer();
-    const snapshot = createSnapshot({
+    const snapshot = createDirectSnapshot({
       chat: {
         entries: [
           {
@@ -517,7 +494,7 @@ describe("BackgroundAssistantStateServer", () => {
         },
       },
     ];
-    const snapshot = createSnapshot({
+    const snapshot = createDirectSnapshot({
       chat: { entries, agentBusy: false, busyLabel: "Агент работает в фоне…" },
     });
 
@@ -541,7 +518,7 @@ describe("BackgroundAssistantStateServer", () => {
 
   it("isChatSendDisabled returns false when online", () => {
     const { server } = createServer();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     expect(isChatSendDisabled(server.getSnapshot(), "Сообщение")).toBe(false);
   });
@@ -556,7 +533,7 @@ describe("BackgroundAssistantStateServer", () => {
     // Connect to create session client
     port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     port.emitMessage({ type: "assistant.sendChatMessage", message: "Первое" });
     port.emitMessage({ type: "assistant.sendChatMessage", message: "Второе" });
@@ -579,7 +556,7 @@ describe("BackgroundAssistantStateServer", () => {
     // Connect to create session client
     port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
     if (sessionClients[0]) {
       sessionClients[0].sendChatMessageResult = false;
     }
@@ -603,19 +580,19 @@ describe("BackgroundAssistantStateServer", () => {
     // Connect to create session client
     port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     port.emitMessage({ type: "assistant.model.set", provider: "anthropic", modelId: "claude-sonnet" });
     expect(server.getSnapshot().runtime.modelMutationPending).toBe(true);
 
     // New snapshot resets modelMutationPending
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
     expect(server.getSnapshot().runtime.modelMutationPending).toBe(false);
   });
 
   it("no multi-session concepts in snapshot", () => {
     const { server } = createServer();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     const snapshot = server.getSnapshot();
     expect("targets" in snapshot).toBe(false);
@@ -767,7 +744,7 @@ describe("BackgroundAssistantStateServer", () => {
 
     port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     const selection: SelectionPayload = {
       url: "https://example.com",
@@ -809,7 +786,7 @@ describe("BackgroundAssistantStateServer", () => {
 
     port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     if (sessionClients[0]) {
       sessionClients[0].sendSelectionResult = false;
@@ -838,7 +815,7 @@ describe("BackgroundAssistantStateServer", () => {
     port.emitMessage({ type: "assistant.session.connect", port: 31415 });
     await flushAsyncWork();
 
-    const snapshot = createSnapshot({
+    const snapshot = createDirectSnapshot({
       chat: {
         entries: [
           {
@@ -907,7 +884,7 @@ describe("BackgroundAssistantStateServer", () => {
     await flushAsyncWork();
 
     // First hydrate with snapshot that has a message
-    server.applySessionSnapshot(createSnapshot({
+    server.applySessionSnapshot(createDirectSnapshot({
       chat: {
         entries: [
           {
@@ -986,7 +963,7 @@ describe("BackgroundAssistantStateServer", () => {
     await flushAsyncWork();
 
     // Initial snapshot with one entry
-    const initialSnapshot = createSnapshot({
+    const initialSnapshot = createDirectSnapshot({
       chat: {
         entries: [
           {
@@ -1036,7 +1013,7 @@ describe("BackgroundAssistantStateServer", () => {
     }
 
     // Simulate reconnect: new snapshot with all entries including the new one
-    const reconnectSnapshot = createSnapshot({
+    const reconnectSnapshot = createDirectSnapshot({
       chat: {
         entries: [
           {
@@ -1104,7 +1081,7 @@ describe("BackgroundAssistantStateServer", () => {
     await flushAsyncWork();
 
     // Snapshot hydrates history
-    server.applySessionSnapshot(createSnapshot({
+    server.applySessionSnapshot(createDirectSnapshot({
       chat: {
         entries: [
           {
@@ -1184,7 +1161,7 @@ describe("BackgroundAssistantStateServer", () => {
     server.connectPort(port);
 
     // Must be online
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     port.emitMessage({ type: "assistant.startDomPicker", tabId: 42 });
     await flushAsyncWork();
@@ -1199,7 +1176,7 @@ describe("BackgroundAssistantStateServer", () => {
 
     await server.start();
     server.connectPort(port);
-    server.applySessionSnapshot(createSnapshot());
+    server.applySessionSnapshot(createDirectSnapshot());
 
     port.emitMessage({ type: "assistant.startDomPicker" });
     await flushAsyncWork();
@@ -1322,7 +1299,7 @@ describe("BackgroundAssistantStateServer", () => {
         connecting: false,
         statusText: "Подключено к Pi-сессии",
       });
-      sessionClients[0]?.emitSnapshot(createSnapshot());
+      sessionClients[0]?.emitSnapshot(createDirectSnapshot());
       await flushAsyncWork();
 
       port.emitMessage({
@@ -1350,7 +1327,7 @@ describe("BackgroundAssistantStateServer", () => {
         connecting: false,
         statusText: "Подключено к Pi-сессии",
       });
-      sessionClients[0]?.emitSnapshot(createSnapshot());
+      sessionClients[0]?.emitSnapshot(createDirectSnapshot());
       await flushAsyncWork();
 
       port.emitMessage({
@@ -1378,7 +1355,7 @@ describe("BackgroundAssistantStateServer", () => {
         connecting: false,
         statusText: "Подключено к Pi-сессии",
       });
-      sessionClients[0]?.emitSnapshot(createSnapshot());
+      sessionClients[0]?.emitSnapshot(createDirectSnapshot());
       await flushAsyncWork();
 
       // Make setModel return false

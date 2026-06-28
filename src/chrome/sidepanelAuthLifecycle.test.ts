@@ -11,6 +11,7 @@ import {
   type BackgroundAssistantState,
 } from "./assistantState";
 import type { DirectSessionSnapshot } from "../shared/protocol";
+import { createDirectSnapshot as createDirectSnapshotBase } from "./test-utils";
 
 type PortListener = (message: unknown) => void;
 
@@ -34,20 +35,7 @@ async function flush(): Promise<void> {
 }
 
 function createDirectSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectSessionSnapshot {
-  return {
-    session: {
-      cwd: "/repo",
-      gitBranch: "main",
-      pid: 1234,
-      sessionName: "test-session",
-      alias: "frontend",
-      connectedAt: 1_710_000_000_000,
-    },
-    chat: {
-      entries: [],
-      agentBusy: false,
-      busyLabel: "Агент работает в фоне…",
-    },
+  return createDirectSnapshotBase({
     runtime: {
       model: { provider: "anthropic", id: "claude-sonnet", label: "Claude Sonnet" },
       availableModels: [
@@ -59,7 +47,7 @@ function createDirectSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): D
       updatedAt: 1_710_000_000_500,
     },
     ...overrides,
-  };
+  });
 }
 
 type ConnectedStateOverrides = Omit<Partial<BackgroundAssistantState>, "connection" | "snapshot"> & {

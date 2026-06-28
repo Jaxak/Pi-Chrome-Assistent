@@ -190,7 +190,7 @@ function updateDirectSendButtons(elements: SidePanelElements): void {
 }
 
 let lastRenderedMessageCount = 0;
-let lastRenderedMessageTimestamps: number[] = [];
+let lastRenderedMessageSignatures: string[] = [];
 
 function formatNumberRu(value: number): string {
   return new Intl.NumberFormat("ru-RU").format(value).replace(/\u00a0/g, " ");
@@ -253,9 +253,9 @@ function renderChat(elements: SidePanelElements): void {
   const messages = chat?.messages ?? [];
 
   if (elements.messageList) {
-    const currentTimestamps = messages.map((m) => m.timestamp);
+    const currentSignatures = messages.map((message) => JSON.stringify(message));
     const needsFullRender = messages.length !== lastRenderedMessageCount ||
-      !currentTimestamps.every((ts, i) => ts === lastRenderedMessageTimestamps[i]);
+      !currentSignatures.every((signature, i) => signature === lastRenderedMessageSignatures[i]);
 
     if (needsFullRender) {
       const fragment = document.createDocumentFragment();
@@ -264,7 +264,7 @@ function renderChat(elements: SidePanelElements): void {
       }
       elements.messageList.replaceChildren(fragment);
       lastRenderedMessageCount = messages.length;
-      lastRenderedMessageTimestamps = currentTimestamps;
+      lastRenderedMessageSignatures = currentSignatures;
 
       if (elements.messagesScroll) {
         elements.messagesScroll.scrollTop = elements.messagesScroll.scrollHeight;
@@ -313,7 +313,7 @@ function renderAssistantSnapshot(elements: SidePanelElements, state: BackgroundA
 function renderAssistantUnavailable(elements: SidePanelElements): void {
   currentSnapshot = undefined;
   lastRenderedMessageCount = 0;
-  lastRenderedMessageTimestamps = [];
+  lastRenderedMessageSignatures = [];
 
   setBaseDiagnostics(elements, SIDEPANEL_UNAVAILABLE_TEXT);
   if (elements.sessionConnectionStatus) {
@@ -413,7 +413,7 @@ function initializeSidePanel(): void {
   currentActiveTab = "assistant";
   userEditingPort = false;
   lastRenderedMessageCount = 0;
-  lastRenderedMessageTimestamps = [];
+  lastRenderedMessageSignatures = [];
   clearReconnectTimer();
   reconnectAttempt = 0;
 

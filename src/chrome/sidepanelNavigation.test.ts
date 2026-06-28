@@ -533,4 +533,167 @@ describe("sidepanel navigation", () => {
     expect(tabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true });
     expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.startDomPicker", tabId: 1 });
   });
+
+  it("shows persisted history from snapshot entries immediately after connect", async () => {
+    loadSidePanelHtml();
+    const runtime = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    runtime.port.emit({
+      type: "assistant.snapshot",
+      state: createConnectedState({
+        snapshot: createDirectSnapshot({
+          chat: {
+            entries: [
+              {
+                type: "message",
+                id: "user-1",
+                timestamp: "2026-06-28T10:00:00.000Z",
+                message: { role: "user", content: "Привет, Pi" },
+              },
+              {
+                type: "message",
+                id: "assistant-1",
+                timestamp: "2026-06-28T10:00:01.000Z",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: "Привет! Уже вижу историю." }],
+                },
+              },
+            ],
+            agentBusy: false,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      }),
+    });
+    await flush();
+
+    const messageList = document.querySelector("#message-list");
+    expect(messageList?.textContent).toContain("Привет, Pi");
+    expect(messageList?.textContent).toContain("Привет! Уже вижу историю.");
+  });
+
+  it("updates live assistant text without reconnect when background snapshot changes", async () => {
+    loadSidePanelHtml();
+    const runtime = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    runtime.port.emit({
+      type: "assistant.snapshot",
+      state: createConnectedState({
+        snapshot: createDirectSnapshot({
+          chat: {
+            entries: [
+              {
+                type: "message",
+                id: "assistant-1",
+                timestamp: "2026-06-28T10:00:01.000Z",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: "Привет" }],
+                },
+              },
+            ],
+            agentBusy: true,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      }),
+    });
+    await flush();
+
+    const messageList = document.querySelector("#message-list");
+    expect(messageList?.textContent).toContain("Привет");
+
+    runtime.port.emit({
+      type: "assistant.snapshot",
+      state: createConnectedState({
+        snapshot: createDirectSnapshot({
+          chat: {
+            entries: [
+              {
+                type: "message",
+                id: "assistant-1",
+                timestamp: "2026-06-28T10:00:01.000Z",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: "Привет, мир" }],
+                },
+              },
+            ],
+            agentBusy: true,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      }),
+    });
+    await flush();
+
+    expect(messageList?.textContent).toContain("Привет, мир");
+  });
+
+  it("shows latest mirrored chat after sidepanel reopen", async () => {
+    loadSidePanelHtml();
+    const firstRuntime = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    firstRuntime.port.emit({
+      type: "assistant.snapshot",
+      state: createConnectedState({
+        snapshot: createDirectSnapshot({
+          chat: {
+            entries: [
+              {
+                type: "message",
+                id: "assistant-2",
+                timestamp: "2026-06-28T10:05:00.000Z",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: "Актуальное состояние из background" }],
+                },
+              },
+            ],
+            agentBusy: false,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      }),
+    });
+    await flush();
+
+    expect(document.querySelector("#message-list")?.textContent).toContain("Актуальное состояние из background");
+
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    loadSidePanelHtml();
+    const secondRuntime = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    secondRuntime.port.emit({
+      type: "assistant.snapshot",
+      state: createConnectedState({
+        snapshot: createDirectSnapshot({
+          chat: {
+            entries: [
+              {
+                type: "message",
+                id: "assistant-2",
+                timestamp: "2026-06-28T10:05:00.000Z",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: "Актуальное состояние из background" }],
+                },
+              },
+            ],
+            agentBusy: false,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      }),
+    });
+    await flush();
+
+    expect(document.querySelector("#message-list")?.textContent).toContain("Актуальное состояние из background");
+  });
 });

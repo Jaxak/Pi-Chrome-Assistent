@@ -35,6 +35,7 @@ type SidePanelElements = {
   sessionPortInput: HTMLInputElement | null;
   connectSessionButton: HTMLButtonElement | null;
   sessionHeadingStatus: HTMLElement | null;
+  sessionCwdPath: HTMLElement | null;
   modelButton: HTMLButtonElement | null;
   modelMenu: HTMLElement | null;
   contextUsage: HTMLElement | null;
@@ -89,6 +90,7 @@ function getSidePanelElements(): SidePanelElements {
     sessionPortInput: document.querySelector<HTMLInputElement>("#session-port-input"),
     connectSessionButton: document.querySelector<HTMLButtonElement>("#connect-session-button"),
     sessionHeadingStatus: document.querySelector<HTMLElement>("#session-heading-status"),
+    sessionCwdPath: document.querySelector<HTMLElement>("#session-cwd-path"),
     modelButton: document.querySelector<HTMLButtonElement>("#model-button"),
     modelMenu: document.querySelector<HTMLElement>("#model-menu"),
     contextUsage: document.querySelector<HTMLElement>("#context-usage"),
@@ -188,6 +190,12 @@ function renderSessionConnection(elements: SidePanelElements, state: BackgroundA
   if (elements.sessionHeadingStatus) {
     elements.sessionHeadingStatus.textContent = statusText;
     elements.sessionHeadingStatus.dataset.tone = tone;
+  }
+
+  // Update working directory display
+  if (elements.sessionCwdPath) {
+    const cwd = state.session?.cwd;
+    elements.sessionCwdPath.textContent = cwd ?? "—";
   }
 
   updateDirectSendButtons(elements);

@@ -185,6 +185,26 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   background: var(--ant-color-bg-container);
   color: var(--ant-color-text);
 }
+.session-cwd-row {
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+  margin-top: 4px;
+  font-size: 11px;
+}
+.session-cwd-label {
+  color: var(--ant-color-text-tertiary);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.session-cwd-path {
+  color: var(--ant-color-text-secondary);
+  font-family: var(--ant-font-family-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer-runtime { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--ant-color-text-secondary); font-size: 12px; }
 .composer-runtime__model { min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: var(--ant-color-text-secondary); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .composer-runtime__context { flex: 0 1 auto; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }

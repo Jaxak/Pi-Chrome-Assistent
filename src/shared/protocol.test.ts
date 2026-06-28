@@ -5,16 +5,16 @@ import {
   createRequestId,
   isProtocolEnvelope,
   parseProtocolEnvelope,
-  validateChatEvent,
+  validatePiMirrorEvent,
   validateSelectionPayload,
   validateDirectSendChatPayload,
   validateDirectSendSelectionPayload,
   validateDirectSetModelPayload,
-  type ChatEvent,
   type DirectSendChatPayload,
   type DirectSendSelectionPayload,
   type DirectSetModelPayload,
   type DirectSessionSnapshot,
+  type PiMirrorEvent,
   type SelectionPayload,
 } from "./protocol";
 
@@ -37,6 +37,7 @@ describe("protocol envelope", () => {
 
   it("accepts direct session message types", () => {
     expect(isProtocolEnvelope({ version: 1, type: "session.snapshot" })).toBe(true);
+    expect(isProtocolEnvelope({ version: 1, type: "session.event" })).toBe(true);
     expect(isProtocolEnvelope({ version: 1, type: "session.chat.send" })).toBe(true);
     expect(isProtocolEnvelope({ version: 1, type: "session.selection.send" })).toBe(true);
     expect(isProtocolEnvelope({ version: 1, type: "session.model.set" })).toBe(true);
@@ -131,8 +132,16 @@ describe("direct session snapshot shape", () => {
         connectedAt: 1_710_000_000_000,
       },
       chat: {
-        events: [
-          { kind: "user_message", text: "Привет", timestamp: 1_710_000_000_000 },
+        entries: [
+          {
+            type: "message",
+            id: "entry-1",
+            timestamp: "2026-06-28T04:00:00.000Z",
+            message: {
+              role: "user",
+              content: "Привет",
+            },
+          },
         ],
         agentBusy: false,
         busyLabel: "Агент работает в фоне…",
@@ -156,40 +165,30 @@ describe("direct session snapshot shape", () => {
   });
 });
 
-describe("chat event validation", () => {
-  it("accepts user message chat event", () => {
-    const event: ChatEvent = {
-      kind: "user_message",
-      text: "Привет",
-      timestamp: 1_710_000_000_000,
+describe("mirror event validation", () => {
+  it("accepts message_update mirror event with text_delta payload", () => {
+    const event: PiMirrorEvent = {
+      type: "message_update",
+      message: { id: "message-1", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "Привет" },
     };
-    expect(validateChatEvent(event)).toEqual({ ok: true });
+
+    expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
   });
 
-  it("accepts agent_busy chat event", () => {
-    const event: ChatEvent = {
-      kind: "agent_busy",
-      busy: true,
-      label: "Агент работает в фоне…",
-      timestamp: 1_710_000_000_000,
+  it("accepts message_start mirror event", () => {
+    const event: PiMirrorEvent = {
+      type: "message_start",
+      message: { id: "message-1", role: "assistant" },
     };
-    expect(validateChatEvent(event)).toEqual({ ok: true });
+
+    expect(validatePiMirrorEvent(event)).toEqual({ ok: true });
   });
 
-  it("accepts assistant text delta chat events", () => {
-    const event: ChatEvent = {
-      kind: "assistant_text_delta",
-      messageId: "message-1",
-      delta: "Привет",
-      timestamp: 1_710_000_000_000,
-    };
-    expect(validateChatEvent(event)).toEqual({ ok: true });
-  });
-
-  it("rejects unknown chat event kinds", () => {
-    expect(validateChatEvent({ kind: "unknown", timestamp: 1_710_000_000_000 })).toEqual({
+  it("rejects unknown mirror event types", () => {
+    expect(validatePiMirrorEvent({ type: "unknown" })).toEqual({
       ok: false,
-      error: "Unknown chat event kind",
+      error: "Unknown mirror event type: unknown",
     });
   });
 });

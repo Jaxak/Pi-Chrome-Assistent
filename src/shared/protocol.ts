@@ -2,6 +2,7 @@ import { PROTOCOL_VERSION } from "./constants";
 
 export const PROTOCOL_MESSAGE_TYPES = [
   "session.snapshot",
+  "session.event",
   "session.chat.send",
   "session.selection.send",
   "session.model.set",
@@ -34,6 +35,24 @@ export type DirectSendChatPayload = { message: string };
 export type DirectSendSelectionPayload = { selection: SelectionPayload };
 export type DirectSetModelPayload = { provider: string; modelId: string };
 
+export type SessionEntryLike = {
+  type: "message";
+  id: string;
+  timestamp: string;
+  message: {
+    role:
+      | "user"
+      | "assistant"
+      | "toolResult"
+      | "custom"
+      | "branchSummary"
+      | "compactionSummary";
+    content: unknown;
+    stopReason?: string;
+    errorMessage?: string;
+  };
+};
+
 export type DirectSessionSnapshot = {
   session: {
     cwd: string;
@@ -44,7 +63,7 @@ export type DirectSessionSnapshot = {
     connectedAt: number;
   };
   chat: {
-    events?: ChatEvent[];
+    entries: SessionEntryLike[];
     agentBusy: boolean;
     busyLabel: string;
   };
@@ -71,6 +90,32 @@ export type TargetContextUsage = {
   percent: number | null;
 };
 
+/**
+ * PiMirrorEvent — live event union for mirror forwarding.
+ * Replaces the old ChatEvent as the protocol for real-time Pi event forwarding.
+ * These events are NOT the authoritative history model — they supplement
+ * the snapshot's `chat.entries` with live streaming updates.
+ */
+export type PiMirrorEvent =
+  | { type: "message_start"; message: { id: string; role: string } }
+  | {
+      type: "message_update";
+      message: { id: string; role: string };
+      assistantMessageEvent?: { type: "text_delta"; text_delta: string };
+    }
+  | { type: "message_end"; message: { id: string; role: string }; stopReason?: string }
+  | { type: "turn_start"; turnId: string }
+  | { type: "turn_end"; turnId: string }
+  | { type: "tool_execution_start"; toolName: string; input?: unknown }
+  | { type: "tool_execution_update"; toolName: string; output?: unknown }
+  | { type: "tool_execution_end"; toolName: string; output?: unknown; error?: string }
+  | { type: "model_select"; provider: string; modelId: string };
+
+/**
+ * Legacy ChatEvent type — retained temporarily for backward compatibility
+ * with production code in chrome/pi modules (Task 3+ migration).
+ * Will be fully removed after mirror architecture is wired end-to-end.
+ */
 export type ChatEvent =
   | { kind: "user_message"; text: string; timestamp: number }
   | { kind: "agent_busy"; busy: boolean; label: string; timestamp: number }
@@ -182,6 +227,102 @@ export function validateDirectSetModelPayload(value: unknown): ValidationResult 
   return { ok: true };
 }
 
+/**
+ * Validate a PiMirrorEvent — the new live-event format for mirror forwarding.
+ */
+export function validatePiMirrorEvent(value: unknown): ValidationResult {
+  if (!value || typeof value !== "object") {
+    return { ok: false, error: "Payload must be an object" };
+  }
+
+  const event = value as Record<string, unknown>;
+  const type = event.type;
+
+  if (typeof type !== "string") {
+    return { ok: false, error: "Missing event type" };
+  }
+
+  switch (type) {
+    case "message_start":
+    case "message_end": {
+      const msg = event.message;
+      if (!msg || typeof msg !== "object") {
+        return { ok: false, error: "Missing message" };
+      }
+      const m = msg as Record<string, unknown>;
+      if (typeof m.id !== "string" || m.id.length === 0) {
+        return { ok: false, error: "Missing message.id" };
+      }
+      if (typeof m.role !== "string") {
+        return { ok: false, error: "Missing message.role" };
+      }
+      return { ok: true };
+    }
+
+    case "message_update": {
+      const msg = event.message;
+      if (!msg || typeof msg !== "object") {
+        return { ok: false, error: "Missing message" };
+      }
+      const m = msg as Record<string, unknown>;
+      if (typeof m.id !== "string" || m.id.length === 0) {
+        return { ok: false, error: "Missing message.id" };
+      }
+      if (typeof m.role !== "string") {
+        return { ok: false, error: "Missing message.role" };
+      }
+      // assistantMessageEvent is optional, but if present must be valid
+      if (event.assistantMessageEvent !== undefined) {
+        const ame = event.assistantMessageEvent as Record<string, unknown>;
+        if (typeof ame !== "object" || ame === null) {
+          return { ok: false, error: "Invalid assistantMessageEvent" };
+        }
+        if (ame.type !== "text_delta") {
+          return { ok: false, error: "Unsupported assistantMessageEvent type" };
+        }
+        if (typeof ame.text_delta !== "string") {
+          return { ok: false, error: "Missing text_delta" };
+        }
+      }
+      return { ok: true };
+    }
+
+    case "turn_start":
+    case "turn_end": {
+      if (typeof event.turnId !== "string" || event.turnId.length === 0) {
+        return { ok: false, error: "Missing turnId" };
+      }
+      return { ok: true };
+    }
+
+    case "tool_execution_start":
+    case "tool_execution_update":
+    case "tool_execution_end": {
+      if (typeof event.toolName !== "string" || event.toolName.length === 0) {
+        return { ok: false, error: "Missing toolName" };
+      }
+      return { ok: true };
+    }
+
+    case "model_select": {
+      if (typeof event.provider !== "string" || event.provider.length === 0) {
+        return { ok: false, error: "Missing provider" };
+      }
+      if (typeof event.modelId !== "string" || event.modelId.length === 0) {
+        return { ok: false, error: "Missing modelId" };
+      }
+      return { ok: true };
+    }
+
+    default:
+      return { ok: false, error: `Unknown mirror event type: ${type}` };
+  }
+}
+
+/**
+ * Legacy ChatEvent validator — retained for backward compatibility with
+ * production code in chrome/pi modules (Task 3+ migration).
+ */
 export function validateChatEvent(value: unknown): ValidationResult {
   if (!value || typeof value !== "object") {
     return { ok: false, error: "Payload must be an object" };

@@ -1,3 +1,5 @@
+import type { PiMirrorEvent, SessionEntryLike } from "../shared/protocol";
+
 const DEFAULT_BUSY_LABEL = "Агент работает в фоне…";
 
 export type SidepanelChatMessage =
@@ -140,5 +142,172 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
         sending: false,
         error: event.message,
       };
+  }
+}
+
+/**
+ * Extract text content from a session entry's message.content.
+ * Handles content as array of { type: "text", text: string } or as a string.
+ */
+function extractEntryText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => typeof part === "object" && part !== null && (part as Record<string, unknown>).type === "text")
+      .map((part) => (part as { text?: string }).text ?? "")
+      .join("");
+  }
+  return "";
+}
+
+/**
+ * Hydrate visible chat messages from authoritative session entries.
+ * Supports roles: user, assistant. Other roles are silently skipped.
+ */
+export function hydrateMessagesFromEntries(entries: SessionEntryLike[]): SidepanelChatMessage[] {
+  const messages: SidepanelChatMessage[] = [];
+
+  for (const entry of entries) {
+    if (entry.type !== "message") {
+      continue;
+    }
+
+    const msg = entry.message;
+    const text = extractEntryText(msg.content);
+    const timestamp = new Date(entry.timestamp).getTime();
+
+    if (msg.role === "user") {
+      messages.push({
+        role: "user",
+        text,
+        timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+      });
+    } else if (msg.role === "assistant") {
+      const messageId = (msg as { id?: string }).id ?? entry.id;
+      messages.push({
+        role: "assistant",
+        messageId,
+        text,
+        streaming: false,
+        timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+      });
+    }
+    // toolResult, custom, branchSummary, compactionSummary — skipped for now
+  }
+
+  return messages;
+}
+
+/**
+ * Apply a raw PiMirrorEvent to the sidepanel chat state.
+ * Handles: message_start, message_update (text_delta), message_end.
+ * Other event types are safely ignored.
+ */
+export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirrorEvent): SidePanelState {
+  switch (event.type) {
+    case "message_start": {
+      if (event.message.role !== "assistant") {
+        return state;
+      }
+      const messageId = event.message.id;
+      const now = Date.now();
+      // Check if we already have this message (reconnect idempotency)
+      const existing = state.messages.find(
+        (m) => m.role === "assistant" && m.messageId === messageId,
+      );
+      if (existing) {
+        return state;
+      }
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            role: "assistant",
+            messageId,
+            text: "",
+            streaming: true,
+            timestamp: now,
+          },
+        ],
+        agentBusy: true,
+        busyLabel: DEFAULT_BUSY_LABEL,
+        sending: false,
+        error: undefined,
+      };
+    }
+
+    case "message_update": {
+      const messageId = event.message.id;
+      if (event.message.role !== "assistant") {
+        return state;
+      }
+      const delta = event.assistantMessageEvent?.type === "text_delta"
+        ? event.assistantMessageEvent.text_delta
+        : undefined;
+
+      if (delta === undefined || delta === "") {
+        return state;
+      }
+
+      // If message doesn't exist yet, create it (handles out-of-order)
+      const idx = state.messages.findIndex(
+        (m) => m.role === "assistant" && m.messageId === messageId,
+      );
+      if (idx < 0) {
+        const now = Date.now();
+        return {
+          ...state,
+          messages: [
+            ...state.messages,
+            {
+              role: "assistant",
+              messageId,
+              text: delta,
+              streaming: true,
+              timestamp: now,
+            },
+          ],
+          agentBusy: true,
+          busyLabel: DEFAULT_BUSY_LABEL,
+          sending: false,
+          error: undefined,
+        };
+      }
+
+      return {
+        ...state,
+        messages: state.messages.map((m) => {
+          if (m.role !== "assistant" || m.messageId !== messageId) {
+            return m;
+          }
+          return { ...m, text: `${m.text}${delta}` };
+        }),
+      };
+    }
+
+    case "message_end": {
+      const messageId = event.message.id;
+      if (event.message.role !== "assistant") {
+        return state;
+      }
+      return {
+        ...state,
+        messages: state.messages.map((m) => {
+          if (m.role !== "assistant" || m.messageId !== messageId) {
+            return m;
+          }
+          return { ...m, streaming: false };
+        }),
+        agentBusy: false,
+        sending: false,
+      };
+    }
+
+    // turn_start, turn_end, tool_execution_*, model_select — safely ignored
+    default:
+      return state;
   }
 }

@@ -1,7 +1,9 @@
-import type { ChatEvent, DirectSessionSnapshot, TargetModelSummary, TargetContextUsage } from "../shared/protocol";
+import type { ChatEvent, DirectSessionSnapshot, PiMirrorEvent, TargetModelSummary, TargetContextUsage } from "../shared/protocol";
 import type { DiagnosticEntry } from "./diagnostics";
 import {
   createInitialSidePanelState,
+  hydrateMessagesFromEntries,
+  applyMirrorEventToChatState,
   reduceSidePanelChatEvent,
   type SidepanelChatMessage,
 } from "./sidepanelState";
@@ -47,6 +49,7 @@ export type AssistantStateEvent =
   | { kind: "connection_updated"; connection: Partial<BackgroundAssistantState["connection"]> }
   | { kind: "session_snapshot"; snapshot: DirectSessionSnapshot }
   | { kind: "chat_event"; event: ChatEvent }
+  | { kind: "session.event"; event: PiMirrorEvent }
   | { kind: "runtime_updated"; runtime: Partial<BackgroundAssistantState["runtime"]> }
   | { kind: "diagnostics_updated"; diagnostics: DiagnosticEntry[] }
   | { kind: "epoch_incremented" };
@@ -118,6 +121,30 @@ export function reduceAssistantState(
       };
     }
 
+    case "session.event": {
+      const sidePanelState = {
+        bridgeOnline: state.connection.online,
+        messages: state.chat.messages,
+        agentBusy: state.chat.agentBusy,
+        busyLabel: state.chat.busyLabel,
+        sending: state.chat.sending,
+        error: state.chat.error,
+      };
+
+      const nextChat = applyMirrorEventToChatState(sidePanelState, event.event);
+
+      return {
+        ...state,
+        chat: {
+          messages: nextChat.messages,
+          agentBusy: nextChat.agentBusy,
+          busyLabel: nextChat.busyLabel,
+          sending: nextChat.sending,
+          error: nextChat.error,
+        },
+      };
+    }
+
     case "runtime_updated":
       return {
         ...state,
@@ -148,8 +175,8 @@ function applySessionSnapshot(
   state: BackgroundAssistantState,
   snapshot: DirectSessionSnapshot,
 ): BackgroundAssistantState {
-  const chatEvents = snapshot.chat.events ?? [];
-  const hydratedMessages = materializeChatMessages(chatEvents);
+  const entries = snapshot.chat.entries ?? [];
+  const hydratedMessages = hydrateMessagesFromEntries(entries);
 
   return {
     ...state,
@@ -177,17 +204,6 @@ function applySessionSnapshot(
       error: undefined,
     },
   };
-}
-
-function materializeChatMessages(events: ChatEvent[]): import("./sidepanelState").SidepanelChatMessage[] {
-  const sidePanelState = createInitialSidePanelState();
-  let result = sidePanelState;
-
-  for (const event of events) {
-    result = reduceSidePanelChatEvent(result, event);
-  }
-
-  return result.messages;
 }
 
 export function formatAssistantStatus(state: BackgroundAssistantState): string {

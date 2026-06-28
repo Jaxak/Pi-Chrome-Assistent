@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import type { SessionEntryLike, PiMirrorEvent } from "../shared/protocol";
 import {
   createInitialSidePanelState,
   reduceSidePanelChatEvent,
   startSendingUserMessage,
+  hydrateMessagesFromEntries,
+  applyMirrorEventToChatState,
   type SidePanelState,
 } from "./sidepanelState";
 
@@ -135,5 +138,251 @@ describe("sidepanelState", () => {
     expect(state.agentBusy).toBe(false);
     expect(state.sending).toBe(false);
     expect(state.error).toBe("Не удалось отправить сообщение");
+  });
+});
+
+describe("hydrateMessagesFromEntries", () => {
+  it("hydrates user and assistant messages from entries", () => {
+    const entries: SessionEntryLike[] = [
+      {
+        type: "message",
+        id: "e1",
+        timestamp: "2025-01-01T00:00:00Z",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Привет, Pi!" }],
+        },
+      },
+      {
+        type: "message",
+        id: "e2",
+        timestamp: "2025-01-01T00:00:01Z",
+        message: {
+          role: "assistant",
+          id: "msg-1",
+          content: [{ type: "text", text: "Привет! Как могу помочь?" }],
+        },
+      },
+    ];
+
+    const messages = hydrateMessagesFromEntries(entries);
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      text: "Привет, Pi!",
+    });
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      messageId: "msg-1",
+      text: "Привет! Как могу помочь?",
+      streaming: false,
+    });
+  });
+
+  it("returns empty array for empty entries", () => {
+    const messages = hydrateMessagesFromEntries([]);
+    expect(messages).toEqual([]);
+  });
+
+  it("skips non-user/non-assistant roles", () => {
+    const entries: SessionEntryLike[] = [
+      {
+        type: "message",
+        id: "e1",
+        timestamp: "2025-01-01T00:00:00Z",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Hello" }],
+        },
+      },
+      {
+        type: "message",
+        id: "e2",
+        timestamp: "2025-01-01T00:00:01Z",
+        message: {
+          role: "toolResult",
+          content: [{ type: "text", text: "tool output" }],
+        },
+      },
+    ];
+
+    const messages = hydrateMessagesFromEntries(entries);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("user");
+  });
+
+  it("handles string content in entries", () => {
+    const entries: SessionEntryLike[] = [
+      {
+        type: "message",
+        id: "e1",
+        timestamp: "2025-01-01T00:00:00Z",
+        message: {
+          role: "user",
+          content: "Simple text content",
+        },
+      },
+    ];
+
+    const messages = hydrateMessagesFromEntries(entries);
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      text: "Simple text content",
+    });
+  });
+});
+
+describe("applyMirrorEventToChatState", () => {
+  it("creates streaming assistant message on message_start", () => {
+    const state = createInitialSidePanelState();
+    const event: PiMirrorEvent = {
+      type: "message_start",
+      message: { id: "live-1", role: "assistant" },
+    };
+
+    const result = applyMirrorEventToChatState(state, event);
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      role: "assistant",
+      messageId: "live-1",
+      text: "",
+      streaming: true,
+    });
+    expect(result.agentBusy).toBe(true);
+  });
+
+  it("appends text_delta from message_update to streaming message", () => {
+    const state = createInitialSidePanelState();
+    state.messages = [
+      {
+        role: "assistant",
+        messageId: "live-1",
+        text: "При",
+        streaming: true,
+        timestamp: Date.now(),
+      },
+    ];
+
+    const event: PiMirrorEvent = {
+      type: "message_update",
+      message: { id: "live-1", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "вет" },
+    };
+
+    const result = applyMirrorEventToChatState(state, event);
+
+    expect(result.messages[0]).toMatchObject({
+      role: "assistant",
+      messageId: "live-1",
+      text: "Привет",
+      streaming: true,
+    });
+  });
+
+  it("creates message if message_update arrives before message_start", () => {
+    const state = createInitialSidePanelState();
+
+    const event: PiMirrorEvent = {
+      type: "message_update",
+      message: { id: "live-2", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "Текст" },
+    };
+
+    const result = applyMirrorEventToChatState(state, event);
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      role: "assistant",
+      messageId: "live-2",
+      text: "Текст",
+      streaming: true,
+    });
+  });
+
+  it("finalizes streaming message on message_end", () => {
+    const state = createInitialSidePanelState();
+    state.messages = [
+      {
+        role: "assistant",
+        messageId: "live-1",
+        text: "Готово",
+        streaming: true,
+        timestamp: Date.now(),
+      },
+    ];
+    state.agentBusy = true;
+
+    const event: PiMirrorEvent = {
+      type: "message_end",
+      message: { id: "live-1", role: "assistant" },
+    };
+
+    const result = applyMirrorEventToChatState(state, event);
+
+    expect(result.messages[0]).toMatchObject({
+      role: "assistant",
+      messageId: "live-1",
+      text: "Готово",
+      streaming: false,
+    });
+    expect(result.agentBusy).toBe(false);
+  });
+
+  it("ignores non-assistant roles on message_start", () => {
+    const state = createInitialSidePanelState();
+    const event: PiMirrorEvent = {
+      type: "message_start",
+      message: { id: "live-1", role: "user" },
+    };
+
+    const result = applyMirrorEventToChatState(state, event);
+
+    expect(result.messages).toEqual([]);
+  });
+
+  it("ignores unknown event types safely", () => {
+    const state = createInitialSidePanelState();
+    state.messages = [
+      {
+        role: "user",
+        text: "Hello",
+        timestamp: Date.now(),
+      },
+    ];
+
+    const event: PiMirrorEvent = {
+      type: "turn_start",
+      turnId: "turn-1",
+    };
+
+    const result = applyMirrorEventToChatState(state, event);
+
+    expect(result.messages).toEqual(state.messages);
+  });
+
+  it("ignores message_update without text_delta", () => {
+    const state = createInitialSidePanelState();
+    state.messages = [
+      {
+        role: "assistant",
+        messageId: "live-1",
+        text: "Existing",
+        streaming: true,
+        timestamp: Date.now(),
+      },
+    ];
+
+    const event: PiMirrorEvent = {
+      type: "message_update",
+      message: { id: "live-1", role: "assistant" },
+    };
+
+    const result = applyMirrorEventToChatState(state, event);
+
+    expect(result.messages[0]).toMatchObject({
+      text: "Existing",
+    });
   });
 });

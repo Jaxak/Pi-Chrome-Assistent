@@ -193,7 +193,7 @@ describe("assistantState", () => {
         kind: "session.event",
         event: {
           type: "message_start",
-          messageId: "live-1",
+          message: { id: "live-1", role: "assistant" },
         },
       });
 
@@ -202,8 +202,8 @@ describe("assistantState", () => {
         kind: "session.event",
         event: {
           type: "message_update",
-          messageId: "live-1",
-          textDelta: "Прив",
+          message: { id: "live-1", role: "assistant" },
+          assistantMessageEvent: { type: "text_delta", text_delta: "Прив" },
         },
       });
 
@@ -212,8 +212,8 @@ describe("assistantState", () => {
         kind: "session.event",
         event: {
           type: "message_update",
-          messageId: "live-1",
-          textDelta: "ет!",
+          message: { id: "live-1", role: "assistant" },
+          assistantMessageEvent: { type: "text_delta", text_delta: "ет!" },
         },
       });
 
@@ -318,15 +318,15 @@ describe("assistantState", () => {
         kind: "session.event",
         event: {
           type: "message_start",
-          messageId: "live-2",
+          message: { id: "live-2", role: "assistant" },
         },
       });
       state = reduceAssistantState(state, {
         kind: "session.event",
         event: {
           type: "message_update",
-          messageId: "live-2",
-          textDelta: "Новый ответ",
+          message: { id: "live-2", role: "assistant" },
+          assistantMessageEvent: { type: "text_delta", text_delta: "Новый ответ" },
         },
       });
 
@@ -336,6 +336,109 @@ describe("assistantState", () => {
       );
       expect(liveMsgs).toHaveLength(1);
       expect(liveMsgs[0].text).toBe("Новый ответ");
+    });
+
+    it("message_end завершает потоковое сообщение ассистента", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot({
+          chat: {
+            entries: [
+              {
+                type: "message" as const,
+                id: "e1",
+                timestamp: "2025-01-01T00:00:00Z",
+                message: {
+                  role: "user" as const,
+                  content: [{ type: "text" as const, text: "Вопрос" }],
+                },
+              },
+            ],
+            agentBusy: true,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      });
+
+      state = reduceAssistantState(state, {
+        kind: "session.event",
+        event: {
+          type: "message_start",
+          message: { id: "live-end", role: "assistant" },
+        },
+      });
+      state = reduceAssistantState(state, {
+        kind: "session.event",
+        event: {
+          type: "message_update",
+          message: { id: "live-end", role: "assistant" },
+          assistantMessageEvent: { type: "text_delta", text_delta: "Готово" },
+        },
+      });
+
+      // Проверяем что потоковое
+      const streamingMsgs = state.chat.messages.filter(
+        (m) => m.role === "assistant" && m.messageId === "live-end",
+      );
+      expect(streamingMsgs[0].streaming).toBe(true);
+
+      // message_end завершает
+      state = reduceAssistantState(state, {
+        kind: "session.event",
+        event: {
+          type: "message_end",
+          message: { id: "live-end", role: "assistant" },
+        },
+      });
+
+      const finishedMsgs = state.chat.messages.filter(
+        (m) => m.role === "assistant" && m.messageId === "live-end",
+      );
+      expect(finishedMsgs[0].streaming).toBe(false);
+      expect(state.chat.agentBusy).toBe(false);
+      expect(state.chat.sending).toBe(false);
+    });
+
+    it("пустой snapshot entries очищает видимый чат", () => {
+      let state = createInitialAssistantState();
+      // Snapshot с сообщениями
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot({
+          chat: {
+            entries: [
+              {
+                type: "message" as const,
+                id: "e1",
+                timestamp: "2025-01-01T00:00:00Z",
+                message: {
+                  role: "user" as const,
+                  content: [{ type: "text" as const, text: "Привет" }],
+                },
+              },
+            ],
+            agentBusy: false,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      });
+
+      expect(state.chat.messages).toHaveLength(1);
+
+      // Новый snapshot с пустыми entries — чат должен очиститься
+      state = reduceAssistantState(state, {
+        kind: "session_snapshot",
+        snapshot: createDirectSnapshot({
+          chat: {
+            entries: [],
+            agentBusy: false,
+            busyLabel: "Агент работает в фоне…",
+          },
+        }),
+      });
+
+      expect(state.chat.messages).toEqual([]);
     });
   });
 

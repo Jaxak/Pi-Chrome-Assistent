@@ -9,20 +9,36 @@ import {
 import type { SidepanelChatMessage } from "./sidepanelState";
 
 describe("sidepanelRender", () => {
-  it("renders chat messages as textContent without innerHTML", () => {
+  it("renders chat messages with markdown (innerHTML)", () => {
     const message: SidepanelChatMessage = {
       role: "assistant",
       messageId: "message-1",
-      text: "<strong>Привет</strong>",
+      text: "Привет, это **жирный** текст и `код`",
       streaming: false,
       timestamp: 1_710_000_000_000,
     };
 
     const element = createChatMessageElement(message);
 
-    expect(element.textContent).toContain("<strong>Привет</strong>");
-    expect(element.innerHTML).not.toContain("<strong>Привет</strong>");
+    expect(element.innerHTML).toContain("<strong>жирный</strong>");
+    expect(element.innerHTML).toContain("<code>код</code>");
+    expect(element.textContent).toContain("Привет, это жирный текст и код");
     expect(element.className).toContain("message-row");
+  });
+
+  it("escapes raw HTML in messages (XSS-safe)", () => {
+    const message: SidepanelChatMessage = {
+      role: "assistant",
+      messageId: "message-2",
+      text: "<script>alert('xss')</script>",
+      streaming: false,
+      timestamp: 1_710_000_000_000,
+    };
+
+    const element = createChatMessageElement(message);
+
+    expect(element.innerHTML).toContain("&lt;script&gt;");
+    expect(element.innerHTML).not.toContain("<script>");
   });
 
   it("renders the required minimal busy indicator", () => {

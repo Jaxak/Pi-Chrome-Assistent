@@ -1,4 +1,5 @@
 import type { SidepanelChatMessage } from "./sidepanelState";
+import { renderMarkdown } from "./markdown";
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString("ru-RU", {
@@ -16,7 +17,7 @@ export function createChatMessageElement(message: SidepanelChatMessage): HTMLEle
 
   const text = document.createElement("div");
   text.className = "message-text";
-  text.textContent = message.text;
+  text.innerHTML = renderMarkdown(message.text);
 
   const meta = document.createElement("div");
   meta.className = "message-meta";

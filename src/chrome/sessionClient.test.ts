@@ -1222,6 +1222,68 @@ describe("SessionClient", () => {
     }
   });
 
+  // ─── session.event validation (M4) ───
+
+  it("should ignore malformed session.event payloads", async () => {
+    const socket = new FakeWebSocket();
+    const onSessionEvent = vi.fn();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+      onSessionEvent,
+    });
+
+    client.connect();
+    socket.emitOpen();
+    socket.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+    await flush();
+
+    // Send malformed event (missing required fields: message.id and message.role)
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "session.event",
+      payload: { type: "message_start" },
+    });
+    await flush();
+
+    expect(onSessionEvent).not.toHaveBeenCalled();
+  });
+
+  it("should accept valid session.event payloads", async () => {
+    const socket = new FakeWebSocket();
+    const onSessionEvent = vi.fn();
+    const client = new SessionClient({
+      port: 31415,
+      webSocketFactory: () => socket,
+      onSnapshot: vi.fn(),
+      onConnectionState: vi.fn(),
+      onSessionEvent,
+    });
+
+    client.connect();
+    socket.emitOpen();
+    socket.emitMessage({ version: PROTOCOL_VERSION, type: "session.snapshot", payload: createSnapshot() });
+    await flush();
+
+    // Send valid event
+    socket.emitMessage({
+      version: PROTOCOL_VERSION,
+      type: "session.event",
+      payload: {
+        type: "message_start",
+        message: { id: "msg-1", role: "assistant" },
+      },
+    });
+    await flush();
+
+    expect(onSessionEvent).toHaveBeenCalledWith({
+      type: "message_start",
+      message: { id: "msg-1", role: "assistant" },
+    });
+  });
+
   it("connect() resets everConnected and allows fresh connection attempt", async () => {
     vi.useFakeTimers();
     try {

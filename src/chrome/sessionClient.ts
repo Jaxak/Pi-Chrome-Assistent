@@ -2,6 +2,7 @@ import { PROTOCOL_VERSION } from "../shared/constants";
 import {
   createRequestId,
   parseProtocolEnvelope,
+  validatePiMirrorEvent,
   type DirectCommandResult,
   type DirectSessionSnapshot,
   type PiMirrorEvent,
@@ -278,6 +279,11 @@ export class SessionClient {
 
       case "session.event": {
         this.resetIdleTimer();
+        const validation = validatePiMirrorEvent(envelope.payload);
+        if (!validation.ok) {
+          // Ignore malformed events silently — they shouldn't crash the client
+          return;
+        }
         this.onSessionEvent?.(envelope.payload as PiMirrorEvent);
         return;
       }

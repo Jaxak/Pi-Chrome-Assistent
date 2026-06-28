@@ -89,4 +89,18 @@ describe("build:chrome", () => {
 
     expect(manifest.content_security_policy?.extension_pages).toContain("connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*");
   });
+
+  describe("icon generation shell safety", () => {
+    it("should use execFileSync instead of execSync for shell safety", async () => {
+      // This test verifies the code uses execFileSync by checking
+      // the build script source doesn't contain execSync with string interpolation
+      const buildScript = await readFile(buildScriptPath, "utf-8");
+
+      // Should not have execSync with template literals containing paths
+      expect(buildScript).not.toMatch(/execSync\s*\(`[^`]*\$\{/);
+
+      // Should use execFileSync
+      expect(buildScript).toMatch(/execFileSync/);
+    });
+  });
 });

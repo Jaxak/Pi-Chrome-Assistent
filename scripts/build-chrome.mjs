@@ -1,7 +1,7 @@
 import { cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 import { build } from "vite";
 
@@ -30,7 +30,13 @@ const iconSizes = [16, 32, 48, 128];
 const svgIcon = path.join(chromeSrcDir, "icon.svg");
 for (const size of iconSizes) {
   const pngName = `icon${size}.png`;
-  execSync(`rsvg-convert -w ${size} -h ${size} "${svgIcon}" -o "${path.join(chromeDistDir, pngName)}"`);
+  const outputPath = path.join(chromeDistDir, pngName);
+  execFileSync("rsvg-convert", [
+    "-w", String(size),
+    "-h", String(size),
+    svgIcon,
+    "-o", outputPath,
+  ]);
 }
 
 for (const entry of scriptEntries) {

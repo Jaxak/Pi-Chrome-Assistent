@@ -452,6 +452,143 @@ describe("contentScript", () => {
     expect(window.__PI_DOM_PICKER_SESSION__).toBeUndefined();
   });
 
+  it("stops the active picker when the tab is hidden (visibilitychange)", async () => {
+    const cleanup = vi.fn();
+    const { messageListeners } = installChromeMock();
+
+    document.body.innerHTML = `<div id="start">Start</div>`;
+
+    mockOverlay({ cleanup });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    startPicker(messageListeners);
+
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeDefined();
+
+    // Simulate tab being hidden (user switched to another tab)
+    Object.defineProperty(document, "hidden", { value: true, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeUndefined();
+
+    // Mouse move after tab hidden should not affect overlay
+    const startEl = document.querySelector("#start");
+    startEl?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+  });
+
+  it("does not stop picker on visibilitychange when tab remains visible", async () => {
+    const cleanup = vi.fn();
+    const { messageListeners } = installChromeMock();
+
+    document.body.innerHTML = `<div id="start">Start</div>`;
+
+    mockOverlay({ cleanup });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    startPicker(messageListeners);
+
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeDefined();
+
+    // Tab is still visible
+    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeDefined();
+  });
+
+  it("responds to ping messages from background", async () => {
+    const { messageListeners } = installChromeMock();
+
+    mockOverlay({ cleanup: vi.fn() });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    const pingResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "ping" },
+      {} as chrome.runtime.MessageSender,
+      pingResponse,
+    );
+
+    expect(pingResponse).toHaveBeenCalledWith({ ok: true, source: "contentScript" });
+  });
+
+  it("stops the active picker on stopDomPicker message from background", async () => {
+    const cleanup = vi.fn();
+    const stopResponse = vi.fn();
+    const { messageListeners } = installChromeMock();
+
+    document.body.innerHTML = `<div id="start">Start</div>`;
+
+    mockOverlay({ cleanup });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    startPicker(messageListeners);
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeDefined();
+
+    // Simulate stopDomPicker message from background (tab switch)
+    messageListeners[0]?.(
+      { type: "stopDomPicker" },
+      {} as chrome.runtime.MessageSender,
+      stopResponse,
+    );
+
+    expect(stopResponse).toHaveBeenCalledWith({ ok: true, source: "contentScript" });
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeUndefined();
+  });
+
+  it("stops the active picker on stopDomPicker during comment modal", async () => {
+    let onSubmit: ((comment: string) => void) | undefined;
+    let onCancel: (() => void) | undefined;
+
+    const cleanup = vi.fn();
+    const showCommentModal = vi.fn(({ onSubmit: submit, onCancel: cancel }: CommentModalOptions) => {
+      onSubmit = submit;
+      onCancel = cancel;
+      return { close: vi.fn() };
+    });
+    const { messageListeners } = installChromeMock();
+
+    document.body.innerHTML = `<div id="start">Start</div>`;
+    const startEl = document.querySelector("#start") as Element;
+
+    mockOverlay({ showCommentModal, cleanup });
+    mockDomPicker();
+    vi.doMock("./toast", () => ({ showToast: vi.fn() }));
+
+    await import("./contentScript");
+
+    startPicker(messageListeners);
+    startEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(showCommentModal).toHaveBeenCalledTimes(1);
+
+    // Simulate tab switch while modal is open
+    const stopResponse = vi.fn();
+    messageListeners[0]?.(
+      { type: "stopDomPicker" },
+      {} as chrome.runtime.MessageSender,
+      stopResponse,
+    );
+
+    expect(stopResponse).toHaveBeenCalledWith({ ok: true, source: "contentScript" });
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(window.__PI_DOM_PICKER_SESSION__).toBeUndefined();
+  });
+
   it("ignores mousemove after click selection", async () => {
     const update = vi.fn();
     const showCommentModal = vi.fn(() => ({ close: vi.fn() }));

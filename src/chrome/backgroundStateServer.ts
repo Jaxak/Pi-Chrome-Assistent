@@ -199,6 +199,11 @@ export class BackgroundAssistantStateServer {
       });
       return;
     }
+
+    if (command?.type === "assistant.stopDomPicker") {
+      void this.stopDomPicker();
+      return;
+    }
   }
 
   private handleSessionConnect(port: number | undefined): void {
@@ -373,6 +378,17 @@ export class BackgroundAssistantStateServer {
     }
 
     await this.handleDomPickerError(response?.error ?? "Не удалось запустить DOM picker.");
+  }
+
+  private async stopDomPicker(): Promise<void> {
+    try {
+      const tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+      if (tab?.id !== undefined) {
+        await chrome.tabs.sendMessage(tab.id, { type: "stopDomPicker" });
+      }
+    } catch {
+      // Best-effort: content script may not be loaded on the tab
+    }
   }
 
   private async handleDomPickerError(message: string): Promise<void> {

@@ -152,6 +152,11 @@ export function createSelectionOverlay(): SelectionOverlayControls {
           event.preventDefault();
           handleSubmit();
         }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          handleCancel();
+        }
       });
 
       actions.append(cancelButton, sendButton);

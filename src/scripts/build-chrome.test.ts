@@ -56,20 +56,28 @@ describe("build:chrome", () => {
     expect(sidePanelScript).not.toContain("refreshSidePanelState");
     expect(sidePanelScript).not.toContain("SidePanelBrokerClient");
     expect(sidePanelScript).not.toContain("window.close()");
-    expect(backgroundScript).toContain("executeScript");
-    expect(backgroundScript).toContain('files: ["contentScript.js"]');
+    expect(backgroundScript).toContain("startDomPicker");
+    expect(backgroundScript).toContain('type: "startDomPicker"');
+    expect(backgroundScript).not.toContain("executeScript");
     expect(contentScript).toContain("startDomPicker");
     expect(contentScript).toContain("__PI_CONTENT_SCRIPT_PLACEHOLDER_LISTENER_REGISTERED__");
   });
 
-  it("declares the MV3 permissions needed for scripted injection", async () => {
+  it("uses persistent content script with no scripting permission", async () => {
     await execFileAsync(process.execPath, [buildScriptPath], {
       cwd: projectRoot,
     });
 
     const manifest = JSON.parse(await readFile(path.join(chromeDistDir, "manifest.json"), "utf8"));
 
-    expect(manifest.permissions).toEqual(expect.arrayContaining(["activeTab", "scripting", "sidePanel"]));
+    expect(manifest.content_scripts).toEqual([
+      {
+        matches: ["https://*/*", "http://*/*"],
+        js: ["contentScript.js"],
+        run_at: "document_idle",
+      },
+    ]);
+    expect(manifest.permissions).toEqual(expect.not.arrayContaining(["scripting"]));
   });
 
   it("allows the sidepanel page to open a persistent local broker WebSocket", async () => {

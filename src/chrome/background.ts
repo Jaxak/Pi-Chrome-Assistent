@@ -146,16 +146,6 @@ async function tryInjectDomPicker(
       return { ok: false, error: userMessage };
     }
 
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["contentScript.js"],
-      });
-    } catch (error) {
-      const errorMessage = await recordDiagnostic(backgroundStorage, now, "startDomPicker", error);
-      return { ok: false, error: `Не удалось запустить DOM picker: ${errorMessage}` };
-    }
-
     const pickerResponse = (await chrome.tabs.sendMessage(tabId, {
       type: "startDomPicker",
     })) as { ok?: boolean; error?: unknown } | undefined;
@@ -173,9 +163,46 @@ async function tryInjectDomPicker(
     console.info("DOM picker placeholder requested for tab", tabId);
     return { ok: true };
   } catch (error) {
+    if (isConnectionError(error)) {
+      const userMessage = "DOM picker ещё не загрузился. Попробуйте перезагрузить страницу и запустить снова.";
+      await recordDiagnostic(backgroundStorage, now, "startDomPicker", "Receiving end does not exist (content script not loaded)");
+      return { ok: false, error: userMessage };
+    }
+
     const errorMessage = await recordDiagnostic(backgroundStorage, now, "startDomPicker", error);
     return { ok: false, error: `Не удалось запустить DOM picker: ${errorMessage}` };
   }
+}
+
+/**
+ * Detects the "Receiving end does not exist" error from chrome.tabs.sendMessage,
+ * which means the content script is not loaded in the target tab.
+ */
+function isConnectionError(error: unknown): boolean {
+  if (error instanceof Error) {
+    return error.message.includes("Could not establish connection") ||
+      error.message.includes("Receiving end does not exist");
+  }
+  const msg = String(error);
+  return msg.includes("Could not establish connection") || msg.includes("Receiving end does not exist");
+}
+
+export function configureTabChangeListeners(): void {
+  chrome.tabs.onActivated.addListener((activeInfo) => {
+    const tabId = activeInfo.tabId;
+    if (typeof tabId === "number") {
+      void chrome.tabs.sendMessage(tabId, { type: "stopDomPicker" }).catch(() => {});
+    }
+  });
+
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (typeof tabId !== "number" || tabId < 0) {
+      return;
+    }
+    if (changeInfo.status === "loading" || changeInfo.url) {
+      void chrome.tabs.sendMessage(tabId, { type: "stopDomPicker" }).catch(() => {});
+    }
+  });
 }
 
 export function configureSidePanelOnActionClick(chromeApi: SidePanelChromeApi = chrome): void {
@@ -314,6 +341,7 @@ if (typeof chrome !== "undefined") {
   });
 
   configureSidePanelOnActionClick();
+  configureTabChangeListeners();
 
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name === "sidepanel") {

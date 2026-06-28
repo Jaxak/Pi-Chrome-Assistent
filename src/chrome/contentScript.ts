@@ -110,6 +110,7 @@ function startDomPicker(): void {
     document.removeEventListener("mousemove", handleMouseMove, true);
     document.removeEventListener("click", handleClick, true);
     document.removeEventListener("keydown", handleKeyDown, true);
+    document.removeEventListener("visibilitychange", handleVisibilityChange, true);
     overlay.cleanup();
 
     if (pickerWindow[PICKER_SESSION_KEY]?.cleanup === cleanup) {
@@ -159,9 +160,16 @@ function startDomPicker(): void {
     }
   };
 
+  const handleVisibilityChange = () => {
+    if (document.hidden) {
+      cleanup();
+    }
+  };
+
   document.addEventListener("mousemove", handleMouseMove, true);
   document.addEventListener("click", handleClick, true);
   document.addEventListener("keydown", handleKeyDown, true);
+  document.addEventListener("visibilitychange", handleVisibilityChange, true);
   pickerWindow[PICKER_SESSION_KEY] = {
     cleanup,
   };
@@ -171,6 +179,17 @@ if (!pickerWindow[CONTENT_SCRIPT_LISTENER_GUARD]) {
   pickerWindow[CONTENT_SCRIPT_LISTENER_GUARD] = true;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "ping") {
+      sendResponse({ ok: true, source: "contentScript" });
+      return false;
+    }
+
+    if (message?.type === "stopDomPicker") {
+      stopActivePicker();
+      sendResponse({ ok: true, source: "contentScript" });
+      return false;
+    }
+
     if (message?.type !== "startDomPicker") {
       return false;
     }

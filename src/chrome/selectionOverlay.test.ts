@@ -80,6 +80,51 @@ describe("createSelectionOverlay", () => {
     overlay.cleanup();
   });
 
+  it("calls onCancel when Escape is pressed in the comment modal textarea", () => {
+    const onCancel = vi.fn();
+    const onSubmit = vi.fn();
+
+    const overlay = createSelectionOverlay();
+
+    overlay.showCommentModal({
+      onSubmit,
+      onCancel,
+    });
+
+    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
+    expect(textarea).not.toBeNull();
+
+    const escapeEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    textarea.dispatchEvent(escapeEvent);
+
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(escapeEvent.defaultPrevented).toBe(true);
+
+    overlay.cleanup();
+  });
+
+  it("does not call onCancel for non-Escape keydown in the comment modal", () => {
+    const onCancel = vi.fn();
+    const onSubmit = vi.fn();
+
+    const overlay = createSelectionOverlay();
+
+    overlay.showCommentModal({
+      onSubmit,
+      onCancel,
+    });
+
+    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
+
+    const typeEvent = new KeyboardEvent("keydown", { key: "A", bubbles: true, cancelable: true });
+    textarea.dispatchEvent(typeEvent);
+
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    overlay.cleanup();
+  });
+
   it("recognizes overlay and modal UI elements", () => {
     const overlay = createSelectionOverlay();
     const root = document.querySelector("#pi-dom-picker-overlay-root");

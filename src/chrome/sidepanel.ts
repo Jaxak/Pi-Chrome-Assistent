@@ -48,15 +48,13 @@ const PORT_ERROR_TEXT = "Введите порт от 1 до 65535.";
 const DEFAULT_PORT = 31415;
 
 /**
- * Find the first injectable (http/https) tab in the current window.
+ * Get the tabId of the currently active injectable (http/https) tab.
  * Sidepanel itself is a chrome-extension:// tab and must be skipped.
  */
 async function findInjectableTabId(): Promise<number | undefined> {
-  const tabs = await chrome.tabs.query({ currentWindow: true });
-  for (const tab of tabs) {
-    if (typeof tab.url === "string" && /^https?:\/\//i.test(tab.url)) {
-      return tab.id;
-    }
+  const tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+  if (tab && typeof tab.url === "string" && /^https?:\/\//i.test(tab.url)) {
+    return tab.id;
   }
   return undefined;
 }
@@ -520,6 +518,13 @@ function initializeSidePanel(): void {
     }
     userEditingPort = false;
     postAssistantCommand({ type: "assistant.session.connect", port });
+  });
+
+  // Escape key cancels the active DOM picker from the sidepanel
+  document.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      postAssistantCommand({ type: "assistant.stopDomPicker" });
+    }
   });
 
   elements.sendButton?.addEventListener("click", async () => {

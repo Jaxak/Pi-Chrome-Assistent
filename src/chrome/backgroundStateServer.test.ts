@@ -1164,4 +1164,100 @@ describe("BackgroundAssistantStateServer", () => {
       expect(liveMsg.text).toBe("Стриминг...");
     }
   });
+
+  it("handles assistant.startDomPicker command and delegates to injected startDomPicker", async () => {
+    const startPicker = vi.fn(async () => ({ ok: true }));
+    const { server } = createServer({ startDomPicker: startPicker });
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    // Must be online
+    server.applySessionSnapshot(createSnapshot());
+
+    port.emitMessage({ type: "assistant.startDomPicker", tabId: 42 });
+    await flushAsyncWork();
+
+    expect(startPicker).toHaveBeenCalledWith({ tabId: 42 });
+  });
+
+  it("handles assistant.startDomPicker without tabId", async () => {
+    const startPicker = vi.fn(async () => ({ ok: true }));
+    const { server } = createServer({ startDomPicker: startPicker });
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+    server.applySessionSnapshot(createSnapshot());
+
+    port.emitMessage({ type: "assistant.startDomPicker" });
+    await flushAsyncWork();
+
+    expect(startPicker).toHaveBeenCalledWith({ tabId: undefined });
+  });
+
+  it("records error when startDomPicker fails (not online)", async () => {
+    const { server, diagnostics } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    // Not online
+    port.emitMessage({ type: "assistant.startDomPicker" });
+    await flushAsyncWork();
+
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ phase: "assistant.startDomPicker", message: "Pi-сессия не подключена." }),
+    );
+  });
+
+  it("handles assistant.stopDomPicker command", async () => {
+    const queryTabs = vi.fn(async () => [{ id: 99, url: "https://example.com" }]);
+    const sendMessage = vi.fn(async () => ({ ok: true }));
+
+    vi.stubGlobal("chrome", {
+      tabs: { query: queryTabs, sendMessage },
+    } as unknown as typeof chrome);
+
+    const { server } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.stopDomPicker" });
+    await flushAsyncWork();
+
+    expect(queryTabs).toHaveBeenCalledWith({ active: true, currentWindow: true });
+    expect(sendMessage).toHaveBeenCalledWith(99, { type: "stopDomPicker" });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("stopDomPicker is best-effort and does not throw when content script is unreachable", async () => {
+    const queryTabs = vi.fn(async () => [{ id: 99, url: "https://example.com" }]);
+    const sendMessage = vi.fn(async () => {
+      throw new Error("Receiving end does not exist");
+    });
+
+    vi.stubGlobal("chrome", {
+      tabs: { query: queryTabs, sendMessage },
+    } as unknown as typeof chrome);
+
+    const { server, diagnostics } = createServer();
+    const port = new FakePort();
+
+    await server.start();
+    server.connectPort(port);
+
+    port.emitMessage({ type: "assistant.stopDomPicker" });
+    await flushAsyncWork();
+
+    // Should NOT have recorded an error (best-effort)
+    expect(diagnostics).toHaveLength(0);
+
+    vi.unstubAllGlobals();
+  });
 });

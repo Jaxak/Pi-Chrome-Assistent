@@ -122,10 +122,15 @@ function mockChromeRuntime(): MockChromeRuntime {
     return port;
   };
   const port = createPort();
-  const tabsQuery = vi.fn(async () => [
-    { id: 999, url: "chrome-extension://abc/sidepanel.html" },
-    { id: 1, url: "https://example.com/page" },
-  ]);
+  const tabsQuery = vi.fn(async (query: { active?: boolean } = {}) => {
+    if (query.active) {
+      return [{ id: 1, url: "https://example.com/page" }];
+    }
+    return [
+      { id: 999, url: "chrome-extension://abc/sidepanel.html" },
+      { id: 1, url: "https://example.com/page" },
+    ];
+  });
   const sendMessage = vi.fn(async () => ({ ok: true }));
 
   let connectCount = 0;
@@ -533,7 +538,7 @@ describe("sidepanel navigation", () => {
     document.querySelector<HTMLButtonElement>("#send-button")?.click();
     await flush();
 
-    expect(tabsQuery).toHaveBeenCalledWith({ currentWindow: true });
+    expect(tabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true });
     expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant.startDomPicker", tabId: 1 });
   });
 
@@ -698,5 +703,33 @@ describe("sidepanel navigation", () => {
     await flush();
 
     expect(document.querySelector("#message-list")?.textContent).toContain("Актуальное состояние из background");
+  });
+
+  it("sends assistant.stopDomPicker via port when Escape is pressed in sidepanel", async () => {
+    const runtime = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    const escapeEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    document.dispatchEvent(escapeEvent);
+    await flush();
+
+    expect(runtime.port.postMessage).toHaveBeenCalledWith({ type: "assistant.stopDomPicker" });
+  });
+
+  it("does not send assistant.stopDomPicker for non-Escape keys", async () => {
+    const runtime = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    runtime.port.postMessage.mockClear();
+
+    const enterEvent = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    document.dispatchEvent(enterEvent);
+    await flush();
+
+    // stopDomPicker should NOT have been sent
+    const stopCalls = runtime.port.postMessage.mock.calls.filter(
+      (call: unknown[]) => (call[0] as { type?: string })?.type === "assistant.stopDomPicker",
+    );
+    expect(stopCalls).toHaveLength(0);
   });
 });

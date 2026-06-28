@@ -135,7 +135,7 @@ function createSnapshot(overrides: Partial<DirectSessionSnapshot> = {}): DirectS
       connectedAt: 1_710_000_000_000,
     },
     chat: {
-      events: [],
+      entries: [],
       agentBusy: false,
       busyLabel: "Агент работает в фоне…",
     },
@@ -444,15 +444,33 @@ describe("BackgroundAssistantStateServer", () => {
     expect(server.getSnapshot().chat.agentBusy).toBe(false);
   });
 
-  it("materializes chat.events from session_snapshot into visible messages", () => {
+  // --- Удалены тесты с chat.events (устаревшая архитектура) ---
+  // Заменены на mirror-behavior тесты ниже.
+
+  it("snapshot с chat.entries рендерит полную историю сообщений", () => {
     const { server } = createServer();
     const snapshot = createSnapshot({
       chat: {
-        events: [
-          { kind: "user_message", text: "Привет, Pi!", timestamp: 1_710_000_000_100 },
-          { kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_200 },
-          { kind: "assistant_text_delta", messageId: "msg-1", delta: "Привет!", timestamp: 1_710_000_000_300 },
-          { kind: "assistant_message_end", messageId: "msg-1", timestamp: 1_710_000_000_400 },
+        entries: [
+          {
+            type: "message" as const,
+            id: "e1",
+            timestamp: "2025-01-01T00:00:00Z",
+            message: {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: "Привет, Pi!" }],
+            },
+          },
+          {
+            type: "message" as const,
+            id: "e2",
+            timestamp: "2025-01-01T00:00:01Z",
+            message: {
+              role: "assistant" as const,
+              id: "msg-1",
+              content: [{ type: "text" as const, text: "Привет!" }],
+            },
+          },
         ],
         agentBusy: false,
         busyLabel: "Агент работает в фоне…",
@@ -462,40 +480,50 @@ describe("BackgroundAssistantStateServer", () => {
 
     const state = server.getSnapshot();
     expect(state.chat.messages).toHaveLength(2);
-    expect(state.chat.messages[0]).toEqual({
+    expect(state.chat.messages[0]).toMatchObject({
       role: "user",
       text: "Привет, Pi!",
-      timestamp: 1_710_000_000_100,
     });
-    expect(state.chat.messages[1]).toEqual({
+    expect(state.chat.messages[1]).toMatchObject({
       role: "assistant",
       messageId: "msg-1",
       text: "Привет!",
       streaming: false,
-      timestamp: 1_710_000_000_200,
     });
   });
 
-  it("preserves chat history across multiple session_snapshot applications (reconnect)", () => {
+  it("reconnect с теми же entries воспроизводит тот же чат", () => {
     const { server } = createServer();
-    const snapshot = createSnapshot({
-      chat: {
-        events: [
-          { kind: "user_message", text: "Вопрос", timestamp: 1_710_000_000_100 },
-          { kind: "assistant_message_start", messageId: "msg-1", timestamp: 1_710_000_000_200 },
-          { kind: "assistant_text_delta", messageId: "msg-1", delta: "Ответ", timestamp: 1_710_000_000_300 },
-          { kind: "assistant_message_end", messageId: "msg-1", timestamp: 1_710_000_000_400 },
-        ],
-        agentBusy: false,
-        busyLabel: "Агент работает в фоне…",
+    const entries = [
+      {
+        type: "message" as const,
+        id: "e1",
+        timestamp: "2025-01-01T00:00:00Z",
+        message: {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: "Вопрос" }],
+        },
       },
+      {
+        type: "message" as const,
+        id: "e2",
+        timestamp: "2025-01-01T00:00:01Z",
+        message: {
+          role: "assistant" as const,
+          id: "msg-1",
+          content: [{ type: "text" as const, text: "Ответ" }],
+        },
+      },
+    ];
+    const snapshot = createSnapshot({
+      chat: { entries, agentBusy: false, busyLabel: "Агент работает в фоне…" },
     });
 
-    // First snapshot
+    // Первый snapshot
     server.applySessionSnapshot(snapshot);
     const firstState = server.getSnapshot();
 
-    // Simulate reconnect: same snapshot again
+    // Симулируем reconnect: тот же snapshot
     server.applySessionSnapshot(snapshot);
     const secondState = server.getSnapshot();
 

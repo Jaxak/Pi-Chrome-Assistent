@@ -449,9 +449,6 @@ describe("BackgroundAssistantStateServer", () => {
     expect(server.getSnapshot().chat.agentBusy).toBe(false);
   });
 
-  // --- Удалены тесты с chat.events (устаревшая архитектура) ---
-  // Заменены на mirror-behavior тесты ниже.
-
   it("snapshot с chat.entries рендерит полную историю сообщений", () => {
     const { server } = createServer();
     const snapshot = createSnapshot({

@@ -110,10 +110,7 @@ describe("assistantState", () => {
       expect(nextState.connection.online).toBe(true);
     });
 
-    // --- Удалены тесты с chat.events (устаревшая архитектура) ---
-    // Перенесены в mirror-behavior тесты ниже.
-
-    // --- Mirror-behavior тесты (должны FAIL на текущем коде) ---
+    // --- Mirror-behavior тесты ---
 
     it("snapshot с chat.entries рендерит полную сохранённую историю user/assistant сообщений", () => {
       const state = createInitialAssistantState();

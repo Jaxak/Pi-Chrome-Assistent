@@ -575,8 +575,7 @@ describe("mirror snapshot — entries from sessionManager.getBranch()", () => {
     // Получить snapshot
     const snapshot = capturedSessionServerOptions!.buildSnapshot();
 
-    // В mirror-архитектуре snapshot.chat.entries должен содержать raw entries
-    // вместо синтетических chat.events
+    // В mirror-архитектуре snapshot.chat.entries должен содержать raw entries.
     const entries = snapshot.chat.entries;
     expect(Array.isArray(entries)).toBe(true);
     expect(entries.length).toBeGreaterThanOrEqual(4);
@@ -671,6 +670,3 @@ describe("mirror snapshot — entries from sessionManager.getBranch()", () => {
   });
 });
 
-// --- Удалён блок mergeChatEvents (устаревшая overlap-merge стратегия) ---
-
-// --- Удалён блок snapshot merge — duplicate avoidance (устаревшая overlap-merge стратегия) ---

@@ -206,8 +206,7 @@ function updateDirectSendButtons(elements: SidePanelElements): void {
   setButtonDisabled(elements.sendButton, !online);
 }
 
-let lastRenderedMessageCount = 0;
-let lastRenderedMessageSignatures: string[] = [];
+let lastRenderedEpoch = -1;
 
 function formatNumberRu(value: number): string {
   return new Intl.NumberFormat("ru-RU").format(value).replace(/\u00a0/g, " ");
@@ -267,33 +266,32 @@ function renderModelMenu(elements: SidePanelElements): void {
 
 function renderChat(elements: SidePanelElements): void {
   const chat = currentSnapshot?.chat;
+  const epoch = currentSnapshot?.epoch ?? 0;
+
+  // Skip render if epoch hasn't changed
+  if (epoch === lastRenderedEpoch) {
+    return;
+  }
+  lastRenderedEpoch = epoch;
+
   const allMessages = chat?.messages ?? [];
-  
-  // Filter out empty messages (no text) - but keep streaming messages as they may be filling
+
+  // Filter out empty messages (no text) - but keep streaming messages
   const messages = allMessages.filter((m) => {
     const text = (m as { text?: string }).text ?? "";
     const streaming = (m as { streaming?: boolean }).streaming ?? false;
-    // Show message if it has text OR if it's currently streaming (will get text soon)
     return text.length > 0 || streaming;
   });
 
   if (elements.messageList) {
-    const currentSignatures = messages.map((message) => JSON.stringify(message));
-    const needsFullRender = messages.length !== lastRenderedMessageCount ||
-      !currentSignatures.every((signature, i) => signature === lastRenderedMessageSignatures[i]);
+    const fragment = document.createDocumentFragment();
+    for (const message of messages) {
+      fragment.append(createChatMessageElement(message));
+    }
+    elements.messageList.replaceChildren(fragment);
 
-    if (needsFullRender) {
-      const fragment = document.createDocumentFragment();
-      for (const message of messages) {
-        fragment.append(createChatMessageElement(message));
-      }
-      elements.messageList.replaceChildren(fragment);
-      lastRenderedMessageCount = messages.length;
-      lastRenderedMessageSignatures = currentSignatures;
-
-      if (elements.messagesScroll) {
-        elements.messagesScroll.scrollTop = elements.messagesScroll.scrollHeight;
-      }
+    if (elements.messagesScroll) {
+      elements.messagesScroll.scrollTop = elements.messagesScroll.scrollHeight;
     }
   }
 
@@ -338,8 +336,7 @@ function renderAssistantSnapshot(elements: SidePanelElements, state: BackgroundA
 
 function renderAssistantUnavailable(elements: SidePanelElements): void {
   currentSnapshot = undefined;
-  lastRenderedMessageCount = 0;
-  lastRenderedMessageSignatures = [];
+  lastRenderedEpoch = -1;
 
   setBaseDiagnostics(elements, SIDEPANEL_UNAVAILABLE_TEXT);
   if (elements.sessionHeadingStatus) {
@@ -438,8 +435,7 @@ function initializeSidePanel(): void {
   currentSnapshot = undefined;
   currentActiveTab = "assistant";
   userEditingPort = false;
-  lastRenderedMessageCount = 0;
-  lastRenderedMessageSignatures = [];
+  lastRenderedEpoch = -1;
   clearReconnectTimer();
   reconnectAttempt = 0;
 

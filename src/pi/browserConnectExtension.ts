@@ -169,7 +169,8 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
     broadcastSnapshot();
   });
 
-  pi.on("message_end", (event, _ctx) => {
+  pi.on("message_end", (event, ctx) => {
+    latestCtx = ctx;
     activeSessionServer?.broadcastEvent({
       type: "message_end",
       message: {

@@ -114,15 +114,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   gap: 8px;
   align-items: center;
 }
-.session-port-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 32px;
-  padding: 4px 11px;
-  border: 1px solid var(--ant-color-border);
-  border-radius: var(--ant-radius);
-  background: var(--ant-color-bg-container);
-  color: var(--ant-color-text);
+.session-heading {
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+.session-status {
+  margin-top: 6px;
 }
 
 .chat-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -164,6 +161,17 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .composer { border-top: 1px solid var(--ant-color-border-secondary); background: var(--ant-color-bg-container); padding: 8px; }
 .ant-input { width: 100%; min-height: 64px; resize: none; border: 1px solid var(--ant-color-border); border-radius: var(--ant-radius); outline: none; padding: 8px 11px; background: var(--ant-color-bg-container); color: var(--ant-color-text); }
 .ant-input::placeholder { color: var(--ant-color-text-tertiary); }
+.session-port-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  min-height: 32px;
+  padding: 4px 11px;
+  border: 1px solid var(--ant-color-border);
+  border-radius: var(--ant-radius);
+  background: var(--ant-color-bg-container);
+  color: var(--ant-color-text);
+}
 .composer-runtime { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--ant-color-text-secondary); font-size: 12px; }
 .composer-runtime__model { min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: var(--ant-color-text-secondary); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .composer-runtime__context { flex: 0 1 auto; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }

@@ -653,6 +653,34 @@ describe("mirror snapshot — entries from sessionManager.getBranch()", () => {
     expect(snapshot.chat.agentBusy).toBe(true);
   });
 
+  it("message_end updates latestCtx so snapshot reflects new idle state", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
+
+    const mockSessionManager = { getBranch: () => [] };
+    (ctx as unknown as Record<string, unknown>).sessionManager = mockSessionManager;
+
+    // Agent is busy
+    ctx.isIdle = () => false;
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    let snapshot = capturedSessionServerOptions!.buildSnapshot();
+    expect(snapshot.chat.agentBusy).toBe(true);
+
+    // Fire message_end with a new context that reports idle
+    const messageEndHandler = onCalls.find((c) => c.event === "message_end");
+    const idleCtx = { ...ctx, isIdle: () => true };
+    messageEndHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, idleCtx);
+
+    // buildSnapshot must use updated latestCtx
+    snapshot = capturedSessionServerOptions!.buildSnapshot();
+    expect(snapshot.chat.agentBusy).toBe(false);
+  });
+
   it("snapshot.chat.busyLabel is Russian", async () => {
     const { default: browserConnectExtension } = await import("./browserConnectExtension");
     const { pi, ctx, registerCommandCalls } = createFakePi();

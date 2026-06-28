@@ -1285,4 +1285,115 @@ describe("BackgroundAssistantStateServer", () => {
 
     vi.unstubAllGlobals();
   });
+
+  // ─── Task T4: setModel error paths ───
+
+  describe("setModel error paths", () => {
+    it("should show error when offline", async () => {
+      const port = new FakePort();
+      const { server } = createServer();
+      server.connectPort(port);
+      await flushAsyncWork();
+
+      // Offline state (no session connected)
+      port.emitMessage({
+        type: "assistant.model.set",
+        provider: "openai",
+        modelId: "gpt-4",
+      });
+      await flushAsyncWork();
+
+      const state = server.getSnapshot();
+      expect(state.runtime.modelError).toBe("Pi-сессия не подключена.");
+      expect(state.runtime.modelMutationPending).toBe(false);
+    });
+
+    it("should show error when provider is empty", async () => {
+      const port = new FakePort();
+      const { server, sessionClients } = createServer();
+      server.connectPort(port);
+      await flushAsyncWork();
+
+      // Connect the session
+      port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+      await flushAsyncWork();
+      sessionClients[0]?.emitConnectionState({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+      sessionClients[0]?.emitSnapshot(createSnapshot());
+      await flushAsyncWork();
+
+      port.emitMessage({
+        type: "assistant.model.set",
+        provider: "  ", // whitespace only
+        modelId: "gpt-4",
+      });
+      await flushAsyncWork();
+
+      const state = server.getSnapshot();
+      expect(state.runtime.modelError).toBe("Выберите модель.");
+    });
+
+    it("should show error when modelId is empty", async () => {
+      const port = new FakePort();
+      const { server, sessionClients } = createServer();
+      server.connectPort(port);
+      await flushAsyncWork();
+
+      // Connect the session
+      port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+      await flushAsyncWork();
+      sessionClients[0]?.emitConnectionState({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+      sessionClients[0]?.emitSnapshot(createSnapshot());
+      await flushAsyncWork();
+
+      port.emitMessage({
+        type: "assistant.model.set",
+        provider: "openai",
+        modelId: "", // empty
+      });
+      await flushAsyncWork();
+
+      const state = server.getSnapshot();
+      expect(state.runtime.modelError).toBe("Выберите модель.");
+    });
+
+    it("should show error when setModel send fails", async () => {
+      const port = new FakePort();
+      const { server, sessionClients } = createServer();
+      server.connectPort(port);
+      await flushAsyncWork();
+
+      // Connect the session
+      port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+      await flushAsyncWork();
+      sessionClients[0]?.emitConnectionState({
+        online: true,
+        connecting: false,
+        statusText: "Подключено к Pi-сессии",
+      });
+      sessionClients[0]?.emitSnapshot(createSnapshot());
+      await flushAsyncWork();
+
+      // Make setModel return false
+      sessionClients[0]!.setModel = vi.fn().mockReturnValue(false);
+
+      port.emitMessage({
+        type: "assistant.model.set",
+        provider: "openai",
+        modelId: "gpt-4",
+      });
+      await flushAsyncWork();
+
+      const state = server.getSnapshot();
+      expect(state.runtime.modelError).toBe("Pi недоступен");
+      expect(state.runtime.modelMutationPending).toBe(false);
+    });
+  });
 });

@@ -353,6 +353,8 @@ function applySessionSnapshot(
     chat: {
       messages: trimMessages(mergedMessages),
       agentBusy: snapshot.chat.agentBusy,
+      // Using || (not ??): if Pi sends an empty string "" for busyLabel
+      // we keep the previous label instead of flashing a blank indicator
       busyLabel: snapshot.chat.busyLabel || state.chat.busyLabel,
       // Keep sending=true only if we preserved pending user messages (not streaming assistant)
       sending: state.chat.sending && hasPendingUserMessages(state.chat.messages, hydratedMessages),

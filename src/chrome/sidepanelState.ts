@@ -224,25 +224,26 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
       const messageId = event.message.id;
       const now = Date.now();
 
-      // User message — add as placeholder (full text comes from snapshot at turn_end)
+      // User message — extract text from content
       if (event.message.role === "user") {
         // Deduplicate by messageId (idempotency on reconnect)
         const existingUser = state.messages.find(
           (m) => m.role === "user" && (m as { messageId?: string }).messageId === messageId,
         );
         if (existingUser) return state;
+        const text = extractEntryText((event.message as { content?: unknown }).content);
         return {
           ...state,
           messages: trimMessages([
             ...state.messages,
             {
               role: "user",
-              text: "",
+              text,
               timestamp: now,
               messageId,
             } as SidepanelChatMessage,
           ]),
-          sending: true,
+          sending: false,
           error: undefined,
         };
       }

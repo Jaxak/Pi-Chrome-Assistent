@@ -133,11 +133,14 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   pi.on("message_start", (event, _ctx) => {
     const messageId = (event as { message?: { id?: string } })?.message?.id || `gen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     lastStreamingMessageId = messageId;
+    const role = (event as { message?: { role?: string } })?.message?.role || "assistant";
+    const content = (event as { message?: { content?: unknown } })?.message?.content;
     activeSessionServer?.broadcastEvent({
       type: "message_start",
       message: {
         id: messageId,
-        role: (event as { message?: { role?: string } })?.message?.role || "assistant",
+        role,
+        ...(role === "user" && content !== undefined ? { content } : {}),
       },
     });
   });

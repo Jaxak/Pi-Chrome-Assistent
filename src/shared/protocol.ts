@@ -98,7 +98,7 @@ export type TargetContextUsage = {
  * the snapshot's `chat.entries` with live streaming updates.
  */
 export type PiMirrorEvent =
-  | { type: "message_start"; message: { id: string; role: string } }
+  | { type: "message_start"; message: { id: string; role: string; content?: unknown } }
   | {
       type: "message_update";
       message: { id: string; role: string };

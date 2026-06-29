@@ -151,9 +151,9 @@ describe("configureTabChangeListeners", () => {
     expect(activatedListener).toHaveBeenCalledOnce();
 
     const onActivated = activatedListener.mock.calls[0]?.[0] as (
-      info: chrome.tabs.TabActiveInfo,
+      info: { tabId: number; previousTabId?: number },
     ) => void;
-    onActivated({ tabId: 2, previousTabId: 1 } as chrome.tabs.TabActiveInfo);
+    onActivated({ tabId: 2, previousTabId: 1 });
 
     // Wait for async injection + message
     await Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve());
@@ -181,10 +181,10 @@ describe("configureTabChangeListeners", () => {
     configureTabChangeListeners();
 
     const onActivated = activatedListener.mock.calls[0]?.[0] as (
-      info: chrome.tabs.TabActiveInfo,
+      info: { tabId: number; previousTabId?: number },
     ) => void;
     // Chrome sometimes passes undefined as the second argument (tab)
-    onActivated({ tabId: 2, previousTabId: 1 } as chrome.tabs.TabActiveInfo);
+    onActivated({ tabId: 2, previousTabId: 1 });
 
     await Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve());
 
@@ -220,7 +220,7 @@ describe("configureTabChangeListeners", () => {
 
     const onUpdated = updatedListener.mock.calls[updatedListener.mock.calls.length - 1]?.[0] as (
       tabId: number,
-      changeInfo: chrome.tabs.TabChangeInfo,
+      changeInfo: { status?: string; url?: string },
     ) => void;
     onUpdated(-1, { status: "loading" });
 
@@ -247,7 +247,7 @@ describe("configureTabChangeListeners", () => {
 
     const onUpdated = updatedListener.mock.calls[0]?.[0] as (
       tabId: number,
-      changeInfo: chrome.tabs.TabChangeInfo,
+      changeInfo: { status?: string; url?: string },
     ) => void;
     onUpdated(5, { status: "loading" });
 
@@ -275,7 +275,7 @@ describe("configureTabChangeListeners", () => {
 
     const onUpdated = updatedListener.mock.calls[0]?.[0] as (
       tabId: number,
-      changeInfo: chrome.tabs.TabChangeInfo,
+      changeInfo: { status?: string; url?: string },
     ) => void;
     onUpdated(5, { url: "https://newpage.com" });
 
@@ -903,6 +903,10 @@ describe("module side effects", () => {
         },
         scripting: {
           executeScript: vi.fn(async () => [{}]),
+        },
+        contextMenus: {
+          create: vi.fn(),
+          onClicked: { addListener: vi.fn() },
         },
       } as unknown as typeof chrome,
     );

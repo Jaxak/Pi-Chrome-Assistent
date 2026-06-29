@@ -182,6 +182,7 @@ async function tryInjectDomPicker(
     }
 
     // Ensure content script is injected before sending commands
+    // Permission should already be granted by sidepanel before calling this
     await injectContentScriptIfNeeded(tabId);
 
     const pickerResponse = (await chrome.tabs.sendMessage(tabId, {
@@ -205,6 +206,15 @@ async function tryInjectDomPicker(
       const userMessage = "DOM picker ещё не загрузился. Попробуйте перезагрузить страницу и запустить снова.";
       await recordDiagnostic(backgroundStorage, now, "startDomPicker", "Receiving end does not exist (content script not loaded)");
       return { ok: false, error: userMessage };
+    }
+
+    // Check for permission error
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    if (errorMsg.includes("Cannot access") || errorMsg.includes("permission")) {
+      return {
+        ok: false,
+        error: "Нет разрешения на доступ к странице. Используйте контекстное меню (правый клик → 'Выбрать элемент для Pi').",
+      };
     }
 
     const errorMessage = await recordDiagnostic(backgroundStorage, now, "startDomPicker", error);
@@ -377,9 +387,33 @@ const stateServer = new BackgroundAssistantStateServer({
   startDomPicker: (input) => startDomPicker(input, { storage, getActiveTab }),
 });
 
+// Context menu ID for DOM picker
+const DOM_PICKER_CONTEXT_MENU_ID = "pi-dom-picker";
+
 if (typeof chrome !== "undefined") {
   chrome.runtime.onInstalled.addListener(() => {
     console.info("Pi Chrome Assistent background service worker installed");
+    
+    // Create context menu for DOM picker
+    chrome.contextMenus.create({
+      id: DOM_PICKER_CONTEXT_MENU_ID,
+      title: "🎯 Выбрать элемент для Pi",
+      contexts: ["page", "selection", "image", "link"],
+    });
+  });
+
+  // Handle context menu click - activeTab permission is automatically granted
+  chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    if (info.menuItemId === DOM_PICKER_CONTEXT_MENU_ID && tab?.id !== undefined) {
+      // With context menu click, activeTab gives us permission
+      // so we can inject directly without requesting optional permissions
+      try {
+        await injectContentScriptIfNeeded(tab.id);
+        await chrome.tabs.sendMessage(tab.id, { type: "startDomPicker" });
+      } catch (error) {
+        console.warn("Не удалось запустить DOM picker из контекстного меню:", error);
+      }
+    }
   });
 
   configureSidePanelOnActionClick();

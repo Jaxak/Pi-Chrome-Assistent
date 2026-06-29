@@ -283,6 +283,12 @@ function renderChat(elements: SidePanelElements): void {
     return text.length > 0 || streaming;
   });
 
+  // Check if user is near bottom before re-rendering (within 100px threshold)
+  const scrollContainer = elements.messagesScroll;
+  const wasNearBottom = scrollContainer 
+    ? (scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight) < 100
+    : true;
+
   if (elements.messageList) {
     const fragment = document.createDocumentFragment();
     for (const message of messages) {
@@ -290,8 +296,9 @@ function renderChat(elements: SidePanelElements): void {
     }
     elements.messageList.replaceChildren(fragment);
 
-    if (elements.messagesScroll) {
-      elements.messagesScroll.scrollTop = elements.messagesScroll.scrollHeight;
+    // Only auto-scroll if user was already near the bottom
+    if (scrollContainer && wasNearBottom) {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
     }
   }
 
@@ -553,6 +560,18 @@ function initializeSidePanel(): void {
       sendButton.disabled = true;
       sendButton.setAttribute("aria-disabled", "true");
       const tabId = await findInjectableTabId();
+      
+      // Ensure we have permission to access the tab
+      // This must be called from sidepanel (user gesture context)
+      const hasPermission = await ensureHostPermission();
+      if (!hasPermission) {
+        setPickerErrorDiagnostics(
+          elements,
+          "Для DOM picker нужно разрешение. Используйте контекстное меню (правый клик → 'Выбрать элемент для Pi')."
+        );
+        return;
+      }
+      
       postAssistantCommand({
         type: "assistant.startDomPicker",
         tabId,
@@ -566,6 +585,30 @@ function initializeSidePanel(): void {
       updateDirectSendButtons(elements);
     }
   });
+}
+
+/**
+ * Ensure we have host permission for content script injection.
+ * Must be called from user gesture context (sidepanel click).
+ */
+async function ensureHostPermission(): Promise<boolean> {
+  try {
+    // Check if we already have <all_urls> permission
+    const hasAllUrls = await chrome.permissions.contains({
+      origins: ["<all_urls>"]
+    });
+    
+    if (hasAllUrls) {
+      return true;
+    }
+    
+    // Request permission - this works because we're in user gesture context
+    return await chrome.permissions.request({
+      origins: ["<all_urls>"]
+    });
+  } catch {
+    return false;
+  }
 }
 
 if (typeof document !== "undefined") {

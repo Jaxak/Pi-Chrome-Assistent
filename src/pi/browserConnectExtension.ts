@@ -130,6 +130,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   let latestCtx: ExtensionContext | undefined;
   let latestAlias: string | undefined;
   let connectedAt: number | undefined;
+  let lastStreamingMessageId: string | undefined;
 
 
   const throttledBroadcast = createThrottledBroadcast(
@@ -174,6 +175,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
 
   pi.on("message_start", (event, _ctx) => {
     const messageId = (event as { message?: { id?: string } })?.message?.id || `gen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    lastStreamingMessageId = messageId;
     activeSessionServer?.broadcastEvent({
       type: "message_start",
       message: {
@@ -191,8 +193,8 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       assistantMessageEvent?: { type?: string; delta?: string; text_delta?: string };
     })?.assistantMessageEvent;
 
-    // Use event message id, or find last streaming message if id is empty
-    const eventMessageId = (event as { message?: { id?: string } })?.message?.id ?? "";
+    // Use event message id, or fall back to lastStreamingMessageId from message_start
+    const eventMessageId = (event as { message?: { id?: string } })?.message?.id || lastStreamingMessageId || "";
     
     // Pi sends text in "delta" field, but protocol expects "text_delta"
     const textDelta = rawAssistantMessageEvent?.type === "text_delta"
@@ -221,15 +223,20 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
 
   pi.on("message_end", (event, ctx) => {
     latestCtx = ctx;
+    const messageId = (event as { message?: { id?: string } })?.message?.id || lastStreamingMessageId || "";
     activeSessionServer?.broadcastEvent({
       type: "message_end",
       message: {
-        id: (event as { message?: { id?: string } })?.message?.id ?? "",
+        id: messageId,
         role: (event as { message?: { role?: string } })?.message?.role || "assistant",
       },
       stopReason: (event as { stopReason?: string })?.stopReason,
     });
-    broadcastSnapshot();
+    lastStreamingMessageId = undefined;
+    // NOTE: broadcastSnapshot() intentionally omitted here.
+    // The message_end event is sufficient for the client to mark the message as complete.
+    // Snapshot would arrive before sessionManager.getBranch() is updated, causing the
+    // streaming message to be lost. Follows pi-web-ui pattern.
   });
 
   pi.on("tool_execution_start", (event, _ctx) => {
@@ -393,7 +400,8 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
           onSelection: async (selection: SelectionPayload): Promise<DirectCommandResult> => {
             try {
               const formatted = formatSelectionMessage(selection);
-              broadcastSnapshot();
+              // NOTE: Don't call broadcastSnapshot() before sending - it would
+              // overwrite the pending message in client state
 
               const deliveryOptions = ctx.isIdle() ? undefined : ({ deliverAs: "followUp" } as const);
               await pi.sendUserMessage(formatted, deliveryOptions);

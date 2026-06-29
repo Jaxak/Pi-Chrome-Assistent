@@ -158,7 +158,7 @@ export function parseProtocolEnvelope(raw: string): ProtocolEnvelope | null {
   }
 }
 
-type ValidationResult = { ok: true } | { ok: false; error: string };
+export type ValidationResult = { ok: true } | { ok: false; error: string };
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;

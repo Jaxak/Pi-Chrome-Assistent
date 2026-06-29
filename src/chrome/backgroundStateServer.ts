@@ -147,11 +147,60 @@ export class BackgroundAssistantStateServer {
   }
 
   sendSelection(selection: SelectionPayload): { ok: true } | { ok: false; error: string } {
+    if (!this.state.connection.online) {
+      return { ok: false, error: "Pi-сессия не подключена." };
+    }
+
+    // Build display text for the selection message
+    const displayText = this.formatSelectionForDisplay(selection);
+
+    // Add pending user message to local state immediately (optimistic update)
+    // The pending flag ensures it will be replaced by the server version
+    this.applyState({
+      kind: "chat_event",
+      event: {
+        kind: "pending_user_message",
+        text: displayText,
+        timestamp: this.runtimeClock(),
+      },
+    });
+
     const sent = this.sessionClient?.sendSelection?.(selection);
     if (sent === true) {
       return { ok: true };
     }
+
+    // Failed to send
+    this.applyState({
+      kind: "chat_event",
+      event: {
+        kind: "error",
+        message: "Не удалось отправить выделение.",
+        timestamp: this.runtimeClock(),
+      },
+    });
     return { ok: false, error: "Pi-сессия не подключена." };
+  }
+
+  private formatSelectionForDisplay(selection: SelectionPayload): string {
+    const parts: string[] = [];
+
+    if (selection.comment) {
+      parts.push(selection.comment);
+    }
+
+    if (selection.selectedText) {
+      // Truncate long text for display
+      const maxLen = 150;
+      const text = selection.selectedText.length > maxLen 
+        ? selection.selectedText.slice(0, maxLen) + "…" 
+        : selection.selectedText;
+      parts.push(`📎 ${text}`);
+    } else if (selection.selectedHtml) {
+      parts.push("📎 [HTML-фрагмент]");
+    }
+
+    return parts.join("\n") || "📎 [Выделение]";
   }
 
   private handlePortMessage(message: unknown): void {

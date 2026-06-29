@@ -147,7 +147,8 @@ function createClientSocket(url: string): {
   const waitForClose = () =>
     new Promise<{ code: number; reason: string }>((resolve, reject) => {
       if (socket.readyState === WebSocket.CLOSED) {
-        resolve({ code: socket.closeCode ?? 0, reason: socket.closeReason ?? "" });
+        // Socket already closed, return default values
+        resolve({ code: 1000, reason: "" });
         return;
       }
       const timer = setTimeout(

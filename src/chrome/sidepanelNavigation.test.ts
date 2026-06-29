@@ -154,6 +154,10 @@ function mockChromeRuntime(): MockChromeRuntime {
     tabs: {
       query: tabsQuery,
     },
+    permissions: {
+      contains: vi.fn(async () => true),
+      request: vi.fn(async () => true),
+    },
   });
 
   return { port, ports, tabsQuery, sendMessage };
@@ -524,6 +528,9 @@ describe("sidepanel navigation", () => {
     await flush();
 
     document.querySelector<HTMLButtonElement>("#send-button")?.click();
+    // Multiple flushes needed: findInjectableTabId + ensureHostPermission + postMessage
+    await flush();
+    await flush();
     await flush();
 
     expect(tabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true });

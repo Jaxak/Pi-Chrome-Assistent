@@ -1359,7 +1359,11 @@ describe("BackgroundAssistantStateServer", () => {
       await flushAsyncWork();
 
       // Make setModel return false
-      sessionClients[0]!.setModel = vi.fn().mockReturnValue(false);
+      Object.defineProperty(sessionClients[0], 'setModel', {
+        value: vi.fn().mockReturnValue(false),
+        writable: true,
+        configurable: true,
+      });
 
       port.emitMessage({
         type: "assistant.model.set",

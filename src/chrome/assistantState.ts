@@ -126,6 +126,7 @@ export function reduceAssistantState(
       return {
         ...state,
         chat: {
+          ...state.chat,
           messages: nextChat.messages,
           agentBusy: nextChat.agentBusy,
           busyLabel: nextChat.busyLabel,
@@ -264,33 +265,63 @@ function mergeWithPendingMessages(
   });
 
   // Find assistant messages not in server at all.
-  // Only keep STREAMING messages as pending - completed messages should already
-  // be in the server snapshot (even if with different messageId).
-  // Also deduplicate by text content to handle messageId mismatches.
+  // Keep messages that are either streaming OR completed but not yet in snapshot
+  // (handles race condition where snapshot arrives before sessionManager updates).
+  // Deduplicate by text content to handle messageId mismatches,
+  // but only if text is non-empty (streaming messages often start empty).
   const serverAssistantTexts = new Set(
     serverMessages
       .filter((m): m is SidepanelChatMessage & { role: "assistant" } => m.role === "assistant")
+      .filter((m) => m.text.length > 0)
       .map((m) => m.text),
   );
   
   const pendingAssistantMessages = localAssistantMessages.filter(
-    (m) => m.streaming && 
-           !serverAssistantIds.has(m.messageId) &&
-           !serverAssistantTexts.has(m.text),
+    (m) => !serverAssistantIds.has(m.messageId) &&
+           (m.text.length === 0 || !serverAssistantTexts.has(m.text)),
   );
 
   // Find pending user messages (only if we're currently sending)
+  // For regular messages: deduplicate by text content
+  // For pending messages: keep them until server has a message containing similar content
   let pendingUserMessages: Array<SidepanelChatMessage & { role: "user" }> = [];
   if (sending) {
-    const serverUserTimestamps = new Set(
+    const serverUserTexts = new Set(
       serverMessages
         .filter((m): m is SidepanelChatMessage & { role: "user" } => m.role === "user")
-        .map((m) => m.timestamp),
+        .map((m) => m.text),
     );
+    
+    const serverUserTextsArray = Array.from(serverUserTexts);
+
+    // Check if any server message contains key parts of the pending message
+    const hasSimilarServerMessage = (pendingText: string): boolean => {
+      // Extract meaningful parts from pending text (skip emoji prefix)
+      const cleanText = pendingText.replace(/^\p{Emoji}\s*/u, "").trim();
+      if (cleanText.length === 0) return false;
+      
+      // Take first line (usually the comment) as the key
+      const firstLine = cleanText.split("\n")[0].slice(0, 50);
+      
+      return serverUserTextsArray.some(serverText => 
+        serverText.includes(firstLine)
+      );
+    };
 
     pendingUserMessages = localMessages.filter(
-      (m): m is SidepanelChatMessage & { role: "user" } =>
-        m.role === "user" && !serverUserTimestamps.has(m.timestamp),
+      (m): m is SidepanelChatMessage & { role: "user" } => {
+        if (m.role !== "user") return false;
+        
+        const isPending = (m as { pending?: boolean }).pending === true;
+        
+        if (isPending) {
+          // Keep pending message until server has similar content
+          return !hasSimilarServerMessage(m.text);
+        }
+        
+        // Regular message: keep if not in server
+        return !serverUserTexts.has(m.text);
+      },
     );
   }
 
@@ -310,15 +341,35 @@ function hasPendingUserMessages(
   localMessages: SidepanelChatMessage[],
   serverMessages: SidepanelChatMessage[],
 ): boolean {
-  const serverUserTimestamps = new Set(
+  const serverUserTexts = new Set(
     serverMessages
       .filter((m): m is SidepanelChatMessage & { role: "user" } => m.role === "user")
-      .map((m) => m.timestamp),
+      .map((m) => m.text),
   );
+  
+  const serverUserTextsArray = Array.from(serverUserTexts);
 
-  return localMessages.some(
-    (m) => m.role === "user" && !serverUserTimestamps.has(m.timestamp),
-  );
+  // Same logic as in mergeWithPendingMessages
+  const hasSimilarServerMessage = (pendingText: string): boolean => {
+    const cleanText = pendingText.replace(/^\p{Emoji}\s*/u, "").trim();
+    if (cleanText.length === 0) return false;
+    const firstLine = cleanText.split("\n")[0].slice(0, 50);
+    return serverUserTextsArray.some(serverText => serverText.includes(firstLine));
+  };
+
+  return localMessages.some((m) => {
+    if (m.role !== "user") return false;
+    
+    const isPending = (m as { pending?: boolean }).pending === true;
+    
+    if (isPending) {
+      // Pending message counts as "pending" only if no similar server message
+      return !hasSimilarServerMessage(m.text);
+    }
+    
+    // Regular message: pending if not in server
+    return !serverUserTexts.has(m.text);
+  });
 }
 
 function applySessionSnapshot(

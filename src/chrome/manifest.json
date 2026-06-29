@@ -9,8 +9,9 @@
     "48": "icon48.png",
     "128": "icon128.png"
   },
-  "permissions": ["activeTab", "storage", "sidePanel", "scripting"],
+  "permissions": ["activeTab", "storage", "sidePanel", "scripting", "contextMenus"],
   "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*"],
+  "optional_host_permissions": ["<all_urls>"],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*"
   },

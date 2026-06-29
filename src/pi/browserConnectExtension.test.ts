@@ -428,11 +428,11 @@ describe("Pi events", () => {
     );
     messageEndHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
 
-    // message_start and message_update do NOT call broadcastSnapshot (to avoid race conditions)
-    // Only message_end triggers snapshot broadcast
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+    // message_start, message_update and message_end do NOT call broadcastSnapshot
+    // (to avoid race conditions where snapshot arrives before sessionManager updates)
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(0);
 
-    // model_select fires within throttle window — should be throttled
+    // model_select triggers snapshot broadcast
     modelSelectHandler?.handler({}, ctx);
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
 
@@ -483,6 +483,46 @@ describe("Pi events", () => {
     expect(mockBroadcastEvent).toHaveBeenNthCalledWith(3, {
       type: "message_end",
       message: { id: "msg-1", role: "assistant" },
+      stopReason: "end_turn",
+    });
+  });
+
+  it("message_update uses lastStreamingMessageId when event has no id", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const messageStartHandler = onCalls.find((c) => c.event === "message_start");
+    const messageUpdateHandler = onCalls.find((c) => c.event === "message_update");
+    const messageEndHandler = onCalls.find((c) => c.event === "message_end");
+
+    // message_start with id
+    messageStartHandler?.handler({ message: { role: "assistant", id: "msg-42" } }, ctx);
+
+    // message_update WITHOUT id — should use lastStreamingMessageId from message_start
+    messageUpdateHandler?.handler(
+      { message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", text_delta: "Hi" } },
+      ctx,
+    );
+
+    // message_end WITHOUT id — should also use lastStreamingMessageId
+    messageEndHandler?.handler({ message: { role: "assistant" }, stopReason: "end_turn" }, ctx);
+
+    // Verify message_update used the id from message_start
+    expect(mockBroadcastEvent).toHaveBeenNthCalledWith(2, {
+      type: "message_update",
+      message: { id: "msg-42", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", text_delta: "Hi" },
+    });
+
+    // Verify message_end used the id from message_start
+    expect(mockBroadcastEvent).toHaveBeenNthCalledWith(3, {
+      type: "message_end",
+      message: { id: "msg-42", role: "assistant" },
       stopReason: "end_turn",
     });
   });
@@ -797,15 +837,15 @@ describe("broadcastSnapshot throttling in extension", () => {
     const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
     await connectEntry!.handler("", ctx);
 
-    const messageEndHandler = onCalls.find((c) => c.event === "message_end");
     const modelSelectHandler = onCalls.find((c) => c.event === "model_select");
+    const toolEndHandler = onCalls.find((c) => c.event === "tool_execution_end");
 
-    // First message_end — executes immediately
-    messageEndHandler?.handler({ message: { id: "m1", role: "assistant" } }, ctx);
+    // First tool_execution_end — executes immediately
+    toolEndHandler?.handler({ toolName: "read" }, ctx);
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
 
-    // Second message_end immediately — throttled
-    messageEndHandler?.handler({ message: { id: "m2", role: "assistant" } }, ctx);
+    // Second tool_execution_end immediately — throttled
+    toolEndHandler?.handler({ toolName: "write" }, ctx);
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
 
     // model_select also throttled
@@ -832,11 +872,11 @@ describe("broadcastSnapshot throttling in extension", () => {
     const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
     await connectEntry!.handler("", ctx);
 
-    const messageEndHandler = onCalls.find((c) => c.event === "message_end");
+    const toolEndHandler = onCalls.find((c) => c.event === "tool_execution_end");
     const shutdownHandler = onCalls.find((c) => c.event === "session_shutdown");
 
-    // Trigger snapshot
-    messageEndHandler?.handler({ message: { id: "m1", role: "assistant" } }, ctx);
+    // Trigger snapshot via tool_execution_end
+    toolEndHandler?.handler({ toolName: "read" }, ctx);
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
 
     // Shutdown flushes the throttle — verify it doesn't throw

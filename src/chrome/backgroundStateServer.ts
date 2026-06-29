@@ -299,7 +299,7 @@ export class BackgroundAssistantStateServer {
         return;
       }
 
-      if (this.state.chat.sending || this.state.chat.agentBusy) {
+      if (this.state.chat.agentBusy) {
         return;
       }
 
@@ -314,18 +314,7 @@ export class BackgroundAssistantStateServer {
       return;
     }
 
-    // Show "sending" busy indicator without adding a message to chat
-    // (message will appear from server snapshot)
-    this.applyState({
-      kind: "chat_event",
-      event: {
-        kind: "agent_busy",
-        busy: true,
-        label: "Отправка…",
-        timestamp: this.runtimeClock(),
-      },
-    });
-
+    // Just send — Pi SDK will emit turn_start event that shows the busy indicator
     if (this.sessionClient?.sendChatMessage?.(text) !== true) {
       this.applyState({
         kind: "chat_event",

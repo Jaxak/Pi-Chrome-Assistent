@@ -342,10 +342,8 @@ describe("validateSidePanelChatEvent", () => {
     expect(validateSidePanelChatEvent({ kind: "user_message", timestamp: 123 }).ok).toBe(false);
   });
 
-  it("should validate agent_busy", () => {
-    expect(validateSidePanelChatEvent({ kind: "agent_busy", busy: true, label: "Working", timestamp: 123 }).ok).toBe(true);
-    expect(validateSidePanelChatEvent({ kind: "agent_busy", busy: true, timestamp: 123 }).ok).toBe(false);
-    expect(validateSidePanelChatEvent({ kind: "agent_busy", label: "X", timestamp: 123 }).ok).toBe(false);
+  it("should reject unknown agent_busy kind", () => {
+    expect(validateSidePanelChatEvent({ kind: "agent_busy", busy: true, label: "Working", timestamp: 123 }).ok).toBe(false);
   });
 
   it("should validate assistant_message_start", () => {

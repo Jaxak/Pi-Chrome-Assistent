@@ -29,12 +29,11 @@ describe("sidepanelState", () => {
       },
     ]);
     expect(state.agentBusy).toBe(true);
-    expect(state.busyLabel).toBe("Агент работает в фоне…");
-    expect(state.sending).toBe(true);
+    expect(state.busyLabel).toBe("Агент думает…");
   });
 
   it("creates a streaming assistant message on assistant_message_start", () => {
-    const state = reduceSidePanelChatEvent(createState({ agentBusy: true, sending: true }), {
+    const state = reduceSidePanelChatEvent(createState({ agentBusy: true }), {
       kind: "assistant_message_start",
       messageId: "message-1",
       timestamp: 1_710_000_000_100,
@@ -50,7 +49,7 @@ describe("sidepanelState", () => {
       },
     ]);
     expect(state.agentBusy).toBe(true);
-    expect(state.sending).toBe(false);
+    expect(state.busyLabel).toBe("Пишет ответ…");
   });
 
   it("appends assistant text deltas to the matching assistant message", () => {
@@ -89,7 +88,6 @@ describe("sidepanelState", () => {
     const state = reduceSidePanelChatEvent(
       createState({
         agentBusy: true,
-        sending: true,
         messages: [
           {
             role: "assistant",
@@ -117,11 +115,10 @@ describe("sidepanelState", () => {
       },
     ]);
     expect(state.agentBusy).toBe(false);
-    expect(state.sending).toBe(false);
   });
 
-  it("appends system errors and clears busy and sending", () => {
-    const state = reduceSidePanelChatEvent(createState({ agentBusy: true, sending: true }), {
+  it("appends system errors and clears busy", () => {
+    const state = reduceSidePanelChatEvent(createState({ agentBusy: true }), {
       kind: "error",
       message: "Не удалось отправить сообщение",
       timestamp: 1_710_000_000_400,
@@ -136,7 +133,6 @@ describe("sidepanelState", () => {
       },
     ]);
     expect(state.agentBusy).toBe(false);
-    expect(state.sending).toBe(false);
     expect(state.error).toBe("Не удалось отправить сообщение");
   });
 });
@@ -359,7 +355,6 @@ describe("applyMirrorEventToChatState", () => {
     expect(result.messages[0].role).toBe("user");
     expect((result.messages[0] as { text: string }).text).toBe("Привет");
     expect((result.messages[0] as { messageId?: string }).messageId).toBe("live-1");
-    expect(result.sending).toBe(false);
   });
 
   it("ignores unknown event types safely", () => {
@@ -406,10 +401,9 @@ describe("applyMirrorEventToChatState", () => {
     });
   });
 
-  it("сбрасывает agentBusy и sending при получении turn_end", () => {
+  it("сбрасывает agentBusy при получении turn_end", () => {
     const state = createInitialSidePanelState();
     state.agentBusy = true;
-    state.sending = true;
 
     const event: PiMirrorEvent = {
       type: "turn_end",
@@ -419,7 +413,7 @@ describe("applyMirrorEventToChatState", () => {
     const result = applyMirrorEventToChatState(state, event);
 
     expect(result.agentBusy).toBe(false);
-    expect(result.sending).toBe(false);
+    expect(result.busyLabel).toBe("Агент работает в фоне…");
   });
 });
 
@@ -430,30 +424,5 @@ describe("startSendingUserMessage", () => {
     expect(startSendingUserMessage(state, "", 123)).toBe(state);
     expect(startSendingUserMessage(state, "   ", 123)).toBe(state);
     expect(startSendingUserMessage(state, "\n\t", 123)).toBe(state);
-  });
-});
-
-describe("agent_busy event", () => {
-  it("should handle agent_busy event", () => {
-    let state = createInitialSidePanelState();
-
-    state = reduceSidePanelChatEvent(state, {
-      kind: "agent_busy",
-      busy: true,
-      label: "Думаю...",
-      timestamp: 123,
-    });
-
-    expect(state.agentBusy).toBe(true);
-    expect(state.busyLabel).toBe("Думаю...");
-
-    state = reduceSidePanelChatEvent(state, {
-      kind: "agent_busy",
-      busy: false,
-      label: "",
-      timestamp: 124,
-    });
-
-    expect(state.agentBusy).toBe(false);
   });
 });

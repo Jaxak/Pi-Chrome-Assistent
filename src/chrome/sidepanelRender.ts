@@ -50,24 +50,13 @@ export function updateAgentWorkingElement(
   element: HTMLElement,
   label: string,
   visible: boolean,
-  activeToolsCount?: number,
 ): void {
   if (element.hidden !== !visible) {
     element.hidden = !visible;
   }
 
   const labelSpan = element.querySelector<HTMLElement>(".agent-working__label");
-  if (labelSpan) {
-    // Show tools counter if there are active tools
-    const toolsInfo = activeToolsCount && activeToolsCount > 0
-      ? ` · Вызов инструментов (${activeToolsCount})`
-      : "";
-    const fullLabel = `${label}${toolsInfo}`;
-    
-    if (labelSpan.textContent !== fullLabel) {
-      labelSpan.textContent = fullLabel;
-    }
+  if (labelSpan && labelSpan.textContent !== label) {
+    labelSpan.textContent = label;
   }
 }
-
-

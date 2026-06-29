@@ -11,6 +11,7 @@ import {
 } from "./sidepanelState";
 
 const DEFAULT_DIRECT_SESSION_PORT = 31415;
+const DEFAULT_BUSY_LABEL = "Агент работает в фоне…";
 
 export type BackgroundAssistantState = {
   epoch: number;
@@ -32,8 +33,6 @@ export type BackgroundAssistantState = {
     messages: SidepanelChatMessage[];
     agentBusy: boolean;
     busyLabel: string;
-    sending: boolean;
-    activeToolsCount: number;
     error?: string;
   };
   runtime: {
@@ -71,8 +70,6 @@ export function createInitialAssistantState(): BackgroundAssistantState {
       messages: chat.messages,
       agentBusy: chat.agentBusy,
       busyLabel: chat.busyLabel,
-      sending: chat.sending,
-      activeToolsCount: 0,
       error: chat.error,
     },
     runtime: {
@@ -107,7 +104,6 @@ export function reduceAssistantState(
         messages: state.chat.messages,
         agentBusy: state.chat.agentBusy,
         busyLabel: state.chat.busyLabel,
-        sending: state.chat.sending,
         error: state.chat.error,
       };
 
@@ -120,53 +116,60 @@ export function reduceAssistantState(
           messages: nextChat.messages,
           agentBusy: nextChat.agentBusy,
           busyLabel: nextChat.busyLabel,
-          sending: nextChat.sending,
           error: nextChat.error,
         },
       };
     }
 
     case "session.event": {
-      // Handle tool execution events directly - update counter
+      // Event-driven busyLabel updates
+      if (event.event.type === "turn_start") {
+        return {
+          ...state,
+          chat: {
+            ...state.chat,
+            agentBusy: true,
+            busyLabel: "Агент думает…",
+          },
+        };
+      }
+
       if (event.event.type === "tool_execution_start") {
         return {
           ...state,
           chat: {
             ...state.chat,
-            activeToolsCount: state.chat.activeToolsCount + 1,
+            busyLabel: `Выполняет: ${event.event.toolName}…`,
           },
         };
       }
-      
+
       if (event.event.type === "tool_execution_end") {
         return {
           ...state,
           chat: {
             ...state.chat,
-            activeToolsCount: Math.max(0, state.chat.activeToolsCount - 1),
+            busyLabel: "Агент думает…",
           },
         };
       }
-      
-      // Handle turn_end - reset tools counter
+
       if (event.event.type === "turn_end") {
         return {
           ...state,
           chat: {
             ...state.chat,
             agentBusy: false,
-            sending: false,
-            activeToolsCount: 0,
+            busyLabel: DEFAULT_BUSY_LABEL,
           },
         };
       }
-      
+
       const sidePanelState = {
         bridgeOnline: state.connection.online,
         messages: state.chat.messages,
         agentBusy: state.chat.agentBusy,
         busyLabel: state.chat.busyLabel,
-        sending: state.chat.sending,
         error: state.chat.error,
       };
 
@@ -179,7 +182,6 @@ export function reduceAssistantState(
           messages: nextChat.messages,
           agentBusy: nextChat.agentBusy,
           busyLabel: nextChat.busyLabel,
-          sending: nextChat.sending,
           error: nextChat.error,
         },
       };
@@ -247,8 +249,6 @@ function applySessionSnapshot(
       // Using || (not ??): if Pi sends an empty string "" for busyLabel
       // we keep the previous label instead of flashing a blank indicator
       busyLabel: snapshot.chat.busyLabel || state.chat.busyLabel,
-      sending: false,
-      activeToolsCount: snapshot.runtime.isIdle ? 0 : state.chat.activeToolsCount,
       error: undefined,
     },
   };
@@ -273,7 +273,6 @@ export function formatAssistantStatus(state: BackgroundAssistantState): string {
 export function isChatSendDisabled(state: BackgroundAssistantState, draftText: string): boolean {
   return (
     draftText.trim().length === 0 ||
-    state.chat.sending ||
     state.chat.agentBusy ||
     state.connection.connecting ||
     !state.connection.online

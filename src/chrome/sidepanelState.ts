@@ -15,13 +15,11 @@ export type SidePanelState = {
   messages: SidepanelChatMessage[];
   agentBusy: boolean;
   busyLabel: string;
-  sending: boolean;
   error?: string;
 };
 
 export type SidePanelChatEvent =
   | { kind: "user_message"; text: string; timestamp: number }
-  | { kind: "agent_busy"; busy: boolean; label: string; timestamp: number }
   | { kind: "assistant_message_start"; messageId: string; timestamp: number }
   | { kind: "assistant_text_delta"; messageId: string; delta: string; timestamp: number }
   | { kind: "assistant_message_end"; messageId: string; timestamp: number }
@@ -33,7 +31,6 @@ export function createInitialSidePanelState(): SidePanelState {
     messages: [],
     agentBusy: false,
     busyLabel: DEFAULT_BUSY_LABEL,
-    sending: false,
   };
 }
 
@@ -69,8 +66,7 @@ export function startSendingUserMessage(
       },
     ]),
     agentBusy: true,
-    busyLabel: DEFAULT_BUSY_LABEL,
-    sending: true,
+    busyLabel: "Агент думает…",
     error: undefined,
   };
 }
@@ -79,14 +75,6 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
   switch (event.kind) {
     case "user_message":
       return startSendingUserMessage(state, event.text, event.timestamp);
-
-    case "agent_busy":
-      return {
-        ...state,
-        agentBusy: event.busy,
-        busyLabel: event.label.trim() || DEFAULT_BUSY_LABEL,
-        ...(event.busy ? {} : { sending: false }),
-      };
 
     case "assistant_message_start":
       return {
@@ -102,8 +90,7 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
           },
         ]),
         agentBusy: true,
-        busyLabel: DEFAULT_BUSY_LABEL,
-        sending: false,
+        busyLabel: "Пишет ответ…",
         error: undefined,
       };
 
@@ -136,7 +123,7 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
           };
         }),
         agentBusy: false,
-        sending: false,
+        busyLabel: DEFAULT_BUSY_LABEL,
       };
 
     case "error":
@@ -152,7 +139,7 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
           },
         ]),
         agentBusy: false,
-        sending: false,
+        busyLabel: DEFAULT_BUSY_LABEL,
         error: event.message,
       };
   }
@@ -243,7 +230,6 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
               messageId,
             } as SidepanelChatMessage,
           ]),
-          sending: false,
           error: undefined,
         };
       }
@@ -269,8 +255,7 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
             },
           ]),
           agentBusy: true,
-          busyLabel: DEFAULT_BUSY_LABEL,
-          sending: false,
+          busyLabel: "Пишет ответ…",
           error: undefined,
         };
       }
@@ -322,8 +307,7 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
             },
           ]),
           agentBusy: true,
-          busyLabel: DEFAULT_BUSY_LABEL,
-          sending: false,
+          busyLabel: "Пишет ответ…",
           error: undefined,
         };
       }
@@ -354,7 +338,7 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
           return { ...m, streaming: false };
         }),
         agentBusy: false,
-        sending: false,
+        busyLabel: DEFAULT_BUSY_LABEL,
       };
     }
 
@@ -363,7 +347,7 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
       return {
         ...state,
         agentBusy: false,
-        sending: false,
+        busyLabel: DEFAULT_BUSY_LABEL,
       };
     }
 
@@ -399,19 +383,6 @@ export function validateSidePanelChatEvent(value: unknown): ValidationResult {
       return isNonEmptyString((event as Partial<Extract<SidePanelChatEvent, { kind: "user_message" }>>).text)
         ? { ok: true }
         : { ok: false, error: "Missing text" };
-
-    case "agent_busy": {
-      const busyEvent = event as Partial<Extract<SidePanelChatEvent, { kind: "agent_busy" }>>;
-      if (typeof busyEvent.busy !== "boolean") {
-        return { ok: false, error: "Missing busy" };
-      }
-
-      if (typeof busyEvent.label !== "string") {
-        return { ok: false, error: "Missing label" };
-      }
-
-      return { ok: true };
-    }
 
     case "assistant_message_start":
     case "assistant_message_end":

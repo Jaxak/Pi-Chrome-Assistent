@@ -296,8 +296,8 @@ describe("BackgroundAssistantStateServer", () => {
     expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledWith("Привет Pi");
     // No optimistic user message in chat — message will appear from server snapshot
     expect(server.getSnapshot().chat.messages).toEqual([]);
-    // agentBusy is set to true instead of sending for busy indicator
-    expect(server.getSnapshot().chat.agentBusy).toBe(true);
+    // agentBusy is NOT set by send — it will be set by turn_start from Pi SDK
+    expect(server.getSnapshot().chat.agentBusy).toBe(false);
   });
 
   it("sends model set through sessionClient on assistant.model.set", async () => {
@@ -524,7 +524,7 @@ describe("BackgroundAssistantStateServer", () => {
     expect(isChatSendDisabled(server.getSnapshot(), "Сообщение")).toBe(false);
   });
 
-  it("does not append or call client twice for duplicate sends while chat is busy", async () => {
+  it("sends both messages when agentBusy is not set — busy state comes from Pi events", async () => {
     const { server, sessionClients } = createServer();
     const port = new FakePort();
 
@@ -540,13 +540,14 @@ describe("BackgroundAssistantStateServer", () => {
     port.emitMessage({ type: "assistant.sendChatMessage", message: "Второе" });
     await flushAsyncWork();
 
-    // Only first send is executed — second is blocked by agentBusy=true
-    expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledTimes(1);
-    expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledWith("Первое");
+    // Both sends are executed since agentBusy is not set by send
+    expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledTimes(2);
+    expect(sessionClients[0]?.sendChatMessage).toHaveBeenNthCalledWith(1, "Первое");
+    expect(sessionClients[0]?.sendChatMessage).toHaveBeenNthCalledWith(2, "Второе");
     // No optimistic messages in chat
     expect(server.getSnapshot().chat.messages).toEqual([]);
-    // isChatSendDisabled blocks because agentBusy=true
-    expect(server.getSnapshot().chat.agentBusy).toBe(true);
+    // agentBusy is not set — it will come from Pi SDK turn_start event
+    expect(server.getSnapshot().chat.agentBusy).toBe(false);
   });
 
   it("adds a Pi unavailable chat error when sessionClient send fails", async () => {
@@ -570,7 +571,6 @@ describe("BackgroundAssistantStateServer", () => {
     expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledWith("Привет");
     expect(server.getSnapshot().chat.error).toBe("Pi недоступен");
     expect(server.getSnapshot().chat.agentBusy).toBe(false);
-    expect(server.getSnapshot().chat.sending).toBe(false);
   });
 
   it("clears model mutation pending when model set result comes via snapshot", async () => {
@@ -1289,8 +1289,8 @@ describe("BackgroundAssistantStateServer", () => {
 
       // Проверка: сообщения в чате пустые (нет optimistic update)
       expect(server.getSnapshot().chat.messages).toEqual([]);
-      // Но busy-индикатор установлен
-      expect(server.getSnapshot().chat.agentBusy).toBe(true);
+      // Busy-индикатор НЕ установлен — он появится через turn_start от Pi SDK
+      expect(server.getSnapshot().chat.agentBusy).toBe(false);
 
       // Эмитируем snapshot с user message (как если бы сервер обработал сообщение)
       sessionClients[0]?.emitSnapshot({
@@ -1384,7 +1384,7 @@ describe("BackgroundAssistantStateServer", () => {
       });
     });
 
-    it("busy-индикатор показывает 'Отправка…' до получения ответа от сервера", async () => {
+    it("sendChatMessage отправляет сообщение без установки busy-индикатора", async () => {
       const { server } = createServer();
       const port = new FakePort();
 
@@ -1402,9 +1402,8 @@ describe("BackgroundAssistantStateServer", () => {
       port.emitMessage({ type: "assistant.sendChatMessage", message: "Тест" });
       await flushAsyncWork();
 
-      // Busy-индикатор установлен с меткой "Отправка…"
-      expect(server.getSnapshot().chat.agentBusy).toBe(true);
-      expect(server.getSnapshot().chat.busyLabel).toBe("Отправка…");
+      // Busy-индикатор НЕ установлен — он появится через turn_start event от Pi SDK
+      expect(server.getSnapshot().chat.agentBusy).toBe(false);
     });
 
     it("нет дубликатов сообщений после повторного snapshot", async () => {

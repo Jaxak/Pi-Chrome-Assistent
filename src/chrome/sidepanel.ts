@@ -305,8 +305,7 @@ function renderChat(elements: SidePanelElements): void {
   if (elements.agentWorking) {
     const busyLabel = chat?.busyLabel ?? "Агент работает в фоне…";
     const agentBusy = chat?.agentBusy ?? false;
-    const activeToolsCount = currentSnapshot?.chat.activeToolsCount ?? 0;
-    updateAgentWorkingElement(elements.agentWorking, busyLabel, agentBusy, activeToolsCount);
+    updateAgentWorkingElement(elements.agentWorking, busyLabel, agentBusy);
   }
 
   renderRuntimeInfo(elements);

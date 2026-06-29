@@ -29,7 +29,6 @@ describe("assistantState", () => {
       expect(state.session).toBeUndefined();
       expect(state.chat.messages).toEqual([]);
       expect(state.chat.agentBusy).toBe(false);
-      expect(state.chat.sending).toBe(false);
       expect(state.runtime.availableModels).toEqual([]);
       expect(state.runtime.modelMutationPending).toBe(false);
       expect(state.diagnostics).toEqual([]);
@@ -371,7 +370,6 @@ describe("assistantState", () => {
       );
       expect(finishedMsgs[0]).toMatchObject({ streaming: false });
       expect(state.chat.agentBusy).toBe(false);
-      expect(state.chat.sending).toBe(false);
     });
 
     it("пустой snapshot entries очищает видимый чат", () => {
@@ -459,7 +457,7 @@ describe("assistantState", () => {
   });
 
   describe("reduceAssistantState - chat_event", () => {
-    it("trims a user chat message and marks sending busy", () => {
+    it("trims a user chat message and marks agent busy", () => {
       let state = createInitialAssistantState();
       state = reduceAssistantState(state, {
         kind: "session_snapshot",
@@ -475,10 +473,9 @@ describe("assistantState", () => {
         { role: "user", text: "Привет Pi", timestamp: 1_710_000_000_300 },
       ]);
       expect(nextState.chat.agentBusy).toBe(true);
-      expect(nextState.chat.sending).toBe(true);
     });
 
-    it("clears agentBusy and sending when a chat error arrives", () => {
+    it("clears agentBusy when a chat error arrives", () => {
       let state = createInitialAssistantState();
       state = reduceAssistantState(state, {
         kind: "session_snapshot",
@@ -495,8 +492,91 @@ describe("assistantState", () => {
       });
 
       expect(nextState.chat.agentBusy).toBe(false);
-      expect(nextState.chat.sending).toBe(false);
       expect(nextState.chat.error).toBe("Не удалось отправить сообщение");
+    });
+  });
+
+  describe("reduceAssistantState - session.event event-driven busyLabel", () => {
+    it("turn_start → agentBusy=true, busyLabel='Агент думает…'", () => {
+      const state = createInitialAssistantState();
+      const next = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "turn_start", turnId: "turn-1" },
+      });
+
+      expect(next.chat.agentBusy).toBe(true);
+      expect(next.chat.busyLabel).toBe("Агент думает…");
+    });
+
+    it("tool_execution_start → busyLabel='Выполняет: {toolName}…'", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "turn_start", turnId: "turn-1" },
+      });
+
+      const next = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "tool_execution_start", toolName: "grep" },
+      });
+
+      expect(next.chat.busyLabel).toBe("Выполняет: grep…");
+      expect(next.chat.agentBusy).toBe(true); // preserves previous agentBusy
+    });
+
+    it("tool_execution_end → busyLabel='Агент думает…'", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "turn_start", turnId: "turn-1" },
+      });
+      state = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "tool_execution_start", toolName: "grep" },
+      });
+
+      const next = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "tool_execution_end", toolName: "grep" },
+      });
+
+      expect(next.chat.busyLabel).toBe("Агент думает…");
+    });
+
+    it("message_start(assistant) → busyLabel='Пишет ответ…'", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "turn_start", turnId: "turn-1" },
+      });
+
+      const next = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "message_start", message: { id: "msg-1", role: "assistant" } },
+      });
+
+      expect(next.chat.agentBusy).toBe(true);
+      expect(next.chat.busyLabel).toBe("Пишет ответ…");
+    });
+
+    it("turn_end → agentBusy=false, busyLabel=DEFAULT", () => {
+      let state = createInitialAssistantState();
+      state = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "turn_start", turnId: "turn-1" },
+      });
+      state = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "tool_execution_start", toolName: "grep" },
+      });
+
+      const next = reduceAssistantState(state, {
+        kind: "session.event",
+        event: { type: "turn_end", turnId: "turn-1" },
+      });
+
+      expect(next.chat.agentBusy).toBe(false);
+      expect(next.chat.busyLabel).toBe("Агент работает в фоне…");
     });
   });
 
@@ -626,7 +706,7 @@ describe("assistantState", () => {
       expect(isChatSendDisabled(state, "   ")).toBe(true);
     });
 
-    it("returns true when sending or agent busy", () => {
+    it("returns true when agent busy", () => {
       let state = createInitialAssistantState();
       state = reduceAssistantState(state, {
         kind: "session_snapshot",

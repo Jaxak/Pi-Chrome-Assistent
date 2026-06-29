@@ -402,7 +402,7 @@ describe("injected direct server handlers", () => {
 });
 
 describe("Pi events", () => {
-  it("message_start/message_update/message_end do NOT call broadcastSnapshot; turn_end does", async () => {
+  it("message_start/message_update/message_end/turn_end do NOT call broadcastSnapshot", async () => {
     const { default: browserConnectExtension } = await import("./browserConnectExtension");
     const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
 
@@ -422,13 +422,10 @@ describe("Pi events", () => {
       ctx,
     );
     messageEndHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
-
-    // No broadcastSnapshot from message events
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(0);
-
-    // turn_end triggers snapshot (sync point)
     turnEndHandler?.handler({ turnId: "turn-1" }, ctx);
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+
+    // No broadcastSnapshot from any message/turn events (only events are broadcast)
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(0);
   });
 
   it("message_start/message_update/message_end forward raw events via broadcastEvent", async () => {
@@ -743,7 +740,7 @@ describe("mirror snapshot — entries from sessionManager.getBranch()", () => {
 
 
 describe("broadcastSnapshot only at sync points (turn_end, onSetModel)", () => {
-  it("turn_end triggers broadcastSnapshot (sync point)", async () => {
+  it("turn_end does NOT trigger broadcastSnapshot (events-only, like pi-web-ui)", async () => {
     const { default: browserConnectExtension } = await import("./browserConnectExtension");
     const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
 
@@ -755,7 +752,7 @@ describe("broadcastSnapshot only at sync points (turn_end, onSetModel)", () => {
     const turnEndHandler = onCalls.find((c) => c.event === "turn_end");
     turnEndHandler?.handler({ turnId: "turn-1" }, ctx);
 
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(0);
   });
 
   it("tool_execution events do NOT trigger broadcastSnapshot", async () => {

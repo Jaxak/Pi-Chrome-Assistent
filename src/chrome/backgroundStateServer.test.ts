@@ -1268,6 +1268,343 @@ describe("BackgroundAssistantStateServer", () => {
 
   // ─── Task T4: setModel error paths ───
 
+  // ─── Event-driven model: no optimistic updates ───
+
+  describe("event-driven model (no optimistic updates)", () => {
+    it("user message появляется только после snapshot от сервера", async () => {
+      const { server, sessionClients } = createServer();
+      const port = new FakePort();
+
+      await server.start();
+      server.connectPort(port);
+
+      // Connect to create session client
+      port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+      await flushAsyncWork();
+      server.applySessionSnapshot(createDirectSnapshot());
+
+      // Отправляем чат-сообщение
+      port.emitMessage({ type: "assistant.sendChatMessage", message: "Тест" });
+      await flushAsyncWork();
+
+      // Проверка: сообщения в чате пустые (нет optimistic update)
+      expect(server.getSnapshot().chat.messages).toEqual([]);
+      // Но busy-индикатор установлен
+      expect(server.getSnapshot().chat.agentBusy).toBe(true);
+
+      // Эмитируем snapshot с user message (как если бы сервер обработал сообщение)
+      sessionClients[0]?.emitSnapshot({
+        ...createDirectSnapshot(),
+        chat: {
+          entries: [
+            {
+              type: "message" as const,
+              id: "e1",
+              timestamp: "2025-01-01T00:00:00Z",
+              message: {
+                role: "user" as const,
+                content: [{ type: "text" as const, text: "Тест" }],
+              },
+            },
+          ],
+          agentBusy: true,
+          busyLabel: "Агент работает в фоне…",
+        },
+        runtime: {
+          ...createDirectSnapshot().runtime,
+          isIdle: false,
+        },
+      });
+
+      // Проверка: user message появился из snapshot
+      expect(server.getSnapshot().chat.messages).toHaveLength(1);
+      expect(server.getSnapshot().chat.messages[0]).toMatchObject({
+        role: "user",
+        text: "Тест",
+      });
+      // agentBusy из snapshot (сервер работает)
+      expect(server.getSnapshot().chat.agentBusy).toBe(true);
+    });
+
+    it("selection message появляется только после snapshot от сервера", async () => {
+      const { server, sessionClients } = createServer();
+      const port = new FakePort();
+
+      await server.start();
+      server.connectPort(port);
+
+      // Connect to create session client
+      port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+      await flushAsyncWork();
+      server.applySessionSnapshot(createDirectSnapshot());
+
+      const selection: SelectionPayload = {
+        url: "https://example.com",
+        title: "Example",
+        selectedText: "выделенный текст",
+        selectedHtml: "<span>текст</span>",
+        capturedAt: 1_710_000_000_000,
+      };
+
+      // Отправляем selection
+      const result = server.sendSelection(selection);
+      expect(result).toEqual({ ok: true });
+
+      // Проверка: сообщения в чате пустые (нет optimistic update)
+      expect(server.getSnapshot().chat.messages).toEqual([]);
+
+      // Эмитируем snapshot с server-версией selection message
+      sessionClients[0]?.emitSnapshot({
+        ...createDirectSnapshot(),
+        chat: {
+          entries: [
+            {
+              type: "message" as const,
+              id: "e1",
+              timestamp: "2025-01-01T00:00:00Z",
+              message: {
+                role: "user" as const,
+                content: [{ type: "text" as const, text: "Пользователь отправил фрагмент страницы из браузера." }],
+              },
+            },
+          ],
+          agentBusy: true,
+          busyLabel: "Агент работает в фоне…",
+        },
+        runtime: {
+          ...createDirectSnapshot().runtime,
+          isIdle: false,
+        },
+      });
+
+      // Проверка: message появился из snapshot
+      expect(server.getSnapshot().chat.messages).toHaveLength(1);
+      expect(server.getSnapshot().chat.messages[0]).toMatchObject({
+        role: "user",
+      });
+    });
+
+    it("busy-индикатор показывает 'Отправка…' до получения ответа от сервера", async () => {
+      const { server } = createServer();
+      const port = new FakePort();
+
+      await server.start();
+      server.connectPort(port);
+
+      port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+      await flushAsyncWork();
+      server.applySessionSnapshot(createDirectSnapshot());
+
+      // До отправки — нет busy
+      expect(server.getSnapshot().chat.agentBusy).toBe(false);
+
+      // Отправляем сообщение
+      port.emitMessage({ type: "assistant.sendChatMessage", message: "Тест" });
+      await flushAsyncWork();
+
+      // Busy-индикатор установлен с меткой "Отправка…"
+      expect(server.getSnapshot().chat.agentBusy).toBe(true);
+      expect(server.getSnapshot().chat.busyLabel).toBe("Отправка…");
+    });
+
+    it("нет дубликатов сообщений после повторного snapshot", async () => {
+      const { server, sessionClients } = createServer();
+      const port = new FakePort();
+
+      await server.start();
+      server.connectPort(port);
+
+      // Connect and go online
+      port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+      await flushAsyncWork();
+      server.applySessionSnapshot(createDirectSnapshot());
+
+      // Отправляем сообщение
+      port.emitMessage({ type: "assistant.sendChatMessage", message: "Привет" });
+      await flushAsyncWork();
+
+      // Первый snapshot — message появляется
+      sessionClients[0]?.emitSnapshot({
+        ...createDirectSnapshot(),
+        chat: {
+          entries: [
+            {
+              type: "message" as const,
+              id: "e1",
+              timestamp: "2025-01-01T00:00:00Z",
+              message: {
+                role: "user" as const,
+                content: [{ type: "text" as const, text: "Привет" }],
+              },
+            },
+          ],
+          agentBusy: true,
+          busyLabel: "Агент работает в фоне…",
+        },
+        runtime: {
+          ...createDirectSnapshot().runtime,
+          isIdle: false,
+        },
+      });
+
+      expect(server.getSnapshot().chat.messages).toHaveLength(1);
+
+      // Второй snapshot — тот же content (например после reconnect)
+      sessionClients[0]?.emitSnapshot({
+        ...createDirectSnapshot(),
+        chat: {
+          entries: [
+            {
+              type: "message" as const,
+              id: "e1",
+              timestamp: "2025-01-01T00:00:00Z",
+              message: {
+                role: "user" as const,
+                content: [{ type: "text" as const, text: "Привет" }],
+              },
+            },
+          ],
+          agentBusy: false,
+          busyLabel: "Агент работает в фоне…",
+        },
+      });
+
+      // Ровно 1 сообщение — нет дубликатов
+      expect(server.getSnapshot().chat.messages).toHaveLength(1);
+      expect(server.getSnapshot().chat.messages[0]).toMatchObject({
+        role: "user",
+        text: "Привет",
+      });
+    });
+
+    it("streaming assistant message сохраняется когда snapshot опаздывает", async () => {
+      const { server, sessionClients } = createServer();
+      const port = new FakePort();
+
+      await server.start();
+      server.connectPort(port);
+
+      // Connect and go online
+      port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+      await flushAsyncWork();
+
+      // Initial snapshot с пустым чатом
+      server.applySessionSnapshot(createDirectSnapshot({
+        chat: { entries: [], agentBusy: false, busyLabel: "Агент работает в фоне…" },
+      }));
+
+      // Эмитируем live events: assistant message streaming
+      sessionClients[0]?.emitSessionEvent({
+        type: "message_start",
+        message: { id: "live-1", role: "assistant" },
+      });
+
+      sessionClients[0]?.emitSessionEvent({
+        type: "message_update",
+        message: { id: "live-1", role: "assistant" },
+        assistantMessageEvent: { type: "text_delta", text_delta: "Прив" },
+      });
+
+      sessionClients[0]?.emitSessionEvent({
+        type: "message_update",
+        message: { id: "live-1", role: "assistant" },
+        assistantMessageEvent: { type: "text_delta", text_delta: "ет!" },
+      });
+
+      // Проверяем что streaming message есть
+      let state = server.getSnapshot();
+      const streamingMsg = state.chat.messages.find(
+        (m) => m.role === "assistant" && m.messageId === "live-1",
+      );
+      expect(streamingMsg).toBeDefined();
+      if (streamingMsg?.role === "assistant") {
+        expect(streamingMsg.text).toBe("Привет!");
+        expect(streamingMsg.streaming).toBe(true);
+      }
+
+      // Приходит snapshot БЕЗ этого assistant message (опоздал, entries пустые)
+      sessionClients[0]?.emitSnapshot({
+        ...createDirectSnapshot(),
+        chat: { entries: [], agentBusy: true, busyLabel: "Агент работает в фоне…" },
+        runtime: {
+          ...createDirectSnapshot().runtime,
+          isIdle: false,
+        },
+      });
+
+      // Streaming message должен быть сохранён
+      state = server.getSnapshot();
+      const preservedMsg = state.chat.messages.find(
+        (m) => m.role === "assistant" && m.messageId === "live-1",
+      );
+      expect(preservedMsg).toBeDefined();
+      if (preservedMsg?.role === "assistant") {
+        expect(preservedMsg.text).toBe("Привет!");
+        expect(preservedMsg.streaming).toBe(true);
+      }
+    });
+
+    it("streaming assistant message обновляется когда snapshot догоняет", async () => {
+      const { server, sessionClients } = createServer();
+      const port = new FakePort();
+
+      await server.start();
+      server.connectPort(port);
+
+      port.emitMessage({ type: "assistant.session.connect", port: 31415 });
+      await flushAsyncWork();
+
+      server.applySessionSnapshot(createDirectSnapshot({
+        chat: { entries: [], agentBusy: false, busyLabel: "Агент работает в фоне…" },
+      }));
+
+      // Streaming assistant message
+      sessionClients[0]?.emitSessionEvent({
+        type: "message_start",
+        message: { id: "live-1", role: "assistant" },
+      });
+
+      sessionClients[0]?.emitSessionEvent({
+        type: "message_update",
+        message: { id: "live-1", role: "assistant" },
+        assistantMessageEvent: { type: "text_delta", text_delta: "Привет!" },
+      });
+
+      // Snapshot теперь содержит assistant message с полным текстом
+      sessionClients[0]?.emitSnapshot(createDirectSnapshot({
+        chat: {
+          entries: [
+            {
+              type: "message" as const,
+              id: "e1",
+              timestamp: "2025-01-01T00:00:00Z",
+              message: {
+                role: "assistant" as const,
+                id: "live-1",
+                content: [{ type: "text" as const, text: "Привет! Как дела?" }],
+              },
+            },
+          ],
+          agentBusy: false,
+          busyLabel: "Агент работает в фоне…",
+        },
+      }));
+
+      // Server version (полный текст) заменяет local streaming версию
+      const state = server.getSnapshot();
+      const msg = state.chat.messages.find(
+        (m) => m.role === "assistant" && m.messageId === "live-1",
+      );
+      expect(msg).toBeDefined();
+      if (msg?.role === "assistant") {
+        expect(msg.text).toBe("Привет! Как дела?");
+        expect(msg.streaming).toBe(false);
+      }
+    });
+  });
+
+  // ─── Task T4: setModel error paths ───
+
   describe("setModel error paths", () => {
     it("should show error when offline", async () => {
       const port = new FakePort();

@@ -220,7 +220,9 @@ export class SessionClient {
   }
 
   private async probeAndConnect(port: number): Promise<void> {
-    const alive = await this.portProbe(port);
+    const probe = this.portProbe;
+    if (!probe) return;
+    const alive = await probe(port);
 
     if (!alive) {
       if (this.closedByClient) return;

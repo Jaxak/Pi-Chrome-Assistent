@@ -275,10 +275,15 @@ describe("sidepanel navigation", () => {
 
     runtime.ports[0]?.disconnect();
     await flush();
+    
+    // UI should NOT immediately show "Reconnecting" due to delayed update
+    expect(document.querySelector("#diagnostics-output")?.textContent).not.toContain("Переподключаем боковую панель");
 
-    expect(document.querySelector("#diagnostics-output")?.textContent).toContain("Переподключаем боковую панель…");
-
+    // Reconnect happens after 250ms (first reconnect delay)
     await vi.advanceTimersByTimeAsync(250);
+    await flush();
+    
+    // Send snapshot from new port - fast reconnect, user doesn't see disconnect
     runtime.ports[1]?.emit({
       type: "assistant.snapshot",
       state: createConnectedState({
@@ -287,7 +292,29 @@ describe("sidepanel navigation", () => {
     });
     await flush();
 
+    // User never saw "Reconnecting" because reconnect was faster than UI delay
+    expect(document.querySelector("#diagnostics-output")?.textContent).not.toContain("Переподключаем");
     expect(chrome.runtime.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows reconnecting UI when reconnect is slow", async () => {
+    vi.useFakeTimers();
+    loadSidePanelHtml();
+    const runtime = mockChromeRuntime();
+    await importInitializedSidePanel();
+
+    runtime.ports[0]?.emit({ type: "assistant.snapshot", state: createConnectedState() });
+    await flush();
+
+    runtime.ports[0]?.disconnect();
+    await flush();
+
+    // Advance past UI delay (1500ms) without reconnecting
+    await vi.advanceTimersByTimeAsync(1600);
+    await flush();
+
+    // Now UI should show "Reconnecting" since reconnect didn't complete in time
+    expect(document.querySelector("#diagnostics-output")?.textContent).toContain("Переподключаем боковую панель…");
   });
 
   it("renders context usage and model controls under the composer", async () => {

@@ -1,48 +1,51 @@
 /**
- * Lightweight markdown renderer for chat messages.
- * Supports: code blocks, inline code, bold, italic, links.
- * XSS-safe: escapes HTML entities before processing markdown.
+ * Markdown renderer for chat messages.
+ * Uses marked for full GFM support: headers, lists, tables, code blocks, etc.
  */
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+import { marked, Renderer } from "marked";
+
+// Custom renderer for UX
+const renderer = new Renderer();
+
+// Links open in new tab
+renderer.link = ({ href, title, text }) => {
+  const titleAttr = title ? ` title="${title}"` : "";
+  // Sanitize href to prevent javascript: URLs
+  const safeHref = /^(https?:|mailto:|#)/i.test(href) ? href : "#";
+  return `<a href="${safeHref}"${titleAttr} target="_blank" rel="noopener">${text}</a>`;
+};
+
+// Configure marked
+marked.setOptions({
+  gfm: true,        // GitHub Flavored Markdown
+  breaks: false,    // Don't convert \n to <br> (CSS handles spacing)
+  renderer,
+});
+
+/**
+ * Basic HTML sanitization — removes dangerous tags.
+ * For chat messages from Pi, this provides defense in depth.
+ */
+function sanitizeHtml(html: string): string {
+  return html
+    // Remove script tags and content
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    // Remove event handlers
+    .replace(/\s+on\w+\s*=/gi, " data-blocked=")
+    // Remove javascript: URLs (not in href, handled by renderer)
+    .replace(/javascript:/gi, "blocked:");
 }
 
+/**
+ * Render markdown to HTML.
+ */
 export function renderMarkdown(text: string): string {
-  // Escape HTML first for XSS safety
-  let html = escapeHtml(text);
-
-  // Code blocks: ```lang\ncode\n```
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const langClass = lang ? ` class="language-${lang}"` : "";
-    return `<pre><code${langClass}>${code.trim()}</code></pre>`;
-  });
-
-  // Inline code: `code`
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  // Bold: **text**
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-
-  // Italic: *text* (but not inside words)
-  html = html.replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, "<em>$1</em>");
-
-  // Links: [text](url)
-  html = html.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener">$1</a>',
-  );
-
-  // Paragraphs: double newlines
-  html = html.replace(/\n\n+/g, "</p><p>");
-
-  // Single newlines to <br> (but not inside pre)
-  html = html.replace(/(?<!<\/code>)\n(?!<pre)/g, "<br>");
-
-  return `<p>${html}</p>`;
+  const html = marked.parse(text);
+  
+  // marked.parse returns string | Promise<string>, but with sync config it's string
+  if (typeof html !== "string") return "";
+  
+  // Sanitize and trim trailing newline
+  return sanitizeHtml(html).trimEnd();
 }

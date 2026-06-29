@@ -62,6 +62,8 @@ async function findInjectableTabId(): Promise<number | undefined> {
 
 let assistantPort: chrome.runtime.Port | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let keepAliveInterval: ReturnType<typeof setInterval> | undefined;
+let disconnectDelayTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectAttempt = 0;
 let currentSnapshot: BackgroundAssistantState | undefined;
 let currentActiveTab: SidePanelTab = "assistant";
@@ -373,6 +375,28 @@ function clearReconnectTimer(): void {
   reconnectTimer = undefined;
 }
 
+function startKeepAlive(): void {
+  stopKeepAlive();
+  // Ping every 20 seconds to keep service worker alive
+  keepAliveInterval = setInterval(() => {
+    postAssistantCommand({ type: "ping" });
+  }, 20_000);
+}
+
+function stopKeepAlive(): void {
+  if (keepAliveInterval !== undefined) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = undefined;
+  }
+}
+
+function clearDisconnectDelay(): void {
+  if (disconnectDelayTimer !== undefined) {
+    clearTimeout(disconnectDelayTimer);
+    disconnectDelayTimer = undefined;
+  }
+}
+
 function renderAssistantReconnecting(elements: SidePanelElements): void {
   setBaseDiagnostics(elements, SIDEPANEL_RECONNECTING_TEXT);
 
@@ -405,6 +429,7 @@ function connectAssistantPort(elements: SidePanelElements): void {
   }
 
   clearReconnectTimer();
+  // Don't clear disconnect delay here — it should only be cleared when we receive a snapshot
   const port = chrome.runtime.connect({ name: "sidepanel" });
   assistantPort = port;
   port.onMessage.addListener((message: unknown) => {
@@ -414,6 +439,8 @@ function connectAssistantPort(elements: SidePanelElements): void {
 
     reconnectAttempt = 0;
     clearReconnectTimer();
+    clearDisconnectDelay();
+    startKeepAlive();
     renderAssistantSnapshot(elements, message.state);
   });
   port.onDisconnect.addListener(() => {
@@ -422,7 +449,15 @@ function connectAssistantPort(elements: SidePanelElements): void {
     }
 
     assistantPort = undefined;
-    renderAssistantReconnecting(elements);
+    stopKeepAlive();
+    
+    // Delay showing "Reconnecting" UI — if reconnect succeeds quickly,
+    // user won't see the disconnect flash. Timer is cleared when snapshot arrives.
+    disconnectDelayTimer = setTimeout(() => {
+      disconnectDelayTimer = undefined;
+      renderAssistantReconnecting(elements);
+    }, 1500);
+    
     scheduleAssistantPortReconnect(elements);
   });
 }

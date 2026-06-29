@@ -174,6 +174,11 @@ export class BackgroundAssistantStateServer {
       ? (message as { type?: unknown; port?: unknown; message?: unknown; provider?: unknown; modelId?: unknown; tabId?: unknown })
       : undefined;
 
+    // Keep-alive ping — just ignore, the message itself keeps service worker alive
+    if (command?.type === "ping") {
+      return;
+    }
+
     if (command?.type === "assistant.session.connect") {
       const portValue = (command as { port?: unknown }).port;
       const port = typeof portValue === "number" && Number.isInteger(portValue) ? portValue : undefined;
@@ -258,6 +263,8 @@ export class BackgroundAssistantStateServer {
         this.applyConnectionState(connectionState);
       },
       onSessionEvent: (event) => {
+        // DEBUG: Логируем все события от Pi
+        console.log("[Pi Event]", event.type, event);
         this.applyState({ kind: "session.event", event });
       },
     });

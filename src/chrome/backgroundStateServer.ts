@@ -5,7 +5,7 @@ import {
   reduceAssistantState,
   type BackgroundAssistantState,
 } from "./assistantState";
-import { SessionClient, type SessionClientOptions, type SessionConnectionState } from "./sessionClient";
+import { SessionClient, defaultPortProbe, type SessionClientOptions, type SessionConnectionState } from "./sessionClient";
 import {
   appendDiagnostic,
   chromeStorageAdapter,
@@ -89,6 +89,7 @@ export class BackgroundAssistantStateServer {
     this.runtimeClock = dependencies.runtimeClock ?? Date.now;
     this.sessionClientFactory = dependencies.sessionClientFactory ?? ((options) => new SessionClient({
       port: options.port,
+      portProbe: defaultPortProbe,
       onSnapshot: options.onSnapshot ?? (() => {}),
       onConnectionState: options.onConnectionState ?? (() => {}),
       onSessionEvent: options.onSessionEvent,

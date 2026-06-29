@@ -33,6 +33,7 @@ export interface SessionSocket {
 export type SessionClientOptions = {
   port: number;
   webSocketFactory?: (url: string) => SessionSocket;
+  portProbe?: (port: number) => Promise<boolean>;
   requestIdFactory?: () => string;
   onSnapshot(snapshot: DirectSessionSnapshot): void;
   onConnectionState(state: SessionConnectionState): void;
@@ -55,6 +56,17 @@ function createBrowserWebSocket(url: string): SessionSocket {
 function isOpen(socket: SessionSocket | undefined): socket is SessionSocket {
   return socket?.readyState === SOCKET_OPEN;
 }
+
+async function defaultPortProbe(port: number): Promise<boolean> {
+  try {
+    await fetch(`http://127.0.0.1:${port}`, { signal: AbortSignal.timeout(3000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export { defaultPortProbe };
 
 function sendEnvelope(
   socket: SessionSocket,
@@ -83,6 +95,7 @@ function isDirectSessionSnapshot(value: unknown): value is DirectSessionSnapshot
 export class SessionClient {
   private port: number;
   private readonly webSocketFactory: (url: string) => SessionSocket;
+  private readonly portProbe: ((port: number) => Promise<boolean>) | undefined;
   private readonly requestIdFactory: () => string;
   private readonly reconnectDelaysMs: number[];
   private readonly onSnapshot: (snapshot: DirectSessionSnapshot) => void;
@@ -101,6 +114,7 @@ export class SessionClient {
   constructor(options: SessionClientOptions) {
     this.port = options.port;
     this.webSocketFactory = options.webSocketFactory ?? createBrowserWebSocket;
+    this.portProbe = options.portProbe;
     this.requestIdFactory = options.requestIdFactory ?? createRequestId;
     this.reconnectDelaysMs = options.reconnectDelaysMs ?? DEFAULT_RECONNECT_DELAYS_MS;
     this.onSnapshot = options.onSnapshot;
@@ -198,6 +212,33 @@ export class SessionClient {
   private doConnect(port: number): void {
     this.reportState(false, true, "Подключаемся к Pi-сессии…");
 
+    if (this.portProbe) {
+      void this.probeAndConnect(port);
+    } else {
+      this.openWebSocket(port);
+    }
+  }
+
+  private async probeAndConnect(port: number): Promise<void> {
+    const alive = await this.portProbe(port);
+
+    if (!alive) {
+      if (this.closedByClient) return;
+      if (!this.everConnected) {
+        this.reportState(false, false, `Pi-сессия не найдена на порту ${port}. Запустите Pi и нажмите «Подключить».`);
+      } else {
+        this.reportState(false, false, "Pi-сессия недоступна");
+        this.scheduleReconnect();
+      }
+      return;
+    }
+
+    if (this.closedByClient) return;
+
+    this.openWebSocket(port);
+  }
+
+  private openWebSocket(port: number): void {
     const socket = this.webSocketFactory(`ws://127.0.0.1:${port}`);
     this.socket = socket;
 

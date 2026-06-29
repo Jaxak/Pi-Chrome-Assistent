@@ -105,6 +105,7 @@ describe("SessionClient", () => {
   it("connects to ws://127.0.0.1:<port>", () => {
     const socket = new FakeWebSocket();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: (url) => {
         expect(url).toBe("ws://127.0.0.1:31415");
@@ -122,6 +123,7 @@ describe("SessionClient", () => {
     const onConnectionState = vi.fn();
     const socket = new FakeWebSocket();
     new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -141,6 +143,7 @@ describe("SessionClient", () => {
     const onConnectionState = vi.fn();
     const snapshot = createSnapshot();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot,
@@ -163,6 +166,7 @@ describe("SessionClient", () => {
   it("sends session.chat.send without targetId", async () => {
     const socket = new FakeWebSocket();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -184,6 +188,7 @@ describe("SessionClient", () => {
   it("sends session.selection.send", async () => {
     const socket = new FakeWebSocket();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -219,6 +224,7 @@ describe("SessionClient", () => {
   it("sends session.model.set without targetId", async () => {
     const socket = new FakeWebSocket();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -240,6 +246,7 @@ describe("SessionClient", () => {
   it("returns false when sending while not connected", () => {
     const socket = new FakeWebSocket();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -264,6 +271,7 @@ describe("SessionClient", () => {
     let socketIndex = 0;
     const onConnectionState = vi.fn();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: (url) => {
         expect(url).toBe(`ws://127.0.0.1:${socketIndex === 0 ? 31415 : 31416}`);
@@ -296,6 +304,7 @@ describe("SessionClient", () => {
       const webSocketFactory = vi.fn(() => sockets[socketIndex++]);
       const onConnectionState = vi.fn();
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -345,6 +354,7 @@ describe("SessionClient", () => {
       let socketIndex = 0;
       const webSocketFactory = vi.fn(() => sockets[socketIndex++]);
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -368,6 +378,7 @@ describe("SessionClient", () => {
     const socket = new FakeWebSocket();
     const onSnapshot = vi.fn();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot,
@@ -387,6 +398,7 @@ describe("SessionClient", () => {
     const socket = new FakeWebSocket();
     const onConnectionState = vi.fn();
     new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -411,6 +423,7 @@ describe("SessionClient", () => {
     const socket = new FakeWebSocket();
     const onCommandResult = vi.fn();
     new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -441,6 +454,7 @@ describe("SessionClient", () => {
       const firstSocket = sockets[0];
       const onConnectionState = vi.fn();
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -487,6 +501,7 @@ describe("SessionClient", () => {
         return socket;
       });
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -539,6 +554,7 @@ describe("SessionClient", () => {
         return socket;
       });
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -591,6 +607,7 @@ describe("SessionClient", () => {
         return socket;
       });
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -628,6 +645,7 @@ describe("SessionClient", () => {
       const onConnectionState = vi.fn();
       const delays = [10, 20, 30, 40, 50];
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -682,6 +700,7 @@ describe("SessionClient", () => {
     const socket = new FakeWebSocket();
     const onSessionEvent = vi.fn();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -706,6 +725,7 @@ describe("SessionClient", () => {
     const socket = new FakeWebSocket();
     const onSessionEvent = vi.fn();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -742,6 +762,7 @@ describe("SessionClient", () => {
   it("session.event does NOT call onSessionEvent when callback is not provided", async () => {
     const socket = new FakeWebSocket();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -767,6 +788,7 @@ describe("SessionClient", () => {
     const onSessionEvent = vi.fn();
     const snapshot = createSnapshot();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot,
@@ -806,6 +828,7 @@ describe("SessionClient", () => {
       const onSessionEvent = vi.fn();
       const onConnectionState = vi.fn();
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -864,6 +887,7 @@ describe("SessionClient", () => {
       const onConnectionState = vi.fn();
       const delays = [10, 20, 30, 40, 50];
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -915,6 +939,7 @@ describe("SessionClient", () => {
       });
       const onConnectionState = vi.fn();
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -972,6 +997,7 @@ describe("SessionClient", () => {
         return sockets[socketIndex++];
       });
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -1021,6 +1047,7 @@ describe("SessionClient", () => {
       });
       const onConnectionState = vi.fn();
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -1063,6 +1090,7 @@ describe("SessionClient", () => {
       });
       const onConnectionState = vi.fn();
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -1116,6 +1144,7 @@ describe("SessionClient", () => {
       });
       const onConnectionState = vi.fn();
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -1176,6 +1205,7 @@ describe("SessionClient", () => {
       });
       const onConnectionState = vi.fn();
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),
@@ -1228,6 +1258,7 @@ describe("SessionClient", () => {
     const socket = new FakeWebSocket();
     const onSessionEvent = vi.fn();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -1255,6 +1286,7 @@ describe("SessionClient", () => {
     const socket = new FakeWebSocket();
     const onSessionEvent = vi.fn();
     const client = new SessionClient({
+      
       port: 31415,
       webSocketFactory: () => socket,
       onSnapshot: vi.fn(),
@@ -1295,6 +1327,7 @@ describe("SessionClient", () => {
       });
       const onConnectionState = vi.fn();
       const client = new SessionClient({
+      
         port: 31415,
         webSocketFactory,
         onSnapshot: vi.fn(),

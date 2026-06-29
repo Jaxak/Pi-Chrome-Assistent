@@ -51,9 +51,8 @@ export function updateAgentWorkingElement(
   label: string,
   visible: boolean,
 ): void {
-  if (element.hidden !== !visible) {
-    element.hidden = !visible;
-  }
+  // Use visibility (via class) instead of hidden to reserve space and prevent layout shift
+  element.classList.toggle("active", visible);
 
   const labelSpan = element.querySelector<HTMLElement>(".agent-working__label");
   if (labelSpan && labelSpan.textContent !== label) {

@@ -34,15 +34,16 @@ function applyOverlayStyles(container: HTMLDivElement): void {
 
 function applyControlButtonStyles(button: HTMLButtonElement, variant: "primary" | "secondary"): void {
   button.type = "button";
-  button.style.border = variant === "primary" ? "1px solid #6f7f3a" : "1px solid #c4cca8";
-  button.style.borderRadius = "10px";
-  button.style.padding = "9px 12px";
-  button.style.font = "600 13px/1.2 Inter, system-ui, sans-serif";
+  button.style.border = variant === "primary" ? "none" : "1px solid rgba(255, 255, 255, 0.12)";
+  button.style.borderRadius = "8px";
+  button.style.padding = "10px 16px";
+  button.style.font = "500 13px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
   button.style.cursor = "pointer";
   button.style.pointerEvents = "auto";
-  button.style.background = variant === "primary" ? "#6f7f3a" : "#eef2de";
-  button.style.color = variant === "primary" ? "#f8faf0" : "#3a4123";
-  button.style.boxShadow = variant === "primary" ? "0 8px 18px rgba(78, 87, 39, 0.18)" : "none";
+  button.style.background = variant === "primary" ? "#6f7f3a" : "rgba(255, 255, 255, 0.08)";
+  button.style.color = variant === "primary" ? "#fff" : "#e0e0e0";
+  button.style.boxShadow = "none";
+  button.style.transition = "background 0.15s, opacity 0.15s";
 }
 
 function createModalRoot(): HTMLDivElement {
@@ -54,7 +55,7 @@ function createModalRoot(): HTMLDivElement {
   root.style.display = "grid";
   root.style.placeItems = "center";
   root.style.padding = "16px";
-  root.style.background = "rgba(67, 78, 34, 0.18)";
+  root.style.background = "rgba(0, 0, 0, 0.4)";
   root.style.zIndex = "2147483647";
   return root;
 }
@@ -96,32 +97,36 @@ export function createSelectionOverlay(): SelectionOverlayControls {
       panel.style.display = "grid";
       panel.style.gap = "12px";
       panel.style.width = "min(420px, 100%)";
-      panel.style.padding = "18px";
-      panel.style.border = "1px solid #d1d8b6";
-      panel.style.borderRadius = "14px";
-      panel.style.background = "#faf9f2";
-      panel.style.color = "#2f361c";
-      panel.style.boxShadow = "0 24px 60px rgba(78, 87, 39, 0.18)";
-      panel.style.font = "14px/1.45 Inter, system-ui, sans-serif";
+      panel.style.padding = "20px";
+      panel.style.border = "1px solid rgba(255, 255, 255, 0.1)";
+      panel.style.borderRadius = "12px";
+      panel.style.background = "#1f1f1f";
+      panel.style.color = "#e8e8e8";
+      panel.style.boxShadow = "0 16px 48px rgba(0, 0, 0, 0.4)";
+      panel.style.font = "14px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
       heading.textContent = "Отправить в Pi";
       heading.style.margin = "0";
-      heading.style.font = "700 18px/1.2 Inter, system-ui, sans-serif";
+      heading.style.font = "600 16px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+      heading.style.color = "#e8e8e8";
 
       description.textContent = "Добавьте комментарий (необязательно)";
       description.style.margin = "0";
-      description.style.color = "#5e6740";
+      description.style.color = "#a0a0a0";
+      description.style.fontSize = "13px";
 
-      textarea.rows = 5;
-      textarea.placeholder = "Добавьте комментарий (необязательно)";
+      textarea.rows = 4;
+      textarea.placeholder = "Комментарий...";
       textarea.style.width = "100%";
       textarea.style.boxSizing = "border-box";
       textarea.style.padding = "10px 12px";
-      textarea.style.border = "1px solid #c4cca8";
-      textarea.style.borderRadius = "10px";
-      textarea.style.background = "#fffffa";
-      textarea.style.color = "#2f361c";
+      textarea.style.border = "1px solid rgba(255, 255, 255, 0.12)";
+      textarea.style.borderRadius = "8px";
+      textarea.style.background = "#2a2a2a";
+      textarea.style.color = "#e8e8e8";
       textarea.style.resize = "vertical";
+      textarea.style.font = "14px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+      textarea.style.outline = "none";
 
       actions.style.display = "flex";
       actions.style.justifyContent = "flex-end";

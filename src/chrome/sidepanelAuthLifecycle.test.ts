@@ -133,6 +133,7 @@ async function importInitializedSidePanel(): Promise<void> {
 
 describe("sidepanel lifecycle", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.resetModules();
     document.documentElement.innerHTML = "";
@@ -179,6 +180,7 @@ describe("sidepanel lifecycle", () => {
   });
 
   it("renders unavailable state and keeps commands safe after assistant port disconnects", async () => {
+    vi.useFakeTimers();
     loadSidePanelHtml();
     const { port } = mockChrome();
     await importInitializedSidePanel();
@@ -186,6 +188,13 @@ describe("sidepanel lifecycle", () => {
     await flush();
 
     port.disconnect();
+    await flush();
+    
+    // UI should NOT immediately show "Reconnecting" due to delayed update
+    expect(document.querySelector("#diagnostics-output")?.textContent).not.toContain("Переподключаем");
+    
+    // Wait for disconnect delay (1500ms) before UI shows reconnecting state
+    await vi.advanceTimersByTimeAsync(1600);
     await flush();
 
     expect(document.querySelector("#status-text")).toBeNull();

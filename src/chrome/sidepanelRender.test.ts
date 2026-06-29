@@ -37,8 +37,9 @@ describe("sidepanelRender", () => {
 
     const element = createChatMessageElement(message);
 
-    expect(element.innerHTML).toContain("&lt;script&gt;");
+    // Script tags are removed entirely for XSS protection
     expect(element.innerHTML).not.toContain("<script>");
+    expect(element.innerHTML).not.toContain("alert");
   });
 
   it("renders the required minimal busy indicator", () => {

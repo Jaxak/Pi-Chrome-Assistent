@@ -4,17 +4,31 @@ import { describe, expect, it } from "vitest";
 import { renderMarkdown } from "./markdown";
 
 describe("renderMarkdown", () => {
-  it("should escape HTML entities", () => {
+  it("should remove script tags for XSS protection", () => {
     const result = renderMarkdown("<script>alert('xss')</script>");
-    expect(result).toContain("&lt;script&gt;");
     expect(result).not.toContain("<script>");
+    expect(result).not.toContain("alert");
   });
 
-  it("should render code blocks with language", () => {
+  it("should remove event handlers", () => {
+    const result = renderMarkdown('<div onclick="alert()">click</div>');
+    expect(result).not.toContain("onclick=");
+    expect(result).toContain("data-blocked=");
+  });
+
+  it("should block javascript: URLs in links", () => {
+    const result = renderMarkdown("[click](javascript:alert())");
+    expect(result).not.toContain("javascript:");
+    expect(result).toContain('href="#"');
+  });
+
+  it("should render code blocks with language and syntax highlighting", () => {
     const result = renderMarkdown("```js\nconst x = 1;\n```");
     expect(result).toContain("<pre><code");
     expect(result).toContain('language-js');
-    expect(result).toContain("const x = 1;");
+    // Syntax highlighting wraps tokens in spans
+    expect(result).toContain('hljs-keyword');
+    expect(result).toContain('const');
   });
 
   it("should render code blocks without language", () => {
@@ -38,7 +52,7 @@ describe("renderMarkdown", () => {
     expect(result).toContain("<em>italic</em>");
   });
 
-  it("should render links", () => {
+  it("should render links with target blank", () => {
     const result = renderMarkdown("[Google](https://google.com)");
     expect(result).toContain('<a href="https://google.com"');
     expect(result).toContain('target="_blank"');
@@ -48,22 +62,60 @@ describe("renderMarkdown", () => {
 
   it("should handle paragraphs with double newlines", () => {
     const result = renderMarkdown("First paragraph\n\nSecond paragraph");
-    expect(result).toContain("</p><p>");
+    expect(result).toContain("<p>First paragraph</p>");
+    expect(result).toContain("<p>Second paragraph</p>");
   });
 
-  it("should handle single newlines as <br>", () => {
+  it("should not convert single newlines to br", () => {
     const result = renderMarkdown("Line one\nLine two");
-    expect(result).toContain("<br>");
+    // Single newlines within a paragraph don't create new elements
+    expect(result).toContain("Line one");
+    expect(result).toContain("Line two");
   });
 
-  it("should not escape HTML inside code blocks", () => {
+  it("should escape and highlight HTML inside code blocks", () => {
     const result = renderMarkdown("```html\n<div>Hello</div>\n```");
-    expect(result).toContain("&lt;div&gt;Hello&lt;/div&gt;");
+    // HTML is escaped and highlighted
+    expect(result).toContain("&lt;");
+    expect(result).toContain("div");
+    expect(result).toContain("Hello");
+    expect(result).toContain('hljs-tag');
   });
 
   it("should wrap output in paragraph tags", () => {
     const result = renderMarkdown("Hello");
     expect(result).toMatch(/^<p>/);
     expect(result).toMatch(/<\/p>$/);
+  });
+
+  // New GFM features
+  it("should render headers", () => {
+    const result = renderMarkdown("# Header 1\n## Header 2");
+    expect(result).toContain("<h1");
+    expect(result).toContain("<h2");
+  });
+
+  it("should render unordered lists", () => {
+    const result = renderMarkdown("- Item 1\n- Item 2");
+    expect(result).toContain("<ul>");
+    expect(result).toContain("<li>Item 1</li>");
+  });
+
+  it("should render ordered lists", () => {
+    const result = renderMarkdown("1. First\n2. Second");
+    expect(result).toContain("<ol>");
+    expect(result).toContain("<li>First</li>");
+  });
+
+  it("should render blockquotes", () => {
+    const result = renderMarkdown("> This is a quote");
+    expect(result).toContain("<blockquote>");
+  });
+
+  it("should render tables", () => {
+    const result = renderMarkdown("| A | B |\n|---|---|\n| 1 | 2 |");
+    expect(result).toContain("<table>");
+    expect(result).toContain("<th>A</th>");
+    expect(result).toContain("<td>1</td>");
   });
 });

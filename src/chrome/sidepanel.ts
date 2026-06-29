@@ -49,6 +49,20 @@ const PORT_ERROR_TEXT = "Введите порт от 1 до 65535.";
 const DEFAULT_PORT = 31415;
 
 /**
+ * Keep-alive ping interval (ms).
+ * Chrome terminates MV3 service workers after ~30s of inactivity.
+ * 20s interval keeps the worker alive with margin.
+ */
+const KEEP_ALIVE_INTERVAL_MS = 20_000;
+
+/**
+ * Delay before showing "Reconnecting" UI (ms).
+ * First reconnect attempt happens at 250ms — if it succeeds,
+ * the user won't see any disconnect flash.
+ */
+const DISCONNECT_UI_DELAY_MS = 1500;
+
+/**
  * Get the tabId of the currently active injectable (http/https) tab.
  * Sidepanel itself is a chrome-extension:// tab and must be skipped.
  */
@@ -62,6 +76,8 @@ async function findInjectableTabId(): Promise<number | undefined> {
 
 let assistantPort: chrome.runtime.Port | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let keepAliveInterval: ReturnType<typeof setInterval> | undefined;
+let disconnectDelayTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectAttempt = 0;
 let currentSnapshot: BackgroundAssistantState | undefined;
 let currentActiveTab: SidePanelTab = "assistant";
@@ -276,11 +292,11 @@ function renderChat(elements: SidePanelElements): void {
 
   const allMessages = chat?.messages ?? [];
 
-  // Filter out empty messages (no text) - but keep streaming messages
+  // Filter out empty messages - only show messages with actual text content
+  // This prevents empty bubbles from flashing during tool execution
   const messages = allMessages.filter((m) => {
     const text = (m as { text?: string }).text ?? "";
-    const streaming = (m as { streaming?: boolean }).streaming ?? false;
-    return text.length > 0 || streaming;
+    return text.length > 0;
   });
 
   // Check if user is near bottom before re-rendering (within 100px threshold)
@@ -373,6 +389,27 @@ function clearReconnectTimer(): void {
   reconnectTimer = undefined;
 }
 
+function startKeepAlive(): void {
+  stopKeepAlive();
+  keepAliveInterval = setInterval(() => {
+    postAssistantCommand({ type: "ping" });
+  }, KEEP_ALIVE_INTERVAL_MS);
+}
+
+function stopKeepAlive(): void {
+  if (keepAliveInterval !== undefined) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = undefined;
+  }
+}
+
+function clearDisconnectDelay(): void {
+  if (disconnectDelayTimer !== undefined) {
+    clearTimeout(disconnectDelayTimer);
+    disconnectDelayTimer = undefined;
+  }
+}
+
 function renderAssistantReconnecting(elements: SidePanelElements): void {
   setBaseDiagnostics(elements, SIDEPANEL_RECONNECTING_TEXT);
 
@@ -405,6 +442,7 @@ function connectAssistantPort(elements: SidePanelElements): void {
   }
 
   clearReconnectTimer();
+  // Don't clear disconnect delay here — it should only be cleared when we receive a snapshot
   const port = chrome.runtime.connect({ name: "sidepanel" });
   assistantPort = port;
   port.onMessage.addListener((message: unknown) => {
@@ -414,6 +452,8 @@ function connectAssistantPort(elements: SidePanelElements): void {
 
     reconnectAttempt = 0;
     clearReconnectTimer();
+    clearDisconnectDelay();
+    startKeepAlive();
     renderAssistantSnapshot(elements, message.state);
   });
   port.onDisconnect.addListener(() => {
@@ -422,7 +462,15 @@ function connectAssistantPort(elements: SidePanelElements): void {
     }
 
     assistantPort = undefined;
-    renderAssistantReconnecting(elements);
+    stopKeepAlive();
+    
+    // Delay showing "Reconnecting" UI — if reconnect succeeds quickly,
+    // user won't see the disconnect flash. Timer is cleared when snapshot arrives.
+    disconnectDelayTimer = setTimeout(() => {
+      disconnectDelayTimer = undefined;
+      renderAssistantReconnecting(elements);
+    }, DISCONNECT_UI_DELAY_MS);
+    
     scheduleAssistantPortReconnect(elements);
   });
 }
@@ -610,6 +658,14 @@ async function ensureHostPermission(): Promise<boolean> {
   }
 }
 
+// Cleanup timers on page unload to prevent leaks
+function cleanupTimers(): void {
+  stopKeepAlive();
+  clearDisconnectDelay();
+  cancelAssistantPortReconnect();
+}
+
 if (typeof document !== "undefined") {
   initializeSidePanel();
+  window.addEventListener("unload", cleanupTimers);
 }

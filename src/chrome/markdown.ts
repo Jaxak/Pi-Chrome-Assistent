@@ -1,8 +1,78 @@
 /**
- * Lightweight markdown renderer for chat messages.
- * Supports: code blocks, inline code, bold, italic, links.
- * XSS-safe: escapes HTML entities before processing markdown.
+ * Markdown renderer for chat messages.
+ * Uses marked for full GFM support + highlight.js for syntax highlighting.
  */
+
+import { marked, Renderer } from "marked";
+import hljs from "highlight.js/lib/core";
+
+// Import common languages
+import javascript from "highlight.js/lib/languages/javascript";
+import typescript from "highlight.js/lib/languages/typescript";
+import python from "highlight.js/lib/languages/python";
+import bash from "highlight.js/lib/languages/bash";
+import json from "highlight.js/lib/languages/json";
+import css from "highlight.js/lib/languages/css";
+import xml from "highlight.js/lib/languages/xml"; // includes HTML
+import sql from "highlight.js/lib/languages/sql";
+import yaml from "highlight.js/lib/languages/yaml";
+import markdown from "highlight.js/lib/languages/markdown";
+
+// Register languages
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("js", javascript);
+hljs.registerLanguage("typescript", typescript);
+hljs.registerLanguage("ts", typescript);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("py", python);
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("sh", bash);
+hljs.registerLanguage("shell", bash);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("css", css);
+hljs.registerLanguage("html", xml);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("yaml", yaml);
+hljs.registerLanguage("yml", yaml);
+hljs.registerLanguage("markdown", markdown);
+hljs.registerLanguage("md", markdown);
+
+// Custom renderer
+const renderer = new Renderer();
+
+// Links open in new tab
+renderer.link = ({ href, title, text }) => {
+  const titleAttr = title ? ` title="${title}"` : "";
+  const safeHref = /^(https?:|mailto:|#)/i.test(href) ? href : "#";
+  return `<a href="${safeHref}"${titleAttr} target="_blank" rel="noopener">${text}</a>`;
+};
+
+// Code blocks with syntax highlighting
+renderer.code = ({ text, lang }) => {
+  const language = lang && hljs.getLanguage(lang) ? lang : "plaintext";
+  let highlighted: string;
+  
+  try {
+    if (language === "plaintext") {
+      highlighted = escapeHtml(text);
+    } else {
+      highlighted = hljs.highlight(text, { language }).value;
+    }
+  } catch {
+    highlighted = escapeHtml(text);
+  }
+  
+  const langClass = lang ? ` class="language-${lang}"` : "";
+  return `<pre><code${langClass}>${highlighted}</code></pre>`;
+};
+
+// Configure marked
+marked.setOptions({
+  gfm: true,
+  breaks: false,
+  renderer,
+});
 
 function escapeHtml(text: string): string {
   return text
@@ -13,36 +83,23 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#039;");
 }
 
+/**
+ * Basic HTML sanitization — removes dangerous tags.
+ */
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    .replace(/\s+on\w+\s*=/gi, " data-blocked=")
+    .replace(/javascript:/gi, "blocked:");
+}
+
+/**
+ * Render markdown to HTML with syntax highlighting.
+ */
 export function renderMarkdown(text: string): string {
-  // Escape HTML first for XSS safety
-  let html = escapeHtml(text);
-
-  // Code blocks: ```lang\ncode\n```
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const langClass = lang ? ` class="language-${lang}"` : "";
-    return `<pre><code${langClass}>${code.trim()}</code></pre>`;
-  });
-
-  // Inline code: `code`
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  // Bold: **text**
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-
-  // Italic: *text* (but not inside words)
-  html = html.replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, "<em>$1</em>");
-
-  // Links: [text](url)
-  html = html.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener">$1</a>',
-  );
-
-  // Paragraphs: double newlines
-  html = html.replace(/\n\n+/g, "</p><p>");
-
-  // Single newlines to <br> (but not inside pre)
-  html = html.replace(/(?<!<\/code>)\n(?!<pre)/g, "<br>");
-
-  return `<p>${html}</p>`;
+  const html = marked.parse(text);
+  
+  if (typeof html !== "string") return "";
+  
+  return sanitizeHtml(html).trimEnd();
 }

@@ -49,6 +49,20 @@ const PORT_ERROR_TEXT = "Введите порт от 1 до 65535.";
 const DEFAULT_PORT = 31415;
 
 /**
+ * Keep-alive ping interval (ms).
+ * Chrome terminates MV3 service workers after ~30s of inactivity.
+ * 20s interval keeps the worker alive with margin.
+ */
+const KEEP_ALIVE_INTERVAL_MS = 20_000;
+
+/**
+ * Delay before showing "Reconnecting" UI (ms).
+ * First reconnect attempt happens at 250ms — if it succeeds,
+ * the user won't see any disconnect flash.
+ */
+const DISCONNECT_UI_DELAY_MS = 1500;
+
+/**
  * Get the tabId of the currently active injectable (http/https) tab.
  * Sidepanel itself is a chrome-extension:// tab and must be skipped.
  */
@@ -377,10 +391,9 @@ function clearReconnectTimer(): void {
 
 function startKeepAlive(): void {
   stopKeepAlive();
-  // Ping every 20 seconds to keep service worker alive
   keepAliveInterval = setInterval(() => {
     postAssistantCommand({ type: "ping" });
-  }, 20_000);
+  }, KEEP_ALIVE_INTERVAL_MS);
 }
 
 function stopKeepAlive(): void {
@@ -456,7 +469,7 @@ function connectAssistantPort(elements: SidePanelElements): void {
     disconnectDelayTimer = setTimeout(() => {
       disconnectDelayTimer = undefined;
       renderAssistantReconnecting(elements);
-    }, 1500);
+    }, DISCONNECT_UI_DELAY_MS);
     
     scheduleAssistantPortReconnect(elements);
   });
@@ -645,6 +658,14 @@ async function ensureHostPermission(): Promise<boolean> {
   }
 }
 
+// Cleanup timers on page unload to prevent leaks
+function cleanupTimers(): void {
+  stopKeepAlive();
+  clearDisconnectDelay();
+  cancelAssistantPortReconnect();
+}
+
 if (typeof document !== "undefined") {
   initializeSidePanel();
+  window.addEventListener("unload", cleanupTimers);
 }

@@ -263,8 +263,6 @@ export class BackgroundAssistantStateServer {
         this.applyConnectionState(connectionState);
       },
       onSessionEvent: (event) => {
-        // DEBUG: Логируем все события от Pi
-        console.log("[Pi Event]", event.type, event);
         this.applyState({ kind: "session.event", event });
       },
     });

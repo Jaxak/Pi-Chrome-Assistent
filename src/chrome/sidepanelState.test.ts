@@ -346,7 +346,7 @@ describe("applyMirrorEventToChatState", () => {
     expect(result.agentBusy).toBe(false);
   });
 
-  it("ignores non-assistant roles on message_start", () => {
+  it("handles user message_start by adding a user placeholder", () => {
     const state = createInitialSidePanelState();
     const event: PiMirrorEvent = {
       type: "message_start",
@@ -355,7 +355,10 @@ describe("applyMirrorEventToChatState", () => {
 
     const result = applyMirrorEventToChatState(state, event);
 
-    expect(result.messages).toEqual([]);
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].role).toBe("user");
+    expect((result.messages[0] as { messageId?: string }).messageId).toBe("live-1");
+    expect(result.sending).toBe(true);
   });
 
   it("ignores unknown event types safely", () => {

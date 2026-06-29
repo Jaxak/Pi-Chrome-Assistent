@@ -23,36 +23,6 @@ import { getChromeAssistentLogPath } from "./chromeAssistentPaths";
 
 const STATUS_KEY = "chrome-assistent-connect";
 const COMMAND_NAME = "chrome-assistent-connect";
-const BROADCAST_SNAPSHOT_THROTTLE_MS = 100;
-
-// ---------------------------------------------------------------------------
-// Throttle helper — exported for testing
-// ---------------------------------------------------------------------------
-
-export function createThrottledBroadcast(
-  fn: () => void,
-  delayMs: number,
-): { call: () => void; flush: () => void; _setNow: (n: () => number) => void } {
-  let lastCallTime = -Infinity;
-  let _now = Date.now;
-
-  const call = () => {
-    const now = _now();
-    if (now - lastCallTime < delayMs) return;
-    lastCallTime = now;
-    fn();
-  };
-
-  const flush = () => {
-    lastCallTime = -Infinity;
-  };
-
-  const _setNow = (customNow: () => number) => {
-    _now = customNow;
-  };
-
-  return { call, flush, _setNow };
-}
 
 // ---------------------------------------------------------------------------
 // Helpers — exported for testing
@@ -133,20 +103,10 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   let lastStreamingMessageId: string | undefined;
 
 
-  const throttledBroadcast = createThrottledBroadcast(
-    () => activeSessionServer?.broadcastSnapshot(),
-    BROADCAST_SNAPSHOT_THROTTLE_MS,
-  );
-
-  const broadcastSnapshot = () => {
-    throttledBroadcast.call();
-  };
-
-  // ----- Pi event handlers (broadcast snapshot + forward raw events) -----
+  // ----- Pi event handlers — forward events only, snapshot only at sync points -----
 
   pi.on("model_select", (_event, ctx) => {
     latestCtx = ctx;
-    broadcastSnapshot();
   });
 
   pi.on("turn_start", (event, _ctx) => {
@@ -154,7 +114,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       type: "turn_start",
       turnId: (event as { turnId?: string })?.turnId ?? "",
     });
-    broadcastSnapshot();
   });
 
   pi.on("turn_end", (event, ctx) => {
@@ -163,14 +122,12 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       type: "turn_end",
       turnId: (event as { turnId?: string })?.turnId ?? "",
     });
-    // broadcastSnapshot() intentionally omitted here:
-    // turn_end event is sufficient to clear agentBusy; snapshot may contain
-    // stale isIdle state and overwrite agentBusy back to true (race condition).
+    // Sync point: entries from sessionManager are fully updated.
+    activeSessionServer?.broadcastSnapshot();
   });
 
   pi.on("session_compact", (_event, ctx) => {
     latestCtx = ctx;
-    broadcastSnapshot();
   });
 
   pi.on("message_start", (event, _ctx) => {
@@ -183,9 +140,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
         role: (event as { message?: { role?: string } })?.message?.role || "assistant",
       },
     });
-    // NOTE: broadcastSnapshot() intentionally omitted here.
-    // The streaming message is not yet in sessionManager.getBranch(),
-    // so snapshot would not contain it. The event itself is sufficient.
   });
 
   pi.on("message_update", (event, _ctx) => {
@@ -193,10 +147,8 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       assistantMessageEvent?: { type?: string; delta?: string; text_delta?: string };
     })?.assistantMessageEvent;
 
-    // Use event message id, or fall back to lastStreamingMessageId from message_start
     const eventMessageId = (event as { message?: { id?: string } })?.message?.id || lastStreamingMessageId || "";
     
-    // Pi sends text in "delta" field, but protocol expects "text_delta"
     const textDelta = rawAssistantMessageEvent?.type === "text_delta"
       ? (rawAssistantMessageEvent.delta ?? rawAssistantMessageEvent.text_delta ?? "")
       : undefined;
@@ -216,9 +168,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
           }
         : {}),
     });
-    // NOTE: broadcastSnapshot() intentionally omitted here.
-    // The streaming message text is accumulating via events; snapshot would
-    // overwrite with stale data from sessionManager.getBranch().
   });
 
   pi.on("message_end", (event, ctx) => {
@@ -233,10 +182,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       stopReason: (event as { stopReason?: string })?.stopReason,
     });
     lastStreamingMessageId = undefined;
-    // NOTE: broadcastSnapshot() intentionally omitted here.
-    // The message_end event is sufficient for the client to mark the message as complete.
-    // Snapshot would arrive before sessionManager.getBranch() is updated, causing the
-    // streaming message to be lost. Follows pi-web-ui pattern.
   });
 
   pi.on("tool_execution_start", (event, _ctx) => {
@@ -245,7 +190,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       toolName: (event as { toolName?: string })?.toolName ?? "",
       input: (event as { input?: unknown })?.input,
     });
-    broadcastSnapshot();
   });
 
   pi.on("tool_execution_update", (event, _ctx) => {
@@ -254,7 +198,6 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       toolName: (event as { toolName?: string })?.toolName ?? "",
       output: (event as { output?: unknown })?.output,
     });
-    broadcastSnapshot();
   });
 
   pi.on("tool_execution_end", (event, _ctx) => {
@@ -264,11 +207,9 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
       output: (event as { output?: unknown })?.output,
       error: (event as { error?: string })?.error,
     });
-    broadcastSnapshot();
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    throttledBroadcast.flush();
     if (activeSessionServer) {
       const server = activeSessionServer;
       activeSessionServer = undefined;
@@ -385,31 +326,23 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
           buildSnapshot,
           onChatMessage: async (message: string): Promise<DirectCommandResult> => {
             try {
-              broadcastSnapshot();
-
               const deliveryOptions = ctx.isIdle() ? undefined : ({ deliverAs: "followUp" } as const);
               await pi.sendUserMessage(message, deliveryOptions);
-              broadcastSnapshot();
               return { ok: true };
             } catch (error) {
               const errMsg = error instanceof Error ? error.message : "Неизвестная ошибка";
-              broadcastSnapshot();
               return { ok: false, error: errMsg };
             }
           },
           onSelection: async (selection: SelectionPayload): Promise<DirectCommandResult> => {
             try {
               const formatted = formatSelectionMessage(selection);
-              // NOTE: broadcastSnapshot() is called only AFTER sendUserMessage resolves,
-              // so the snapshot contains the user message from sessionManager.getBranch()
 
               const deliveryOptions = ctx.isIdle() ? undefined : ({ deliverAs: "followUp" } as const);
               await pi.sendUserMessage(formatted, deliveryOptions);
-              broadcastSnapshot();
               return { ok: true };
             } catch (error) {
               const errMsg = error instanceof Error ? error.message : "Неизвестная ошибка";
-              broadcastSnapshot();
               return { ok: false, error: errMsg };
             }
           },
@@ -419,7 +352,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
               ctx,
               pi,
             });
-            broadcastSnapshot();
+            activeSessionServer?.broadcastSnapshot();
             return result;
           },
           logger,

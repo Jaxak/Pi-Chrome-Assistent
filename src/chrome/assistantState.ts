@@ -222,57 +222,16 @@ export function reduceAssistantState(
 }
 
 /**
- * Merge local state with server-hydrated messages.
- * - User messages come ONLY from server (event-driven, no optimistic updates).
- * - Assistant messages: prefer server, but preserve local streaming messages
- *   not yet reflected in the snapshot (streaming may be ahead).
+ * Apply a server snapshot — full state replacement (like pi-web-ui).
+ * Snapshot is only sent at safe points: connect and turn_end,
+ * where entries from sessionManager are the complete truth.
  */
-function mergeWithStreamingAssistant(
-  localMessages: SidepanelChatMessage[],
-  serverMessages: SidepanelChatMessage[],
-): SidepanelChatMessage[] {
-  // Collect IDs of assistant messages already in server snapshot
-  const serverAssistantIds = new Set(
-    serverMessages
-      .filter((m): m is SidepanelChatMessage & { role: "assistant" } => m.role === "assistant")
-      .map((m) => m.messageId),
-  );
-
-  // Find local assistant messages that are streaming and not yet in server
-  const pendingStreamingMessages = localMessages.filter(
-    (m): m is SidepanelChatMessage & { role: "assistant" } =>
-      m.role === "assistant" && !serverAssistantIds.has(m.messageId),
-  );
-
-  if (pendingStreamingMessages.length === 0) {
-    return serverMessages;
-  }
-
-  // For server messages, prefer local version if it has more text (streaming ahead of snapshot)
-  const mergedServerMessages = serverMessages.map((serverMsg) => {
-    if (serverMsg.role !== "assistant") return serverMsg;
-    const localVersion = localMessages.find(
-      (m) => m.role === "assistant" && m.messageId === serverMsg.messageId,
-    ) as (SidepanelChatMessage & { role: "assistant" }) | undefined;
-    if (localVersion && localVersion.text.length > serverMsg.text.length) {
-      return localVersion;
-    }
-    return serverMsg;
-  });
-
-  return [...mergedServerMessages, ...pendingStreamingMessages];
-}
-
 function applySessionSnapshot(
   state: BackgroundAssistantState,
   snapshot: DirectSessionSnapshot,
 ): BackgroundAssistantState {
   const entries = snapshot.chat.entries ?? [];
-  const hydratedMessages = hydrateMessagesFromEntries(entries);
-
-  // User messages come ONLY from server (event-driven).
-  // Preserve local streaming assistant messages not yet in snapshot.
-  const mergedMessages = mergeWithStreamingAssistant(state.chat.messages, hydratedMessages);
+  const messages = hydrateMessagesFromEntries(entries);
 
   return {
     ...state,
@@ -293,15 +252,12 @@ function applySessionSnapshot(
       modelError: undefined,
     },
     chat: {
-      messages: trimMessages(mergedMessages),
+      messages: trimMessages(messages),
       agentBusy: snapshot.chat.agentBusy,
       // Using || (not ??): if Pi sends an empty string "" for busyLabel
       // we keep the previous label instead of flashing a blank indicator
       busyLabel: snapshot.chat.busyLabel || state.chat.busyLabel,
-      // No optimistic user messages — sending is always false after snapshot.
-      // Server will set agentBusy=true if it's processing.
       sending: false,
-      // Preserve tools counter; reset only on turn_end or when agent becomes idle
       activeToolsCount: snapshot.runtime.isIdle ? 0 : state.chat.activeToolsCount,
       error: undefined,
     },

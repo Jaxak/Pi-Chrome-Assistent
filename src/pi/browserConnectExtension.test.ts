@@ -402,24 +402,19 @@ describe("injected direct server handlers", () => {
 });
 
 describe("Pi events", () => {
-  it("message_start/message_update/message_end and model_select call server.broadcastSnapshot after connected (throttled)", async () => {
-    const { default: browserConnectExtension, createThrottledBroadcast } = await import("./browserConnectExtension");
+  it("message_start/message_update/message_end do NOT call broadcastSnapshot; turn_end does", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
     const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
-
-    // Control time via mock
-    let fakeNow = Date.now();
-    vi.spyOn(globalThis.Date, "now").mockImplementation(() => fakeNow);
 
     browserConnectExtension(pi);
 
     const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
     await connectEntry!.handler("", ctx);
 
-    // Fire Pi events
     const messageStartHandler = onCalls.find((c) => c.event === "message_start");
     const messageUpdateHandler = onCalls.find((c) => c.event === "message_update");
     const messageEndHandler = onCalls.find((c) => c.event === "message_end");
-    const modelSelectHandler = onCalls.find((c) => c.event === "model_select");
+    const turnEndHandler = onCalls.find((c) => c.event === "turn_end");
 
     messageStartHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
     messageUpdateHandler?.handler(
@@ -428,19 +423,12 @@ describe("Pi events", () => {
     );
     messageEndHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
 
-    // message_start, message_update and message_end do NOT call broadcastSnapshot
-    // (to avoid race conditions where snapshot arrives before sessionManager updates)
+    // No broadcastSnapshot from message events
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(0);
 
-    // model_select triggers snapshot broadcast
-    modelSelectHandler?.handler({}, ctx);
+    // turn_end triggers snapshot (sync point)
+    turnEndHandler?.handler({ turnId: "turn-1" }, ctx);
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
-
-    // Advance time past throttle window
-    fakeNow += 150;
-    modelSelectHandler?.handler({}, ctx);
-    // Now it should fire again
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it("message_start/message_update/message_end forward raw events via broadcastEvent", async () => {
@@ -753,84 +741,45 @@ describe("mirror snapshot — entries from sessionManager.getBranch()", () => {
   });
 });
 
-describe("createThrottledBroadcast", () => {
-  it("calls fn immediately on first call", async () => {
-    const { createThrottledBroadcast } = await import("./browserConnectExtension");
-    const fn = vi.fn();
-    const { call } = createThrottledBroadcast(fn, 100);
 
-    call();
-    expect(fn).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips subsequent calls within throttle window", async () => {
-    const { createThrottledBroadcast } = await import("./browserConnectExtension");
-    const fn = vi.fn();
-    const { call, _setNow } = createThrottledBroadcast(fn, 100);
-
-    let fakeNow = 0;
-    _setNow(() => fakeNow);
-
-    call(); // t=0, executes
-    expect(fn).toHaveBeenCalledTimes(1);
-
-    fakeNow = 50; // within 100ms window
-    call();
-    expect(fn).toHaveBeenCalledTimes(1);
-
-    fakeNow = 99; // still within window
-    call();
-    expect(fn).toHaveBeenCalledTimes(1);
-  });
-
-  it("allows call after throttle window passes", async () => {
-    const { createThrottledBroadcast } = await import("./browserConnectExtension");
-    const fn = vi.fn();
-    const { call, _setNow } = createThrottledBroadcast(fn, 100);
-
-    let fakeNow = 0;
-    _setNow(() => fakeNow);
-
-    call(); // t=0
-    expect(fn).toHaveBeenCalledTimes(1);
-
-    fakeNow = 100; // exactly at window boundary
-    call();
-    expect(fn).toHaveBeenCalledTimes(2);
-
-    fakeNow = 250; // well past boundary
-    call();
-    expect(fn).toHaveBeenCalledTimes(3);
-  });
-
-  it("flush resets throttle allowing immediate call", async () => {
-    const { createThrottledBroadcast } = await import("./browserConnectExtension");
-    const fn = vi.fn();
-    const { call, flush, _setNow } = createThrottledBroadcast(fn, 100);
-
-    let fakeNow = 0;
-    _setNow(() => fakeNow);
-
-    call(); // t=0, executes
-    expect(fn).toHaveBeenCalledTimes(1);
-
-    fakeNow = 50; // within window
-    call();
-    expect(fn).toHaveBeenCalledTimes(1); // throttled
-
-    flush(); // reset throttle
-    call(); // should execute now even though time hasn't advanced
-    expect(fn).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe("broadcastSnapshot throttling in extension", () => {
-  it("throttles broadcastSnapshot across rapid Pi events", async () => {
+describe("broadcastSnapshot only at sync points (turn_end, onSetModel)", () => {
+  it("turn_end triggers broadcastSnapshot (sync point)", async () => {
     const { default: browserConnectExtension } = await import("./browserConnectExtension");
     const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
 
-    let fakeNow = Date.now();
-    vi.spyOn(globalThis.Date, "now").mockImplementation(() => fakeNow);
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const turnEndHandler = onCalls.find((c) => c.event === "turn_end");
+    turnEndHandler?.handler({ turnId: "turn-1" }, ctx);
+
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("tool_execution events do NOT trigger broadcastSnapshot", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
+
+    browserConnectExtension(pi);
+
+    const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
+    await connectEntry!.handler("", ctx);
+
+    const toolStartHandler = onCalls.find((c) => c.event === "tool_execution_start");
+    const toolEndHandler = onCalls.find((c) => c.event === "tool_execution_end");
+
+    toolStartHandler?.handler({ toolName: "read" }, ctx);
+    toolEndHandler?.handler({ toolName: "read" }, ctx);
+
+    // No broadcastSnapshot from tool events
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(0);
+  });
+
+  it("model_select does NOT trigger broadcastSnapshot", async () => {
+    const { default: browserConnectExtension } = await import("./browserConnectExtension");
+    const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
 
     browserConnectExtension(pi);
 
@@ -838,50 +787,22 @@ describe("broadcastSnapshot throttling in extension", () => {
     await connectEntry!.handler("", ctx);
 
     const modelSelectHandler = onCalls.find((c) => c.event === "model_select");
-    const toolEndHandler = onCalls.find((c) => c.event === "tool_execution_end");
-
-    // First tool_execution_end — executes immediately
-    toolEndHandler?.handler({ toolName: "read" }, ctx);
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
-
-    // Second tool_execution_end immediately — throttled
-    toolEndHandler?.handler({ toolName: "write" }, ctx);
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
-
-    // model_select also throttled
     modelSelectHandler?.handler({}, ctx);
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
 
-    // Advance past throttle window
-    fakeNow += 150;
-
-    // model_select now executes
-    modelSelectHandler?.handler({}, ctx);
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(2);
+    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(0);
   });
 
-  it("session_shutdown flushes pending throttle", async () => {
+  it("session_shutdown does not throw", async () => {
     const { default: browserConnectExtension } = await import("./browserConnectExtension");
     const { pi, ctx, registerCommandCalls, onCalls } = createFakePi();
-
-    let fakeNow = Date.now();
-    vi.spyOn(globalThis.Date, "now").mockImplementation(() => fakeNow);
 
     browserConnectExtension(pi);
 
     const connectEntry = registerCommandCalls.find((c) => c.name === "chrome-assistent-connect");
     await connectEntry!.handler("", ctx);
 
-    const toolEndHandler = onCalls.find((c) => c.event === "tool_execution_end");
     const shutdownHandler = onCalls.find((c) => c.event === "session_shutdown");
-
-    // Trigger snapshot via tool_execution_end
-    toolEndHandler?.handler({ toolName: "read" }, ctx);
-    expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(1);
-
-    // Shutdown flushes the throttle — verify it doesn't throw
     await expect(shutdownHandler?.handler({}, ctx)).resolves.not.toThrow();
     expect(mockClose).toHaveBeenCalledTimes(1);
   });
 });
-

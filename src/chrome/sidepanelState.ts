@@ -6,7 +6,7 @@ const DEFAULT_BUSY_LABEL = "Агент работает в фоне…";
 const MAX_CHAT_MESSAGES = 500;
 
 export type SidepanelChatMessage =
-  | { role: "user"; text: string; timestamp: number }
+  | { role: "user"; text: string; timestamp: number; messageId?: string }
   | { role: "assistant"; messageId: string; text: string; streaming: boolean; timestamp: number }
   | { role: "system"; text: string; tone: "info" | "warning" | "error"; timestamp: number };
 
@@ -221,44 +221,68 @@ export function hydrateMessagesFromEntries(entries: SessionEntryLike[]): Sidepan
 export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirrorEvent): SidePanelState {
   switch (event.type) {
     case "message_start": {
-      // Accept assistant messages; also accept empty role as assistant (fallback for incomplete events)
-      if (event.message.role !== "assistant" && event.message.role !== "") {
-        return state;
-      }
       const messageId = event.message.id;
       const now = Date.now();
-      // Check if we already have this message (reconnect idempotency)
-      const existing = state.messages.find(
-        (m) => m.role === "assistant" && m.messageId === messageId,
-      );
-      if (existing) {
-        return state;
+
+      // User message — add as placeholder (full text comes from snapshot at turn_end)
+      if (event.message.role === "user") {
+        // Deduplicate by messageId (idempotency on reconnect)
+        const existingUser = state.messages.find(
+          (m) => m.role === "user" && (m as { messageId?: string }).messageId === messageId,
+        );
+        if (existingUser) return state;
+        return {
+          ...state,
+          messages: trimMessages([
+            ...state.messages,
+            {
+              role: "user",
+              text: "",
+              timestamp: now,
+              messageId,
+            } as SidepanelChatMessage,
+          ]),
+          sending: true,
+          error: undefined,
+        };
       }
-      return {
-        ...state,
-        messages: trimMessages([
-          ...state.messages,
-          {
-            role: "assistant",
-            messageId,
-            text: "",
-            streaming: true,
-            timestamp: now,
-          },
-        ]),
-        agentBusy: true,
-        busyLabel: DEFAULT_BUSY_LABEL,
-        sending: false,
-        error: undefined,
-      };
+
+      // Assistant message — start streaming
+      if (event.message.role === "assistant" || event.message.role === "") {
+        const existing = state.messages.find(
+          (m) => m.role === "assistant" && m.messageId === messageId,
+        );
+        if (existing) {
+          return state;
+        }
+        return {
+          ...state,
+          messages: trimMessages([
+            ...state.messages,
+            {
+              role: "assistant",
+              messageId,
+              text: "",
+              streaming: true,
+              timestamp: now,
+            },
+          ]),
+          agentBusy: true,
+          busyLabel: DEFAULT_BUSY_LABEL,
+          sending: false,
+          error: undefined,
+        };
+      }
+
+      return state;
     }
 
     case "message_update": {
-      let messageId = event.message.id;
-      // Accept assistant messages; also accept empty role as assistant (fallback for incomplete events)
+      // Only assistant messages produce text deltas
       if (event.message.role !== "assistant" && event.message.role !== "") {
         return state;
       }
+      let messageId = event.message.id;
       const delta = event.assistantMessageEvent?.type === "text_delta"
         ? event.assistantMessageEvent.text_delta
         : undefined;
@@ -281,7 +305,7 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
       const idx = state.messages.findIndex(
         (m) => m.role === "assistant" && m.messageId === messageId,
       );
-      
+
       if (idx < 0) {
         const now = Date.now();
         return {
@@ -315,11 +339,11 @@ export function applyMirrorEventToChatState(state: SidePanelState, event: PiMirr
     }
 
     case "message_end": {
-      const messageId = event.message.id;
-      // Accept assistant messages; also accept empty role as assistant (fallback for incomplete events)
+      // Only assistant messages need streaming finalized
       if (event.message.role !== "assistant" && event.message.role !== "") {
         return state;
       }
+      const messageId = event.message.id;
       return {
         ...state,
         messages: state.messages.map((m) => {

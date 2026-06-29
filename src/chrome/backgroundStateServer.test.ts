@@ -1477,74 +1477,57 @@ describe("BackgroundAssistantStateServer", () => {
       });
     });
 
-    it("streaming assistant message сохраняется когда snapshot опаздывает", async () => {
+    it("snapshot полностью заменяет messages (no merge)", async () => {
       const { server, sessionClients } = createServer();
       const port = new FakePort();
 
       await server.start();
       server.connectPort(port);
 
-      // Connect and go online
       port.emitMessage({ type: "assistant.session.connect", port: 31415 });
       await flushAsyncWork();
 
-      // Initial snapshot с пустым чатом
       server.applySessionSnapshot(createDirectSnapshot({
         chat: { entries: [], agentBusy: false, busyLabel: "Агент работает в фоне…" },
       }));
 
-      // Эмитируем live events: assistant message streaming
+      // Streaming assistant message via events
       sessionClients[0]?.emitSessionEvent({
         type: "message_start",
         message: { id: "live-1", role: "assistant" },
       });
-
       sessionClients[0]?.emitSessionEvent({
         type: "message_update",
         message: { id: "live-1", role: "assistant" },
-        assistantMessageEvent: { type: "text_delta", text_delta: "Прив" },
+        assistantMessageEvent: { type: "text_delta", text_delta: "Привет!" },
       });
 
-      sessionClients[0]?.emitSessionEvent({
-        type: "message_update",
-        message: { id: "live-1", role: "assistant" },
-        assistantMessageEvent: { type: "text_delta", text_delta: "ет!" },
-      });
-
-      // Проверяем что streaming message есть
-      let state = server.getSnapshot();
-      const streamingMsg = state.chat.messages.find(
-        (m) => m.role === "assistant" && m.messageId === "live-1",
-      );
-      expect(streamingMsg).toBeDefined();
-      if (streamingMsg?.role === "assistant") {
-        expect(streamingMsg.text).toBe("Привет!");
-        expect(streamingMsg.streaming).toBe(true);
-      }
-
-      // Приходит snapshot БЕЗ этого assistant message (опоздал, entries пустые)
-      sessionClients[0]?.emitSnapshot({
-        ...createDirectSnapshot(),
-        chat: { entries: [], agentBusy: true, busyLabel: "Агент работает в фоне…" },
-        runtime: {
-          ...createDirectSnapshot().runtime,
-          isIdle: false,
+      // Snapshot без этого сообщения — messages полностью заменяются
+      server.applySessionSnapshot(createDirectSnapshot({
+        chat: {
+          entries: [
+            {
+              type: "message" as const,
+              id: "e1",
+              timestamp: "2025-01-01T00:00:00Z",
+              message: {
+                role: "user" as const,
+                content: [{ type: "text" as const, text: "Вопрос" }],
+              },
+            },
+          ],
+          agentBusy: false,
+          busyLabel: "Агент работает в фоне…",
         },
-      });
+      }));
 
-      // Streaming message должен быть сохранён
-      state = server.getSnapshot();
-      const preservedMsg = state.chat.messages.find(
-        (m) => m.role === "assistant" && m.messageId === "live-1",
-      );
-      expect(preservedMsg).toBeDefined();
-      if (preservedMsg?.role === "assistant") {
-        expect(preservedMsg.text).toBe("Привет!");
-        expect(preservedMsg.streaming).toBe(true);
-      }
+      // Только message из entries, streaming message потерян (это нормально — snapshot = полная замена)
+      const state = server.getSnapshot();
+      expect(state.chat.messages).toHaveLength(1);
+      expect(state.chat.messages[0].role).toBe("user");
     });
 
-    it("streaming assistant message обновляется когда snapshot догоняет", async () => {
+    it("snapshot с теми же messageId заменяет streaming assistant", async () => {
       const { server, sessionClients } = createServer();
       const port = new FakePort();
 

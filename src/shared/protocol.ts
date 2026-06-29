@@ -10,7 +10,7 @@ export const PROTOCOL_MESSAGE_TYPES = [
   "session.error",
 ] as const;
 
-export type ProtocolMessageType = (typeof PROTOCOL_MESSAGE_TYPES)[number];
+type ProtocolMessageType = (typeof PROTOCOL_MESSAGE_TYPES)[number];
 
 const PROTOCOL_MESSAGE_TYPE_SET = new Set<string>(PROTOCOL_MESSAGE_TYPES);
 

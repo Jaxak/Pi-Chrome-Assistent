@@ -40,7 +40,7 @@ export function createInitialSidePanelState(): SidePanelState {
 /**
  * Trim message array to keep only the last MAX_CHAT_MESSAGES entries.
  */
-function trimMessages(messages: SidepanelChatMessage[]): SidepanelChatMessage[] {
+export function trimMessages(messages: SidepanelChatMessage[]): SidepanelChatMessage[] {
   if (messages.length <= MAX_CHAT_MESSAGES) {
     return messages;
   }

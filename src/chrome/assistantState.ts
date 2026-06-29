@@ -222,17 +222,14 @@ export function reduceAssistantState(
 }
 
 /**
- * Merge local messages with server-hydrated messages.
- * Preserves:
- * 1. User messages that were added locally but not yet present in server entries
- *    (handles race condition where Pi sends a snapshot before processing user's message)
- * 2. Streaming assistant messages that are not yet in server entries
- *    (entries only contain completed messages from sessionManager.getBranch())
+ * Merge local state with server-hydrated messages.
+ * - User messages come ONLY from server (event-driven, no optimistic updates).
+ * - Assistant messages: prefer server, but preserve local streaming messages
+ *   not yet reflected in the snapshot (streaming may be ahead).
  */
-function mergeWithPendingMessages(
+function mergeWithStreamingAssistant(
   localMessages: SidepanelChatMessage[],
   serverMessages: SidepanelChatMessage[],
-  sending: boolean,
 ): SidepanelChatMessage[] {
   // Collect IDs of assistant messages already in server snapshot
   const serverAssistantIds = new Set(
@@ -241,135 +238,29 @@ function mergeWithPendingMessages(
       .map((m) => m.messageId),
   );
 
-  // Find local assistant messages
-  const localAssistantMessages = localMessages.filter(
-    (m): m is SidepanelChatMessage & { role: "assistant" } => m.role === "assistant",
+  // Find local assistant messages that are streaming and not yet in server
+  const pendingStreamingMessages = localMessages.filter(
+    (m): m is SidepanelChatMessage & { role: "assistant" } =>
+      m.role === "assistant" && !serverAssistantIds.has(m.messageId),
   );
 
-  // For each server assistant message, check if we have a local version with more text
+  if (pendingStreamingMessages.length === 0) {
+    return serverMessages;
+  }
+
+  // For server messages, prefer local version if it has more text (streaming ahead of snapshot)
   const mergedServerMessages = serverMessages.map((serverMsg) => {
-    if (serverMsg.role !== "assistant") {
-      return serverMsg;
-    }
-    
-    const localVersion = localAssistantMessages.find(
-      (m) => m.messageId === serverMsg.messageId,
-    );
-    
-    // If local version has more text, use it instead
+    if (serverMsg.role !== "assistant") return serverMsg;
+    const localVersion = localMessages.find(
+      (m) => m.role === "assistant" && m.messageId === serverMsg.messageId,
+    ) as (SidepanelChatMessage & { role: "assistant" }) | undefined;
     if (localVersion && localVersion.text.length > serverMsg.text.length) {
       return localVersion;
     }
-    
     return serverMsg;
   });
 
-  // Find assistant messages not in server at all.
-  // Keep messages that are either streaming OR completed but not yet in snapshot
-  // (handles race condition where snapshot arrives before sessionManager updates).
-  // Deduplicate by text content to handle messageId mismatches,
-  // but only if text is non-empty (streaming messages often start empty).
-  const serverAssistantTexts = new Set(
-    serverMessages
-      .filter((m): m is SidepanelChatMessage & { role: "assistant" } => m.role === "assistant")
-      .filter((m) => m.text.length > 0)
-      .map((m) => m.text),
-  );
-  
-  const pendingAssistantMessages = localAssistantMessages.filter(
-    (m) => !serverAssistantIds.has(m.messageId) &&
-           (m.text.length === 0 || !serverAssistantTexts.has(m.text)),
-  );
-
-  // Find pending user messages (only if we're currently sending)
-  // For regular messages: deduplicate by text content
-  // For pending messages: keep them until server has a message containing similar content
-  let pendingUserMessages: Array<SidepanelChatMessage & { role: "user" }> = [];
-  if (sending) {
-    const serverUserTexts = new Set(
-      serverMessages
-        .filter((m): m is SidepanelChatMessage & { role: "user" } => m.role === "user")
-        .map((m) => m.text),
-    );
-    
-    const serverUserTextsArray = Array.from(serverUserTexts);
-
-    // Check if any server message contains key parts of the pending message
-    const hasSimilarServerMessage = (pendingText: string): boolean => {
-      // Extract meaningful parts from pending text (skip emoji prefix)
-      const cleanText = pendingText.replace(/^\p{Emoji}\s*/u, "").trim();
-      if (cleanText.length === 0) return false;
-      
-      // Take first line (usually the comment) as the key
-      const firstLine = cleanText.split("\n")[0].slice(0, 50);
-      
-      return serverUserTextsArray.some(serverText => 
-        serverText.includes(firstLine)
-      );
-    };
-
-    pendingUserMessages = localMessages.filter(
-      (m): m is SidepanelChatMessage & { role: "user" } => {
-        if (m.role !== "user") return false;
-        
-        const isPending = (m as { pending?: boolean }).pending === true;
-        
-        if (isPending) {
-          // Keep pending message until server has similar content
-          return !hasSimilarServerMessage(m.text);
-        }
-        
-        // Regular message: keep if not in server
-        return !serverUserTexts.has(m.text);
-      },
-    );
-  }
-
-  if (pendingAssistantMessages.length === 0 && pendingUserMessages.length === 0) {
-    return mergedServerMessages;
-  }
-
-  // Append pending user messages and assistant messages at the end
-  return [...mergedServerMessages, ...pendingUserMessages, ...pendingAssistantMessages];
-}
-
-/**
- * Check if there are pending user messages that were preserved during merge.
- * Used to determine if `sending` flag should remain true.
- */
-function hasPendingUserMessages(
-  localMessages: SidepanelChatMessage[],
-  serverMessages: SidepanelChatMessage[],
-): boolean {
-  const serverUserTexts = new Set(
-    serverMessages
-      .filter((m): m is SidepanelChatMessage & { role: "user" } => m.role === "user")
-      .map((m) => m.text),
-  );
-  
-  const serverUserTextsArray = Array.from(serverUserTexts);
-
-  // Same logic as in mergeWithPendingMessages
-  const hasSimilarServerMessage = (pendingText: string): boolean => {
-    const cleanText = pendingText.replace(/^\p{Emoji}\s*/u, "").trim();
-    if (cleanText.length === 0) return false;
-    const firstLine = cleanText.split("\n")[0].slice(0, 50);
-    return serverUserTextsArray.some(serverText => serverText.includes(firstLine));
-  };
-
-  return localMessages.some((m) => {
-    if (m.role !== "user") return false;
-    
-    const isPending = (m as { pending?: boolean }).pending === true;
-    
-    if (isPending) {
-      // Pending message counts as "pending" only if no similar server message
-      return !hasSimilarServerMessage(m.text);
-    }
-    
-    // Regular message: pending if not in server
-    return !serverUserTexts.has(m.text);
-  });
+  return [...mergedServerMessages, ...pendingStreamingMessages];
 }
 
 function applySessionSnapshot(
@@ -379,10 +270,9 @@ function applySessionSnapshot(
   const entries = snapshot.chat.entries ?? [];
   const hydratedMessages = hydrateMessagesFromEntries(entries);
 
-  // Merge: preserve local user messages that are not yet in server entries.
-  // This prevents losing optimistically-added user messages when Pi sends
-  // a snapshot before it has processed the user's message.
-  const mergedMessages = mergeWithPendingMessages(state.chat.messages, hydratedMessages, state.chat.sending);
+  // User messages come ONLY from server (event-driven).
+  // Preserve local streaming assistant messages not yet in snapshot.
+  const mergedMessages = mergeWithStreamingAssistant(state.chat.messages, hydratedMessages);
 
   return {
     ...state,
@@ -408,8 +298,9 @@ function applySessionSnapshot(
       // Using || (not ??): if Pi sends an empty string "" for busyLabel
       // we keep the previous label instead of flashing a blank indicator
       busyLabel: snapshot.chat.busyLabel || state.chat.busyLabel,
-      // Keep sending=true only if we preserved pending user messages (not streaming assistant)
-      sending: state.chat.sending && hasPendingUserMessages(state.chat.messages, hydratedMessages),
+      // No optimistic user messages — sending is always false after snapshot.
+      // Server will set agentBusy=true if it's processing.
+      sending: false,
       // Preserve tools counter; reset only on turn_end or when agent becomes idle
       activeToolsCount: snapshot.runtime.isIdle ? 0 : state.chat.activeToolsCount,
       error: undefined,

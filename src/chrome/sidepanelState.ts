@@ -6,7 +6,7 @@ const DEFAULT_BUSY_LABEL = "Агент работает в фоне…";
 const MAX_CHAT_MESSAGES = 500;
 
 export type SidepanelChatMessage =
-  | { role: "user"; text: string; timestamp: number; pending?: true }
+  | { role: "user"; text: string; timestamp: number }
   | { role: "assistant"; messageId: string; text: string; streaming: boolean; timestamp: number }
   | { role: "system"; text: string; tone: "info" | "warning" | "error"; timestamp: number };
 
@@ -21,8 +21,6 @@ export type SidePanelState = {
 
 export type SidePanelChatEvent =
   | { kind: "user_message"; text: string; timestamp: number }
-  | { kind: "pending_user_message"; text: string; timestamp: number }
-  | { kind: "sending_started"; timestamp: number }
   | { kind: "agent_busy"; busy: boolean; label: string; timestamp: number }
   | { kind: "assistant_message_start"; messageId: string; timestamp: number }
   | { kind: "assistant_text_delta"; messageId: string; delta: string; timestamp: number }
@@ -81,31 +79,6 @@ export function reduceSidePanelChatEvent(state: SidePanelState, event: SidePanel
   switch (event.kind) {
     case "user_message":
       return startSendingUserMessage(state, event.text, event.timestamp);
-
-    case "pending_user_message":
-      // Add a pending user message (will be replaced by server version)
-      return {
-        ...state,
-        messages: trimMessages([
-          ...state.messages,
-          {
-            role: "user",
-            text: event.text,
-            timestamp: event.timestamp,
-            pending: true,
-          },
-        ]),
-        sending: true,
-        error: undefined,
-      };
-
-    case "sending_started":
-      // Just set sending flag without adding a message (for selection sends)
-      return {
-        ...state,
-        sending: true,
-        error: undefined,
-      };
 
     case "agent_busy":
       return {

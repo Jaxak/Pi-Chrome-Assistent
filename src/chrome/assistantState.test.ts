@@ -415,75 +415,7 @@ describe("assistantState", () => {
       expect(state.chat.messages).toEqual([]);
     });
 
-    it("preserves pending user message when snapshot arrives before Pi processes it", () => {
-      let state = createInitialAssistantState();
 
-      // User sends a message (optimistically added, sending=true)
-      state = reduceAssistantState(state, {
-        kind: "chat_event",
-        event: {
-          kind: "user_message",
-          text: "ping",
-          timestamp: 1000,
-        },
-      });
-
-      expect(state.chat.messages).toHaveLength(1);
-      expect(state.chat.messages[0]).toEqual({
-        role: "user",
-        text: "ping",
-        timestamp: 1000,
-      });
-      expect(state.chat.sending).toBe(true);
-
-      // Pi sends snapshot BEFORE it has processed the user message
-      // (entries don't contain the user message yet)
-      state = reduceAssistantState(state, {
-        kind: "session_snapshot",
-        snapshot: createDirectSnapshot({
-          chat: {
-            entries: [],
-            agentBusy: true,
-            busyLabel: "Думаю…",
-          },
-        }),
-      });
-
-      // User message should be preserved (not overwritten by empty entries)
-      expect(state.chat.messages).toHaveLength(1);
-      expect(state.chat.messages[0]).toEqual({
-        role: "user",
-        text: "ping",
-        timestamp: 1000,
-      });
-      expect(state.chat.sending).toBe(true); // Still sending until Pi confirms
-
-      // Now Pi sends snapshot WITH the user message in entries
-      state = reduceAssistantState(state, {
-        kind: "session_snapshot",
-        snapshot: createDirectSnapshot({
-          chat: {
-            entries: [
-              {
-                type: "message" as const,
-                id: "e1",
-                timestamp: new Date(1000).toISOString(),
-                message: {
-                  role: "user" as const,
-                  content: [{ type: "text" as const, text: "ping" }],
-                },
-              },
-            ],
-            agentBusy: true,
-            busyLabel: "Думаю…",
-          },
-        }),
-      });
-
-      // User message is now from server, sending should be false
-      expect(state.chat.messages).toHaveLength(1);
-      expect(state.chat.sending).toBe(false);
-    });
   });
 
   describe("reduceAssistantState - connection_updated", () => {

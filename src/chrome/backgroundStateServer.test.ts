@@ -294,9 +294,10 @@ describe("BackgroundAssistantStateServer", () => {
     await flushAsyncWork();
 
     expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledWith("Привет Pi");
-    expect(server.getSnapshot().chat.messages.at(-1)).toMatchObject({ role: "user", text: "Привет Pi" });
+    // No optimistic user message in chat — message will appear from server snapshot
+    expect(server.getSnapshot().chat.messages).toEqual([]);
+    // agentBusy is set to true instead of sending for busy indicator
     expect(server.getSnapshot().chat.agentBusy).toBe(true);
-    expect(server.getSnapshot().chat.sending).toBe(true);
   });
 
   it("sends model set through sessionClient on assistant.model.set", async () => {
@@ -539,11 +540,13 @@ describe("BackgroundAssistantStateServer", () => {
     port.emitMessage({ type: "assistant.sendChatMessage", message: "Второе" });
     await flushAsyncWork();
 
+    // Only first send is executed — second is blocked by agentBusy=true
     expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledTimes(1);
     expect(sessionClients[0]?.sendChatMessage).toHaveBeenCalledWith("Первое");
-    expect(server.getSnapshot().chat.messages).toEqual([
-      { role: "user", text: "Первое", timestamp: 1_710_000_000_123 },
-    ]);
+    // No optimistic messages in chat
+    expect(server.getSnapshot().chat.messages).toEqual([]);
+    // isChatSendDisabled blocks because agentBusy=true
+    expect(server.getSnapshot().chat.agentBusy).toBe(true);
   });
 
   it("adds a Pi unavailable chat error when sessionClient send fails", async () => {

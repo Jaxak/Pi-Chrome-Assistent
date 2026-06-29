@@ -110,17 +110,19 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("turn_start", (event, _ctx) => {
+    const turnIndex = (event as { turnIndex?: number }).turnIndex ?? 0;
     activeSessionServer?.broadcastEvent({
       type: "turn_start",
-      turnId: (event as { turnId?: string })?.turnId ?? "",
+      turnId: `turn-${turnIndex}`,
     });
   });
 
   pi.on("turn_end", (event, ctx) => {
     latestCtx = ctx;
+    const turnIndex = (event as { turnIndex?: number }).turnIndex ?? 0;
     activeSessionServer?.broadcastEvent({
       type: "turn_end",
-      turnId: (event as { turnId?: string })?.turnId ?? "",
+      turnId: `turn-${turnIndex}`,
     });
   });
 
@@ -189,7 +191,7 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
     activeSessionServer?.broadcastEvent({
       type: "tool_execution_start",
       toolName: (event as { toolName?: string })?.toolName ?? "",
-      input: (event as { input?: unknown })?.input,
+      input: (event as { args?: unknown })?.args,
     });
   });
 

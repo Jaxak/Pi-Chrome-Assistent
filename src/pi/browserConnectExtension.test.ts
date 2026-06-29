@@ -422,7 +422,7 @@ describe("Pi events", () => {
       ctx,
     );
     messageEndHandler?.handler({ message: { role: "assistant", id: "msg-1" } }, ctx);
-    turnEndHandler?.handler({ turnId: "turn-1" }, ctx);
+    turnEndHandler?.handler({ turnIndex: 1 }, ctx);
 
     // No broadcastSnapshot from any message/turn events (only events are broadcast)
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(0);
@@ -524,8 +524,8 @@ describe("Pi events", () => {
     const turnStartHandler = onCalls.find((c) => c.event === "turn_start");
     const turnEndHandler = onCalls.find((c) => c.event === "turn_end");
 
-    turnStartHandler?.handler({ turnId: "turn-1" }, ctx);
-    turnEndHandler?.handler({ turnId: "turn-1" }, ctx);
+    turnStartHandler?.handler({ turnIndex: 1 }, ctx);
+    turnEndHandler?.handler({ turnIndex: 1 }, ctx);
 
     expect(mockBroadcastEvent).toHaveBeenCalledWith({
       type: "turn_start",
@@ -550,7 +550,7 @@ describe("Pi events", () => {
     const toolUpdateHandler = onCalls.find((c) => c.event === "tool_execution_update");
     const toolEndHandler = onCalls.find((c) => c.event === "tool_execution_end");
 
-    toolStartHandler?.handler({ toolName: "read_file", input: { path: "/tmp/test" } }, ctx);
+    toolStartHandler?.handler({ toolName: "read_file", args: { path: "/tmp/test" } }, ctx);
     toolUpdateHandler?.handler({ toolName: "read_file", output: "content" }, ctx);
     toolEndHandler?.handler({ toolName: "read_file", output: "content" }, ctx);
 
@@ -750,7 +750,7 @@ describe("broadcastSnapshot only at sync points (turn_end, onSetModel)", () => {
     await connectEntry!.handler("", ctx);
 
     const turnEndHandler = onCalls.find((c) => c.event === "turn_end");
-    turnEndHandler?.handler({ turnId: "turn-1" }, ctx);
+    turnEndHandler?.handler({ turnIndex: 1 }, ctx);
 
     expect(mockBroadcastSnapshot).toHaveBeenCalledTimes(0);
   });

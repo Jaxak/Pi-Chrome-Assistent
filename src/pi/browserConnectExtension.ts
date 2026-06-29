@@ -400,8 +400,8 @@ export default function browserConnectExtension(pi: ExtensionAPI): void {
           onSelection: async (selection: SelectionPayload): Promise<DirectCommandResult> => {
             try {
               const formatted = formatSelectionMessage(selection);
-              // NOTE: Don't call broadcastSnapshot() before sending - it would
-              // overwrite the pending message in client state
+              // NOTE: broadcastSnapshot() is called only AFTER sendUserMessage resolves,
+              // so the snapshot contains the user message from sessionManager.getBranch()
 
               const deliveryOptions = ctx.isIdle() ? undefined : ({ deliverAs: "followUp" } as const);
               await pi.sendUserMessage(formatted, deliveryOptions);

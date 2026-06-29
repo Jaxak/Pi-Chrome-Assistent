@@ -139,6 +139,7 @@ export function reduceAssistantState(
           ...state,
           chat: {
             ...state.chat,
+            agentBusy: true,
             busyLabel: `Выполняет: ${event.event.toolName}…`,
           },
         };

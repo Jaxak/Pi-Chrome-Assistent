@@ -27,7 +27,7 @@ describe("createSelectionOverlay", () => {
     expect(document.querySelector("style[data-pi-crosshair-style]")).toBeNull();
   });
 
-  it("renders the comment modal with Russian labels and light olive theme", () => {
+  it("renders the comment modal with Russian labels and dark theme", () => {
     const overlay = createSelectionOverlay();
 
     overlay.showCommentModal({
@@ -43,11 +43,11 @@ describe("createSelectionOverlay", () => {
     expect(document.body.textContent).toContain("Отправить в Pi");
     expect(document.body.textContent).toContain("Отмена");
     expect(modalPanel).not.toBeNull();
-    expect(modalPanel?.style.background).toBe("rgb(250, 249, 242)");
-    expect(modalPanel?.style.border).toBe("1px solid rgb(209, 216, 182)");
-    expect(modalPanel?.style.color).toBe("rgb(47, 54, 28)");
-    expect(textarea?.placeholder).toBe("Добавьте комментарий (необязательно)");
-    expect(textarea?.style.background).toBe("rgb(255, 255, 250)");
+    expect(modalPanel?.style.background).toBe("rgb(31, 31, 31)");
+    expect(modalPanel?.style.border).toBe("1px solid rgba(255, 255, 255, 0.1)");
+    expect(modalPanel?.style.color).toBe("rgb(232, 232, 232)");
+    expect(textarea?.placeholder).toBe("Комментарий...");
+    expect(textarea?.style.background).toBe("rgb(42, 42, 42)");
 
     overlay.cleanup();
   });

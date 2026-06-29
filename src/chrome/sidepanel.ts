@@ -278,11 +278,11 @@ function renderChat(elements: SidePanelElements): void {
 
   const allMessages = chat?.messages ?? [];
 
-  // Filter out empty messages (no text) - but keep streaming messages
+  // Filter out empty messages - only show messages with actual text content
+  // This prevents empty bubbles from flashing during tool execution
   const messages = allMessages.filter((m) => {
     const text = (m as { text?: string }).text ?? "";
-    const streaming = (m as { streaming?: boolean }).streaming ?? false;
-    return text.length > 0 || streaming;
+    return text.length > 0;
   });
 
   // Check if user is near bottom before re-rendering (within 100px threshold)

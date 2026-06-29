@@ -24,6 +24,7 @@
     "build:chrome": "node scripts/build-chrome.mjs"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "marked": "^18.0.5",
     "ws": "8.21.0"
   },

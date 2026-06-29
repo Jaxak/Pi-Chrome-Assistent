@@ -22,11 +22,13 @@ describe("renderMarkdown", () => {
     expect(result).toContain('href="#"');
   });
 
-  it("should render code blocks with language", () => {
+  it("should render code blocks with language and syntax highlighting", () => {
     const result = renderMarkdown("```js\nconst x = 1;\n```");
     expect(result).toContain("<pre><code");
     expect(result).toContain('language-js');
-    expect(result).toContain("const x = 1;");
+    // Syntax highlighting wraps tokens in spans
+    expect(result).toContain('hljs-keyword');
+    expect(result).toContain('const');
   });
 
   it("should render code blocks without language", () => {
@@ -71,9 +73,13 @@ describe("renderMarkdown", () => {
     expect(result).toContain("Line two");
   });
 
-  it("should escape HTML inside code blocks", () => {
+  it("should escape and highlight HTML inside code blocks", () => {
     const result = renderMarkdown("```html\n<div>Hello</div>\n```");
-    expect(result).toContain("&lt;div&gt;Hello&lt;/div&gt;");
+    // HTML is escaped and highlighted
+    expect(result).toContain("&lt;");
+    expect(result).toContain("div");
+    expect(result).toContain("Hello");
+    expect(result).toContain('hljs-tag');
   });
 
   it("should wrap output in paragraph tags", () => {
